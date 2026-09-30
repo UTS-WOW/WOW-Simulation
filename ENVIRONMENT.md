@@ -8,6 +8,20 @@ This document describes the *environment* — the simulated world and its rules.
 how the real Tier 10 data was converted see [SHIPS.md](SHIPS.md); for controls see
 [README.md](README.md).
 
+## Contents
+
+1. [Coordinate system and units](#1-coordinate-system-and-units)
+2. [Terrain](#2-terrain)
+3. [Battlefield configuration](#3-battlefield-configuration)
+4. [Deployment geometry](#4-deployment-geometry)
+5. [Objectives](#5-objectives)
+6. [Weather](#6-weather)
+7. [Fog of war and information](#7-fog-of-war-and-information)
+8. [Match flow](#8-match-flow)
+9. [Determinism and seeding](#9-determinism-and-seeding)
+10. [Reading the environment from code](#10-reading-the-environment-from-code)
+11. [Notes for reinforcement learning](#11-notes-for-reinforcement-learning)
+
 ---
 
 ## 1. Coordinate system and units
@@ -19,11 +33,13 @@ how the real Tier 10 data was converted see [SHIPS.md](SHIPS.md); for controls s
 | Extent | `GameConfig.WorldSize = 4000` units, spanning `[-2000, +2000]` on both axes |
 | Scale | **1 unit ≈ 10 m**, so the battlefield is about **40 km × 40 km** |
 | Heading | Compass degrees, `0 = north`, increasing clockwise. Sprites point up, so `transform.z = -heading` |
-| Speed | Units per second. `Ship.SpeedKnots = |speed| × 19.4` for display |
+| Speed | Units per second. Displayed as knots: `Ship.SpeedKnots = abs(speed) × 19.4` |
 | Height | `h > 0` is land, `h < 0` is water. `Depth = -h`, so `0` is the shoreline and `1` is the abyss |
 
 Gravity is zeroed at boot (`Physics2D.gravity = Vector2.zero`); ships are dynamic `Rigidbody2D`
 bodies with capsule hull colliders that collide only with each other.
+
+---
 
 ## 2. Terrain
 
@@ -76,11 +92,13 @@ to sheer away from shallows.
 units (160 m), giving a **250 × 250** cell grid. Each cell samples its centre *and* its corners and
 keeps the shallowest result, so a thin spit of land still blocks the cell rather than falling between
 samples. It stores per-cell depth and a coastline distance, and runs **draft-aware A\***: the same
-grid serves every class, but each query rejects cells too shallow for that hull. Path requests are queued and throttled to
-`GameConfig.PathThrottlePerFrame = 3` solves per frame.
+grid serves every class, but each query rejects cells too shallow for that hull. Path requests are
+queued and throttled to `GameConfig.PathThrottlePerFrame = 3` solves per frame.
 
 `NavGrid.NearestNavigable(pos, draft)` snaps any point to water that hull can actually float in — it
 is what keeps spawns and move orders off the beach.
+
+---
 
 ## 3. Battlefield configuration
 
@@ -102,7 +120,7 @@ defaults; every field can then be overridden individually.
 | Low | 0.35 | 2 | 3 | 5 |
 | Medium | 1.0 | 6 | 9 | 14 |
 | High | 1.7 | 10 | 15 | 24 |
-| Procedural | random 0.3–1.8 | varies per match | | |
+| Procedural | random 0.3–1.8 | varies | varies | varies |
 
 Each island gets a **hazard shelf** of `radius + 110` units (rocks: `+45`) — the shallow ring around
 it that a deep hull must respect.
@@ -117,6 +135,8 @@ Placement makes 60 attempts per island and rejects any position that comes withi
 instead places two fixed landmasses of radius `Half × 0.46` on the flanks, leaving a channel whose
 half-width is `max(Half × 0.30, DeployRadius + Half × 0.11 + 90)` — it widens automatically so a
 large fleet still fits through.
+
+---
 
 ## 4. Deployment geometry
 
@@ -156,6 +176,8 @@ just outside mutual battleship spotting range — 15.0 km against a 14.1 km batt
 Neither battle line can see the other at the moment the clock starts, which keeps the approach a real
 phase of the battle instead of an immediate gun duel.
 
+---
+
 ## 5. Objectives
 
 ### Capture zones
@@ -166,7 +188,7 @@ capture, and a submarine must be at surface or periscope depth to hold ground.
 | Occupancy | Behaviour |
 |---|---|
 | Both fleets present | **Contested** — the meter freezes exactly where it is |
-| One fleet present | Meter moves at `sqrt(|net hulls|) / 40` per second |
+| One fleet present | Meter moves at `sqrt(abs(netHulls)) / 40` per second |
 | Empty, never captured | Bleeds back to neutral over 120 s |
 | Empty, already owned | Returns to *fully held* in 32 s — the owner keeps it |
 
@@ -195,7 +217,7 @@ much to commit forward and how much to leave at home.
 
 ### Scoring
 
-```
+```text
 ZonePointsPerSecond = FullMapPointsPerSecond (3.6) / zoneCount
 ScoreToWin          = 1000
 KillPoints          = 12   (awarded per enemy hull sunk)
@@ -218,6 +240,8 @@ Each side has one harbour, tucked 170 units behind its deployment line, away fro
 middle. A ship inside the **90 unit service radius** is refuelled (9% capacity/s), rearmed
 (16%/s) and given heavy repair. Ports have 5000 HP and can be destroyed.
 
+---
+
 ## 6. Weather
 
 Weather is global, changes the sea state and — more importantly — **changes what everyone can see**.
@@ -237,6 +261,8 @@ entirely above 620 orthographic size.
 
 Wind direction drifts continuously and drives the ocean shader's wave motion.
 
+---
+
 ## 7. Fog of war and information
 
 This is the part of the environment that matters most tactically. Detection is evaluated **8 times a
@@ -248,7 +274,7 @@ not earned.
 For each observer/target pair within a hard 2800-unit (28 km) cutoff — it has to exceed the longest
 gun on the map, or a battleship could shell targets it was structurally unable to see:
 
-```
+```text
 spotted  if  distance ≤ min(target.Detectability, observer.EffectiveSpotRange)
              and line of sight is clear
 ```
@@ -259,7 +285,7 @@ see straight through it.
 
 ### How far can I see?
 
-```
+```text
 EffectiveSpotRange  = spotRange × weatherVisibility × sensorIntegrity + abilityBonus
 EffectiveSonarRange = (sonarRange + abilityBonus × 0.6) × sensorIntegrity
 EffectiveHydroRange = hydroRange × sensorIntegrity + abilityBonus
@@ -281,6 +307,11 @@ Base detectability is modified multiplicatively:
 | Inside smoke | **0.12×**, but only `0.55×` if you are firing out of it |
 | Held by an active sonar ping | floor of **420 units** — you cannot hide |
 
+Detectability never drops below **12 units**.
+
+Note the interaction that drives destroyer play: sitting still in smoke and not firing makes you
+nearly invisible; opening fire from that same smoke roughly quadruples your signature.
+
 ### Assured detection
 
 Concealment can be defeated outright. Surveillance radar (10 km), hydroacoustic search (5 km), the
@@ -291,10 +322,6 @@ has a 2 km guaranteed acquisition range — get that close and you are seen what
 
 This is the counter to a destroyer sitting invisible on a cap, and it is why a cruiser's radar charge
 is often worth more than its guns.
-
-The floor is 12 units. Note the interaction that drives destroyer play: sitting still in smoke and
-not firing makes you nearly invisible; opening fire from that same smoke roughly quadruples your
-signature.
 
 ### Submarines
 
@@ -315,9 +342,11 @@ The AI dead-reckons dark contacts from `lastKnownPosition + heading × age` with
 radius, which is how it keeps hunting a destroyer that has slipped into smoke instead of instantly
 forgetting it.
 
+---
+
 ## 8. Match flow
 
-```
+```text
 Menu  →  Deployment  →  Battle  →  Victory / Defeat
 ```
 
@@ -363,6 +392,8 @@ frozen outside `Battle`.
 | Capture zones | 4 Hz |
 | Pathfinding | 3 solves per frame, queued |
 
+---
+
 ## 9. Determinism and seeding
 
 `WorldMap.Generate(seed, ...)` calls `Random.InitState(seed)` and `NavalMath.SetNoiseSeed(seed)`, so
@@ -373,12 +404,15 @@ The *match* is not deterministic beyond generation: gun dispersion, fire chance,
 and AI tie-breaks all draw from the shared `Random` stream during play, and physics runs at a
 variable frame rate. Same seed means same map, not same battle.
 
+---
+
 ## 10. Reading the environment from code
 
 The environment exposes a compact, stable surface. Everything below is queryable at any time without
 touching rendering or UI.
 
 **World**
+
 ```csharp
 WorldMap.I.SampleHeight(v)          // > 0 land, < 0 water
 WorldMap.I.SampleDepth(v)           // 0 at shoreline, 1 in the abyss
@@ -393,6 +427,7 @@ NavGrid.I.CoastDistance(x, y)       // cells to the nearest shore
 ```
 
 **Objectives**
+
 ```csharp
 zone.State            // Neutral | Capturing | Captured | Contested  (discrete)
 zone.Progress         // -1 .. +1                                    (continuous)
@@ -405,6 +440,7 @@ zone.EnemyShips
 
 **Information state** — always query this rather than `ShipRegistry` directly if you want to respect
 fog of war:
+
 ```csharp
 DetectionSystem.I.IsVisible(ship, observerTeam)
 DetectionSystem.I.GetContact(ship, observerTeam)   // state, lastKnownPosition/Heading, age
@@ -413,6 +449,7 @@ DetectionSystem.I.GatherLiveContacts(team, into)
 ```
 
 **Match state**
+
 ```csharp
 GameManager.I.Phase, .Mode, .BattleTime, .TimeRemaining, .TimeLimit
 GameManager.I.PlayerScore, .EnemyScore, .PlayerKills, .EnemyKills
@@ -425,7 +462,9 @@ BattleAssessment.For(team)                         // shared per-team situationa
 the derived picture the AI reasons over — posture, per-zone value and threat, local strength ratios,
 and dead-reckoned positions for contacts that have gone dark.
 
-### A note on reinforcement learning
+---
+
+## 11. Notes for reinforcement learning
 
 Several environment choices were made deliberately to make the game legible to a learning agent:
 

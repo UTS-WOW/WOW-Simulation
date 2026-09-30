@@ -1,365 +1,574 @@
 # Naval Warfare — 2D Fleet Combat (Unity 6)
 
-A top-down 2D naval combat game in the spirit of World of Warships: fleets of **1 to 30 ships a
-side**, a **hybrid control scheme** that lets you either con a single warship yourself or command
-the whole fleet as an RTS, **three battlefields** with configurable objectives, four combat ship
-classes, and **time compression up to 8x**.
+A top-down 2D naval combat game in the spirit of *World of Warships*.
 
-Everything is generated at runtime — no art, audio or prefab assets. Ship sprites, turrets, the
-water/terrain shader, particle atlases and every sound effect are synthesised in code.
+- **1 to 30 ships per side**
+- **Hybrid controls:** captain a single warship yourself, or command the whole fleet as an RTS
+- **Three battlefields** with configurable objectives
+- **Four combat ship classes:** destroyer, cruiser, battleship, submarine
+- **Time compression up to 8x**
+- **Fully procedural:** there are no art, audio or prefab assets. Ship sprites, turrets, the
+  water/terrain shader, particle atlases and every sound effect are generated in code at runtime.
 
-## Running it
+## Contents
 
-Open `Assets/Scenes/SampleScene.unity` and press Play. The scene contains a single `GameBootstrap`
-object that builds the entire game.
+- [Getting started](#getting-started)
+- [How a match plays](#how-a-match-plays)
+- [Controls](#controls)
+- [Ships and combat](#ships-and-combat)
+- [Battlefields and objectives](#battlefields-and-objectives)
+- [Scenario editor](#scenario-editor)
+- [Enemy AI](#enemy-ai)
+- [Architecture](#architecture)
+- [Tuning](#tuning)
+- [Reinforcement learning](#reinforcement-learning)
+- [Type-checking without the editor](#type-checking-without-the-editor)
+- [Further documentation](#further-documentation)
 
-| Bootstrap field | Meaning |
-|---|---|
-| `startMode` | Domination (default), Skirmish, FleetBattle, CaptureAndControl, Escort |
-| `seed` | 0 = new map every run, any other value = reproducible map |
-| `startWeather` | Clear, Fog, Rain, Storm |
-| `skipMenu` | Skip fleet selection and drop straight into deployment |
-| `heightmapResolution` | Terrain sampling resolution (512 is a good default) |
+---
 
-**Flow:** fleet selection → deployment → battle → result.
+## Getting started
 
-1. **Battle setup.** Slide each side's fleet size (1–30, default 6), choose how the enemy is built
-   (**Balanced** / **Custom slots** / **Mirror yours**), pick the battlefield, and choose whether you
-   start as **fleet commander** (default) or as the **captain** of one ship.
-2. **Deployment.** The sim is paused. The fleet deploys as **three squadrons — LEFT, CENTRE and
-   RIGHT** — on your baseline, facing the enemy across the map, with caps A/B/C strung along the
-   centre line between you. Drag ships to reposition them inside their squadron's area (drag one
-   across to hand it to a neighbouring group), pick a formation, then **START BATTLE**.
-3. **Battle.** You start in full RTS fleet command. `Tab` takes the helm of the selected ship and
-   `Tab` again hands it back.
+1. Open the project in **Unity 6**.
+2. Open `Assets/Scenes/SampleScene.unity`.
+3. Press **Play**.
 
-The three squadrons come **pre-bound to control groups 1, 2 and 3**, so `1`/`2`/`3` instantly
-select your left, centre and right groups.
+The scene contains a single `GameBootstrap` object that builds the entire game. Its inspector
+fields:
+
+| Field | Default | Meaning |
+|---|---|---|
+| `startMode` | `Domination` | `Domination`, `Skirmish`, `FleetBattle`, `CaptureAndControl` or `Escort` |
+| `seed` | `0` | `0` = new map every run; any other value = reproducible map |
+| `startWeather` | `Clear` | `Clear`, `Fog`, `Rain` or `Storm` |
+| `skipMenu` | off | Skip fleet selection and go straight to deployment |
+| `enemyDifficulty` | `Elite` | `Recruit`, `Veteran` or `Elite` — see [Enemy AI](#enemy-ai) |
+| `heightmapResolution` | `512` | Terrain sampling resolution |
+| `rlTrainingServer` | off | Start as an RL training environment instead of showing the menu |
+| `rlPort` | `5005` | Port the training environment listens on |
+
+---
+
+## How a match plays
+
+**Fleet selection → Deployment → Battle → Result**
+
+1. **Battle setup**
+   - Set each side's fleet size (1–30, default 6).
+   - Choose how the enemy fleet is built: **Balanced**, **Custom slots** or **Mirror yours**.
+   - Pick the battlefield.
+   - Choose whether you start as **fleet commander** (default) or as **captain** of one ship.
+
+2. **Deployment** (the simulation is paused)
+   - Your fleet deploys on your baseline as **three squadrons — LEFT, CENTRE and RIGHT** — facing
+     the enemy, with caps A/B/C along the centre line between you.
+   - Drag ships to reposition them inside their squadron's area. Drag one across a boundary to hand
+     it to the neighbouring squadron.
+   - Pick a formation, then press **START BATTLE**.
+
+3. **Battle**
+   - You start in RTS fleet command. `Tab` takes the helm of the selected ship; `Tab` again hands
+     it back.
+   - The three squadrons are pre-bound to control groups, so `1` / `2` / `3` instantly select your
+     left, centre and right squadrons.
+
+---
 
 ## Controls
 
-**`Tab` — switch between DIRECT CONTROL and FLEET COMMAND.**
+`Tab` switches between **Direct control** and **Fleet command**.
 
 ### Direct control (you are the captain)
 
 | Input | Action |
 |---|---|
-| `W` / `S` | Engine order telegraph — throttle ahead / astern (momentum, not instant) |
-| `A` / `D` | Rudder to port / starboard; releasing eases it amidships |
+| `W` / `S` | Engine telegraph — throttle ahead / astern (the ship has momentum; changes are not instant) |
+| `A` / `D` | Rudder to port / starboard; releasing eases it back amidships |
 | `Space` | All stop |
 | Mouse | Trains the guns; the reticle auto-leads a target it is resting on |
 | Left click / hold | Fire the main battery |
 | Right click | Torpedo spread along the reticle bearing (arcs are drawn on screen) |
-| `1` – `6` | Class consumables (see below) |
+| `1` – `6` | Class consumables (see [Ship classes](#ship-classes)) |
 | `X` | Submarine dive / surface |
 | `E` | Damage control party |
 
 ### Fleet command (RTS)
 
-Left click selects, drag box selects many, `Shift`+click adds, double click grabs the whole class.
-**`1` / `2` / `3` select the left, centre and right squadrons**; `Ctrl`+`1..9` rebinds a group and
-**`Ctrl`+`A` selects the whole fleet**. Right click moves or attacks; `Shift`+right click queues
-waypoints. `C` attack-move, `V` patrol, `B` escort, `T` focus fire, `Space` stop, `H` hold,
-`R` astern, `G` retreat, `Y` return to port, `Q` smoke, `F5`–`F9` formations, `F10` break.
-Clicking a ship in the task force roster selects it (or takes its helm if you are in direct mode).
+**Selection**
+
+| Input | Action |
+|---|---|
+| Left click | Select a ship |
+| Drag | Box-select several ships |
+| `Shift` + click | Add to selection |
+| Double click | Select every ship of that class |
+| `1` / `2` / `3` | Select the left / centre / right squadron |
+| `Ctrl` + `1`–`9` | Bind the selection to a control group |
+| `Ctrl` + `A` | Select the whole fleet |
+| Click a ship in the task-force roster | Select it (or take its helm if you are in direct control) |
+
+**Orders**
+
+| Input | Order |
+|---|---|
+| Right click | Move / attack |
+| `Shift` + right click | Queue a waypoint |
+| `C` | Attack-move |
+| `V` | Patrol |
+| `B` | Escort |
+| `T` | Focus fire |
+| `Space` | Stop |
+| `H` | Hold position |
+| `R` | Astern |
+| `G` | Retreat |
+| `Y` | Return to port |
+| `Q` | Smoke |
+
+**Formations**
+
+| Key | Formation |
+|---|---|
+| `F5` | Line ahead |
+| `F6` | Line abreast |
+| `F7` | Wedge |
+| `F8` | Circle |
+| `F9` | Defensive screen |
+| `F10` | Break formation |
 
 ### Camera, time and system
 
-`WASD`/edge scroll/middle-drag pan (fleet mode only — in direct control WASD is the helm), wheel
-zooms out far enough to see the whole map, `F` follows, `` ` `` frames the fleet. **`+` / `-` cycle time compression 1x → 2x → 4x → 8x**,
-`P` pauses, or use the buttons on the status bar. `F1` debug draw, `F2` reveal map, `F3` nav grid,
-`F4` command reference, **`F6` dev view**.
+| Input | Action |
+|---|---|
+| `WASD` / screen edge / middle-drag | Pan the camera (fleet command only — in direct control `WASD` is the helm) |
+| Mouse wheel | Zoom (out far enough to see the whole map) |
+| `F` | Follow the selected ship (press again to stop) |
+| `` ` `` / `Home` | Frame the whole fleet |
+| `+` / `-` | Cycle time compression: 1x → 2x → 4x → 8x (also on the status bar) |
+| `P` | Pause |
+| `F1` | Debug draw (includes the AI's reasoning — see [Enemy AI](#enemy-ai)) |
+| `F2` | Reveal the map |
+| `F3` | Show the navigation grid |
+| `F4` | Command reference |
+| `F6` | Dev view |
 
-**Dev view (`F6`)** enlarges hulls so they stay readable at strategic zoom, draws every turret's
-firing arc and blind sector, and rings the selected ship with its concealment, spotting, gun and
-torpedo ranges. Turrets that can bear on the current target are drawn in the team colour; those that
-cannot are red.
+> **Note:** `F6` is currently bound to both the dev view and the *line abreast* formation, so in
+> fleet command it also puts the selected ships into line abreast.
 
-## Ship classes and consumables
+**Dev view (`F6`)** keeps hulls readable at strategic zoom, turns on the `F1` debug layer, and draws:
 
-Every hull is a real Tier 10 ship, and every number below comes from its actual statistics —
-see [SHIPS.md](SHIPS.md) for the full conversion.
+- every turret's firing arc and blind sector — turrets that can bear on the current target are drawn
+  in the team colour, those that cannot are red;
+- rings around the selected ship showing its concealment, spotting, gun and torpedo ranges.
 
-| Class | Ship | HP | Speed | Concealment | Gun range | Consumables |
-|---|---|---|---|---|---|---|
-| **DD** | Shimakaze | 17 900 | 39 kn | **5.6 km** | 11.4 km | HE `1`, AP `2`, torpedoes `3`, smoke `4`, engine boost `5`, damage control `6` |
-| **CA** | Des Moines | 50 600 | 33 kn | 10.9 km | 15.8 km | HE `1`, AP `2`, radar `3`, hydro `4`, repair `5`, damage control `6` |
-| **BB** | Yamato | 97 200 | 27 kn | 14.1 km | **26.6 km** | HE `1`, AP `2`, damage control `3`, repair `4`, spotter plane `5` |
-| **SS** | Balao | 20 200 | 30 kn | 5.9 km surfaced, 2.3 km at periscope | 4.0 km deck gun | HE `1`, homing torps `2`, ping `3`, hydrophone `4`, surveillance `5`, damage control `6`, dive `X` |
+---
 
-Guns out-range eyes by a wide margin — a Yamato shoots 26.6 km but is only *seen* at 14.1 km — so
-**spotting decides the battle**. A destroyer that stays dark is what lets the battle line shoot at
-all, and radar is what takes that away from it.
+## Ships and combat
 
-Every ship carries an **overhead class symbol** — DD two diamonds, CA diamond with a slash, BB
-diamond with two slashes, SS chevron — held at a constant screen size and coloured
-cyan for friendly, crimson for hostile, amber for neutral. It stays readable through smoke and
-weather and at any zoom, which is how you read a 30-ship battle at a glance. The hull also carries an
-elongated team aura tracing its waterline, so you can see which way a contact is pointing.
+### Ship classes
 
-**HE vs AP** matters: HE trades penetration and raw damage for a much higher fire chance and can
-never citadel; AP does full damage, can over-penetrate light hulls, and can land citadel hits on a
-broadside target.
+Every hull is a real Tier 10 ship, and every number below comes from its actual statistics. See
+[SHIPS.md](SHIPS.md) for the full conversion.
 
-**Angling and overmatch.** A shell striking more than ~45° off the plate normal starts to bounce and
-always bounces past 60°, so turning your bow toward the enemy is how you survive. Two things defeat
-it. *Improved angles*: Des Moines super-heavy AP does not begin ricocheting until 60° and only
-always bounces at 75°. *Overmatch*: a shell defeats plating thinner than calibre/14.3 **regardless of
-angle** — Yamato's 460 mm rifles overmatch 32 mm, which is exactly a cruiser's bow, so angling does
-not save a cruiser from a Yamato even though it saves it from everything else.
+| Class | Ship | HP | Speed | Concealment | Gun range |
+|---|---|---|---|---|---|
+| **DD** | Shimakaze | 17 900 | 39 kn | **5.6 km** | 11.4 km |
+| **CA** | Des Moines | 50 600 | 33 kn | 10.9 km | 15.8 km |
+| **BB** | Yamato | 97 200 | 27 kn | 14.1 km | **26.6 km** |
+| **SS** | Balao | 20 200 | 30 kn | 5.9 km surfaced, 2.3 km at periscope depth | 4.0 km (deck gun) |
 
-Measured over 400 shells per case:
+**Consumables** (keys in direct control):
+
+| Class | `1` | `2` | `3` | `4` | `5` | `6` | `X` |
+|---|---|---|---|---|---|---|---|
+| **DD** | HE | AP | Torpedoes | Smoke | Engine boost | Damage control | — |
+| **CA** | HE | AP | Radar | Hydro | Repair | Damage control | — |
+| **BB** | HE | AP | Damage control | Repair | Spotter plane | — | — |
+| **SS** | HE | Homing torpedoes | Ping | Hydrophone | Surveillance | Damage control | Dive |
+
+### Spotting decides the battle
+
+Guns out-range eyes by a wide margin: a Yamato shoots 26.6 km but is only *seen* at 14.1 km. A
+destroyer that stays hidden is what lets its battle line shoot at all — and radar is what takes that
+away from it.
+
+- **Radar** (10 km) spots everything inside its circle, through smoke *and* through islands.
+- **Hydroacoustic search** (5 km) and the submarine's **hydrophone** (7 km) see through smoke but not
+  islands, and both also detect submerged submarines.
+
+These are the counters to a destroyer sitting invisible on a cap.
+
+### Reading the battlefield
+
+Every ship carries an **overhead class symbol**, drawn at a constant screen size so it stays readable
+through smoke, weather and at any zoom:
+
+| Class | Symbol |
+|---|---|
+| DD | Two diamonds |
+| CA | Diamond with one slash |
+| BB | Diamond with two slashes |
+| SS | Chevron |
+
+Colours: **cyan** = friendly, **crimson** = hostile, **amber** = neutral. Each hull also has an
+elongated team-coloured aura along its waterline, so you can see which way a contact is pointing.
+
+### Shells: HE vs AP
+
+| | HE | AP |
+|---|---|---|
+| Damage | Lower | Full |
+| Penetration | Lower | Higher |
+| Fire chance | Much higher | Lower |
+| Citadel hits | Never | Possible against a broadside target |
+| Over-penetration | — | Possible against light hulls |
+
+### Angling and overmatch
+
+A shell that strikes more than **~45°** off the plate normal can ricochet, and **always** ricochets
+past **60°** — so pointing your bow at the enemy is how you survive. Two things defeat angling:
+
+- **Improved angles** — Des Moines super-heavy AP only starts ricocheting at 60° and only always
+  ricochets at 75°.
+- **Overmatch** — a shell defeats any plate thinner than *calibre ÷ 14.3*, **regardless of angle**.
+  Yamato's 460 mm guns overmatch 32 mm, which is exactly a cruiser's bow: angling saves a cruiser
+  from everything *except* a Yamato.
+
+Results measured over 400 shells per case:
 
 | Shot | Result |
 |---|---|
-| Yamato AP into an angled Des Moines bow | 100% penetration — overmatched |
-| Yamato AP into a broadside Des Moines | 34% citadel, 66% penetration |
-| Yamato AP into a Shimakaze | 100% overpenetration — nothing to arm the fuse |
-| Des Moines AP into an angled Yamato bow | 100% ricochet |
-| Des Moines AP into a broadside Yamato | 100% penetration, **never a citadel** (450 mm cannot beat a 410 mm belt) |
-| Des Moines AP into a broadside Des Moines | 37% citadel |
+| Yamato AP → angled Des Moines bow | 100% penetration (overmatched) |
+| Yamato AP → broadside Des Moines | 34% citadel, 66% penetration |
+| Yamato AP → Shimakaze | 100% over-penetration (nothing thick enough to arm the fuse) |
+| Des Moines AP → angled Yamato bow | 100% ricochet |
+| Des Moines AP → broadside Yamato | 100% penetration, **never a citadel** (450 mm cannot beat a 410 mm belt) |
+| Des Moines AP → broadside Des Moines | 37% citadel |
 
-**Turret arcs.** Each mount sits at its own point along the hull and trains within its own arc, so
-firepower depends on heading. A Yamato bow-on to its target brings only its two forward turrets to
-bear — **6 of 9 barrels** — and gets all nine only once it opens to about 40°. Stern-on it has three.
-Turrets track to their arc limit and wait there rather than centring, so they are already pressed
-against the stop when the hull comes round.
+### Turret arcs
 
-| Yamato heading relative to target | Barrels bearing |
+Each turret sits at its own point along the hull and can only train within its own arc, so how much
+firepower you bring depends on your heading. Turrets track to their arc limit and wait there rather
+than returning to centre, so they are ready the moment the hull comes round.
+
+| Yamato heading relative to target | Barrels that can fire |
 |---|---|
 | 0–30° (bow-on) | 6 of 9 |
 | 40–120° (broadside) | **9 of 9** |
 | 150° | 6 of 9 |
 | 180° (stern-on) | 3 of 9 |
 
-This is the cost side of angling: the heading that bounces shells is also the heading that silences a
-third of your guns.
+This is the cost of angling: the heading that bounces shells also silences a third of your guns.
 
-**Submarine ping → homing torpedoes:** a sonar ping marks a target for ~25 seconds. Torpedoes fired
-while the mark holds steer onto it; the marked ship also lights up on the plot until the lock decays.
+### Submarines: ping → homing torpedoes
 
-**Radar and hydro defeat concealment outright.** Surveillance radar (10 km) spots everything inside
-its circle through smoke *and* through islands; hydroacoustic search (5 km) and the submarine's
-hydrophone (7 km) do the same but only through smoke, and both also hear submerged boats. This is the
-counter to a destroyer sitting invisible on a cap.
+A sonar **ping** marks a target for about 25 seconds. Torpedoes fired while the mark holds steer
+onto it, and the marked ship stays visible on the plot until the lock decays.
+
+---
 
 ## Battlefields and objectives
 
 | Preset | Terrain | Default objective |
 |---|---|---|
-| **Ocean Archipelago** | Scattered islands giving cover and torpedo chokepoints | Three-point domination (A/B/C) |
+| **Ocean Archipelago** | Scattered islands giving cover and torpedo chokepoints | Three-point domination (A / B / C) |
 | **Open Sea** | No cover at all — pure gunnery and angling | King of the Hill (one large central point) |
 | **Strait Clash** | Two landmasses squeezing a narrow central channel | Two-flag assault (a flag in front of each base) |
 
-Island density, weather and capture radius (500–2000 m) are all adjustable on the setup screen, and
-each preset sets its own spawn-to-cap distance so first contact happens early rather than after a
+Island density, weather and capture radius (500–2000 m) are adjustable on the setup screen. Each
+preset sets its own spawn-to-cap distance so first contact happens early rather than after a
 five-minute sail.
 
-Zones are `CircleCollider2D` triggers: ships inside fill the meter (about 40 seconds solo, faster
-with more hulls, diminishing returns). **Both fleets inside freezes it — contested.**
+### Capturing zones
 
-**Capture is permanent.** Once the meter completes, the zone is yours and keeps scoring whether or
-not anyone stays behind; partial progress the enemy made before breaking off decays away. The only
-way to lose a point is for the other side to sail in and complete a capture of their own. That means
-taking a cap frees your ships to move on instead of parking on it, and makes the objective a clean
-discrete state — `Neutral → Capturing → Captured`, plus `Contested` — rather than a value that
-quietly bleeds away.
+Zones are `CircleCollider2D` triggers. Ships inside a zone fill its capture meter — about 40 seconds
+for one ship, faster with more (with diminishing returns). **If both fleets are inside, the meter
+freezes (contested).**
 
-Zone income is normalised by how many zones the map has — `3.6 / zoneCount` points per second each,
-so holding the whole map wins in the same ~278 seconds whether that map has one flag or five. Each
-kill is worth 12. **Win by** reaching **1000 points**, sinking the enemy fleet, or leading on points
-when the **20:00** clock expires. Domination runs 20 minutes because the ships move at real speeds —
-a Yamato makes 27 knots, and the nearest cap is 7.5 km from the start line.
+**Captures are permanent.** Once the meter completes, the zone is yours and keeps scoring whether or
+not anyone stays on it. Any partial progress the enemy made before leaving decays away. The only way
+to lose a zone is for the enemy to sail in and complete a capture of their own. This means:
 
-The battlefield itself — terrain generation, draft and grounding, deployment geometry, weather, fog
-of war and the full objective ruleset — is documented in **[ENVIRONMENT.md](ENVIRONMENT.md)**.
+- taking a zone frees your ships to move on instead of parking on it;
+- every zone is always in one clear state: `Neutral`, `Capturing`, `Captured` or `Contested`.
+
+### Scoring and victory
+
+| Source | Points |
+|---|---|
+| Each held zone | `3.6 ÷ zoneCount` per second |
+| Each kill | 12 |
+
+Zone income is divided by the number of zones on the map, so holding every zone wins in the same
+~278 seconds whether the map has one flag or five.
+
+**You win by:**
+
+- reaching **1000 points**, or
+- sinking the entire enemy fleet, or
+- leading on points when the **20:00** clock runs out.
+
+Domination runs for 20 minutes because ships move at real speeds — a Yamato makes 27 knots, and the
+nearest cap is 7.5 km from the start line.
+
+Terrain generation, draft and grounding, deployment geometry, weather, fog of war and the full
+objective rules are documented in [ENVIRONMENT.md](ENVIRONMENT.md).
+
+---
 
 ## Scenario editor
 
-**SCENARIO EDITOR** on the battle-setup screen opens a separate authoring screen. The procedural
-match is fine for play, but a reinforcement-learning agent needs the *same* situation over and over,
-and needs it back next week, so scenarios are hand-built and saved to disk.
+Click **SCENARIO EDITOR** on the battle-setup screen to open the authoring screen. Procedural matches
+are fine for play, but a reinforcement-learning agent needs the *same* situation over and over (and
+needs it again next week), so scenarios are built by hand and saved to disk.
 
 | Tool | What it does |
 |---|---|
-| **Select / Move** | Click to pick a ship, zone or island. Drag the middle to move it, drag the rim to resize. Right-drag turns a ship. `Delete` removes it. |
-| **Place ship** | Pick a class and side, then click to drop a hull. |
-| **Place zone** | Click to drop a capture circle and drag out its radius (500–2000 m). |
-| **Place island** | Click to drop an island and drag out its radius; the height field rebuilds when you play. |
+| **Select / Move** | Click to pick a ship, zone or island. Drag its middle to move it; drag its rim to resize. Right-drag rotates a ship. `Delete` removes it. |
+| **Place ship** | Pick a class and side, then click to place a hull. |
+| **Place zone** | Click to place a capture zone and drag out its radius (500–2000 m). |
+| **Place island** | Click to place an island and drag out its radius. The height field is rebuilt when you play. |
 
 The right-hand panel sets weather, battlefield preset, enemy skill, time limit, map seed and fog of
-war. **SAVE** writes the scenario as JSON to `<persistentDataPath>/Scenarios/`, **LOAD** cycles
-through what is saved, and **PLAY SCENARIO** launches exactly what is on screen.
+war.
+
+| Button | Action |
+|---|---|
+| **SAVE** | Writes the scenario as JSON to `<persistentDataPath>/Scenarios/` |
+| **LOAD** | Cycles through saved scenarios |
+| **PLAY SCENARIO** | Launches exactly what is on screen |
 
 A zone can be given a **starting owner**, so a scenario can open with a flag already held — useful
-for training a decap or a defence in isolation rather than always from a neutral board.
+for training a decap or a defence on its own instead of always starting from a neutral map.
+
+Example scenario file:
 
 ```json
 {
   "scenarioName": "RL Training Alpha",
-  "seed": 4242, "preset": 1, "weather": 1,
-  "timeLimit": 900.0, "aiDifficulty": 1, "fogOfWar": true,
-  "ships":  [ { "cls": 2, "team": 0, "x": -200.0, "y": -500.0, "heading": 15.0 } ],
-  "zones":  [ { "name": "A", "x": -400.0, "y": 120.0, "radius": 175.0, "owner": 1 } ],
-  "islands":[ { "x": 60.0, "y": 40.0, "radius": 145.0, "isRock": false } ]
+  "seed": 4242,
+  "preset": 1,
+  "weather": 1,
+  "timeLimit": 900.0,
+  "aiDifficulty": 1,
+  "fogOfWar": true,
+  "ships":   [ { "cls": 2, "team": 0, "x": -200.0, "y": -500.0, "heading": 15.0 } ],
+  "zones":   [ { "name": "A", "x": -400.0, "y": 120.0, "radius": 175.0, "owner": 1 } ],
+  "islands": [ { "x": 60.0, "y": 40.0, "radius": 145.0, "isRock": false } ]
 }
 ```
 
+---
+
+## Enemy AI
+
+The AI plays under **the same fog of war you do** — it only knows what its team has actually
+detected — but it reasons carefully about what it does know.
+
+### Strategy: reading the match
+
+`BattleAssessment` is rebuilt about twice a second per team. It reads the game mode, the score, the
+clock and the points per second each side is earning, then projects who wins if nothing changes.
+That projection sets the fleet's **posture**:
+
+| Posture | When | Behaviour |
+|---|---|---|
+| `LandGrab` | Early, zones still neutral | Take the easy caps fast |
+| `Press` | Losing on projection | Force fights and flip zones |
+| `Hold` | Winning on projection | Guard the zones that win the match; trade only when safe |
+| `CloseOut` | Winning, clock running out | Disengage and run out the clock |
+| `Desperate` | Losing, clock running out | Everything onto one zone |
+
+In **Skirmish** and **Fleet Battle** there are no points, so the AI ignores zones entirely, **masses
+into one force** and hunts the weakest isolated enemy group.
+
+### Fleet-level behaviour
+
+- **Allocation is a draft, not a fixed split.** Ships are assigned one at a time to whichever zone
+  needs help most, and a zone's need drops as it receives ships. A losing flank therefore keeps
+  pulling reinforcements automatically, with no special-case code.
+- **It actually captures zones.** The first ships sent to a zone are *cap sitters*: they must stay
+  inside the ring and circle within it rather than drifting off to shoot at something.
+- **Focus fire without overkill.** Ships are committed to a target only until their combined
+  firepower covers its remaining HP; the rest move on to the next target. Securing a kill overrides
+  everything — a target that will die to the next salvo gets shot first.
+
+### Ship-level tactics
+
+These habits apply to **both fleets**, so your own uncommanded ships fight well too:
+
+- **Armour angling** — bow-on while reloading, broadside when the salvo is ready.
+- **Support discipline** — never push more than ~300 units past the nearest friendly heavy ship.
+- **Terrain cover** — when disengaging, prefer a position that actually breaks line of sight (tested
+  with the same function the detection system uses).
+- **Regroup, don't retreat** — damaged ships fall back behind friends and repair instead of sailing
+  home.
+- **Local strength gating** — push when winning its part of the fight; open the range when not.
+- **Inference** — a destroyer that disappears inside torpedo range makes ships weave instead of
+  sailing predictably, and cruisers will radar a zone they believe a hidden destroyer is sitting on.
+
+### Difficulty
+
+Set with `GameBootstrap.enemyDifficulty`:
+
+| Level | Behaviour |
+|---|---|
+| `Recruit` | Slow reactions, no inference, no use of cover |
+| `Veteran` | In between |
+| `Elite` (default) | Fastest reactions, full inference and cover |
+
+### Watching it think
+
+Press **`F1`** in game to see:
+
+- lines to each ship's assigned station, coloured by assignment;
+- which ships are committed to which cap;
+- local strength bars;
+- both commanders' current postures and projections.
+
+---
+
 ## Architecture
 
-`Assets/Scripts/` — one namespace (`Naval`). Ships are `MonoBehaviour` hosts carrying a
-`Rigidbody2D` and hull collider; every gameplay subsystem is a plain C# class ticked in a fixed
-order, so the simulation never depends on Unity's component execution order. Frame work (AI,
-navigation, gunnery, visuals) runs in `Update`; forces run in `FixedUpdate`.
+All code lives in `Assets/Scripts/` under a single namespace, `Naval`.
 
-```
-Core/      NavalTypes, ShipStats, ShipDatabase, GameEvents, ShipRegistry,
-           GameManager (fleet setup, domination, time compression), GameBootstrap
-World/     WorldMap (height field, islands, ports, zones), MapConfig (presets/layouts),
-           NavGrid (draft-aware A*), OceanRenderer, FogOfWarRenderer, WeatherSystem,
-           CaptureZone, NavalPort
-Ships/     Ship, ShipMovement (Rigidbody2D), ShipNavigation, ShipDamage, ShipDetection,
-           ShipWeapons, ShipAbilities, SubmarineSystem, ShipResources, ShipVisual
-Detection/ DetectionSystem (contact memory), SmokeScreen
-Combat/    ProjectileSystem (shells, torpedoes, homing, depth charges)
-AI/        BattleAssessment (shared situational picture), FleetCommander (strategy),
-           ShipAI (per-ship FSM, tactics, consumables)
-Player/    ControlModeManager, DirectShipController, RTSCamera, SelectionManager,
-           CommandSystem, FormationManager
-UI/        UIManager (fleet menu, HUD, action bar), Minimap, WorldOverlay, DebugOverlay
-FX/        ParticleFX (batched CPU particles), LineDrawer (batched world lines)
-Audio/     AudioManager (procedurally synthesised clips)
-Util/      NavalMath, SpriteFactory, InputHub
-RL/        RLEnvironment (trainer link, lockstep), RLObservation (entity tokens, fog-of-war legal
-           actor view + privileged critic view), RLActions (intent actions and masks),
-           RLRewardTracker, RLMetrics, RLWire, RLLayout
-Shaders/   NavalOcean, NavalFog, NavalParticle
+- **Ships** are `MonoBehaviour` hosts with a `Rigidbody2D` and a hull collider.
+- **Every gameplay subsystem** is a plain C# class ticked in a fixed order, so the simulation never
+  depends on Unity's component execution order.
+- **Per-frame work** (AI, navigation, gunnery, visuals) runs in `Update`; **forces** run in
+  `FixedUpdate`.
+
+```text
+Assets/
+├── Scripts/
+│   ├── Core/        NavalTypes, ShipStats, ShipDatabase, GameEvents, ShipRegistry,
+│   │                GameManager (fleet setup, domination, time compression), GameBootstrap
+│   ├── World/       WorldMap (height field, islands, ports, zones), MapConfig (presets/layouts),
+│   │                NavGrid (draft-aware A*), OceanRenderer, FogOfWarRenderer, WeatherSystem,
+│   │                CaptureZone, NavalPort
+│   ├── Ships/       Ship, ShipMovement (Rigidbody2D), ShipNavigation, ShipDamage, ShipDetection,
+│   │                ShipWeapons, ShipAbilities, SubmarineSystem, ShipResources, ShipVisual
+│   ├── Detection/   DetectionSystem (contact memory), SmokeScreen
+│   ├── Combat/      ProjectileSystem (shells, torpedoes, homing, depth charges)
+│   ├── AI/          BattleAssessment (shared situational picture), FleetCommander (strategy),
+│   │                ShipAI (per-ship state machine, tactics, consumables)
+│   ├── Player/      ControlModeManager, DirectShipController, RTSCamera, SelectionManager,
+│   │                CommandSystem, FormationManager
+│   ├── Scenario/    Scenario (data + JSON), ScenarioEditor
+│   ├── UI/          UIManager (fleet menu, HUD, action bar), Minimap, WorldOverlay,
+│   │                DebugOverlay (F1–F3), DevOverlay (F6)
+│   ├── FX/          ParticleFX (batched CPU particles), LineDrawer (batched world lines)
+│   ├── Audio/       AudioManager (procedurally synthesised clips)
+│   ├── Util/        NavalMath, SpriteFactory, InputHub
+│   └── RL/          RLEnvironment (trainer link, lockstep), RLObservation, RLActions,
+│                    RLRewardTracker, RLMetrics, RLWire, RLLayout, RLPolicy, ...
+└── Shaders/         NavalOcean, NavalFog, NavalParticle
 ```
 
 ### Physics
 
 Ships are dynamic `Rigidbody2D` bodies (`gravityScale 0`, mass ≈ length × beam, continuous
-collision, a `CapsuleCollider2D` hull). `ShipMovement` drives them with three forces:
+collision, `CapsuleCollider2D` hull). `ShipMovement` drives them with three forces:
 
-* **Thrust** — a velocity servo along the bow clamped to the class's acceleration/deceleration, so
-  ships build way and coast when the engines are cut.
-* **Keel grip** — a lateral force that kills sideways slip, which is what makes a hull track its bow
-  and drift through hard turns instead of sliding like an air-hockey puck.
-* **Rudder torque** — derived from `dt`, so the turn response is identical at 1x and 8x. Turn rate
-  scales with speed: a stopped ship cannot steer at all.
+| Force | What it does |
+|---|---|
+| **Thrust** | A velocity servo along the bow, clamped to the class's acceleration/deceleration, so ships build speed gradually and coast when the engines are cut. |
+| **Keel grip** | A sideways force that cancels lateral slip, so a hull follows its bow and drifts through hard turns instead of sliding like an air-hockey puck. |
+| **Rudder torque** | Scaled by `dt`, so turning feels identical at 1x and 8x. Turn rate scales with speed — a stopped ship cannot steer. |
 
-Hull damping is deliberately near zero — real drag there would cap a battleship below its rated
-speed, because its acceleration budget is tiny. Ship-vs-ship collisions are resolved by Physics2D
-and produce ramming damage and flooding; **land is not a collider**, it is the height field, and
-grounding is resolved analytically against the depth gradient.
+Other details:
 
-Time compression scales `Time.timeScale` and widens `Time.fixedDeltaTime` (clamped at 4x worth) so
-8x does not turn into 400 solver ticks a second.
+- **Near-zero hull damping.** Real drag would cap a battleship below its rated speed, because its
+  acceleration budget is so small.
+- **Ship-vs-ship collisions** are handled by Physics2D and cause ramming damage and flooding.
+- **Land is not a collider.** It is the height field, and grounding is calculated analytically from
+  the depth gradient.
+- **Time compression** scales `Time.timeScale` and widens `Time.fixedDeltaTime` (capped at the 4x
+  value), so 8x does not mean 400 physics ticks per second.
 
 ### How the systems feed each other
 
-* **Detection → AI → gunnery.** `DetectionSystem` runs at 8 Hz over signature, weather, smoke, land
-  line-of-sight and submarine depth, keeping per-team contacts as *confirmed*, *sonar/unknown* or
-  *last known position*. The AI can only shoot at what its team can currently see.
-* **Damage → capability → behaviour.** Hits resolve against armour and angle; damage lands on one of
-  seven systems chosen by where the shell struck. Engine damage cuts speed, steering damage cuts turn
-  rate, sensor damage widens dispersion. Fires and flooding tick damage and raise your signature.
-* **Consumables → AI.** The same `ShipAbilities` code path serves the player's action bar and the AI,
-  so enemy destroyers really do smoke up under fire, cruisers radar a knife-fighting destroyer,
-  battleships heal once their fires are out, and submarines ping before shooting.
-* **Fleet commander → squadrons.** See the AI section below.
+- **Detection → AI → gunnery.** `DetectionSystem` runs at 8 Hz, accounting for signature, weather,
+  smoke, land line-of-sight and submarine depth. It keeps each team's contacts as *confirmed*,
+  *sonar/unknown* or *last known position*. The AI can only shoot at what its team can currently see.
+- **Damage → capability → behaviour.** Hits are resolved against armour and impact angle, and damage
+  lands on one of seven systems depending on where the shell struck. Engine damage cuts speed,
+  steering damage cuts turn rate, sensor damage widens dispersion. Fires and flooding deal damage over
+  time and make the ship easier to spot.
+- **Consumables → AI.** The player's action bar and the AI use the same `ShipAbilities` code, so enemy
+  destroyers really do smoke up under fire, cruisers radar a nearby destroyer, battleships repair once
+  their fires are out, and submarines ping before firing.
+- **Fleet commander → squadrons.** See [Enemy AI](#enemy-ai).
 
-## The enemy AI
+### Design decisions
 
-The AI plays by **the same fog of war you do** — it only knows what its team has actually detected —
-but it reasons hard about what it does know.
+- **Gun shells are simulated analytically, not with colliders.** Shells arc *over* the water, so a
+  collider-based shell would wrongly hit ships it should fly past. Instead, each shell has a real time
+  of flight to an aim point scattered by dispersion, and resolves when it lands — which is also why
+  leading a target matters. Torpedoes and capture zones *do* use `Collider2D` triggers, since they are
+  in the water.
+- **Health bars use batched line drawing, not a world-space Canvas per ship.** The result on screen is
+  the same (a constant-size bar above every spotted hull), but up to 60 ships plus contacts would
+  otherwise mean dozens of canvases rebuilding every frame.
+- **Pathfinding uses an A\* grid, not NavMesh.** The water is a height field with per-draft
+  passability, which a baked NavMesh cannot express — a destroyer and a battleship need different
+  navigable areas over the same water.
 
-**It knows what game it is playing.** `BattleAssessment` (rebuilt about twice a second per team) reads
-the mode, the score, the clock, and the points/second each side is earning, and projects who wins if
-nothing changes. That projection drives a **posture**:
+---
 
-| Posture | When | Behaviour |
-|---|---|---|
-| `LandGrab` | early, points still neutral | take the cheap caps fast |
-| `Press` | losing on projection | force fights and flip points |
-| `Hold` | winning on projection | garrison what wins the match, trade only when safe |
-| `CloseOut` | winning, clock running out | disengage and stall it out |
-| `Desperate` | losing, clock running out | everything onto one point |
+## Tuning
 
-In Skirmish/Fleet Battle there are no points, so it drops the caps entirely, **masses into one force**
-and goes after the weakest isolated enemy group.
+| What | Where |
+|---|---|
+| Ship balance (one block per class) | `Core/ShipDatabase.cs` |
+| Consumable cooldowns, durations and charges | `Ships/ShipAbilities.cs` |
+| Objective pacing | `GameManager.ZonePointsPerSecond`, `KillPoints`, `ScoreToWin`, `TimeLimit` |
+| World scale | `GameConfig.WorldSize` — 4000 units, 1 unit ≈ 10 m |
+| Draft vs. water depth | `WorldMap.DraftToDepth` — a destroyer can get about 17 units from a beach, a battleship needs roughly 50 |
 
-**Allocation is a draft, not a fixed split.** Ships are dealt one at a time to whichever zone needs
-help most, and a zone's need falls as it is fed — so a flank that is losing keeps pulling
-reinforcements automatically, with no special-case rotation code.
-
-**It actually captures points.** The first ships sent to a zone are *cap sitters*: they are required
-to be inside the ring and orbit within it rather than drifting off to shoot at something.
-
-**Fire concentration without overkill.** Shooters are committed to a target only until the assigned
-firepower covers its remaining hit points; the rest move to the next target. Kill-securing overrides
-everything — a target that dies to the next salvo gets shot first.
-
-**Tactical habits** (both fleets, so your uncommanded ships fight well too):
-
-- **Armour angling** — bow-on while reloading, broadside when the salvo is ready
-- **Support discipline** — no pushing more than ~300 units past the nearest friendly heavy
-- **Terrain cover** — when disengaging, prefers a spot that actually breaks line of sight, tested with
-  the same function the detection system uses
-- **Regroup, not retreat** — damaged ships fall back behind friends and heal instead of sailing home
-- **Local strength gating** — pushes when winning its corner of the fight, opens the range when not
-- **Inference** — a destroyer that goes dark inside torpedo range makes ships weave instead of
-  steaming predictably, and cruisers will radar a point they believe a hidden destroyer is sitting on
-
-**Difficulty** is set on `GameBootstrap.enemyDifficulty`: `Recruit` (slow reactions, no inference or
-cover), `Veteran`, `Elite` (default — fastest reactions, full inference and cover).
-
-Press **F1** in game to see it think: assignment-coloured lines to each ship's station, cap
-commitments, local strength bars, and a readout of both commanders' postures and projections.
-
-### Tuning
-
-Balance lives in `Core/ShipDatabase.cs`, one block per class. Consumable cooldowns, durations and
-charges are in `Ships/ShipAbilities.cs`. Objective pacing is `GameManager.ZonePointsPerSecond`,
-`KillPoints`, `ScoreToWin` and `TimeLimit`. World scale is `GameConfig.WorldSize` (4000 units,
-1 unit ≈ 10 m); `WorldMap.DraftToDepth` maps draft onto required depth — a destroyer clears a beach
-about 17 units out, a battleship needs roughly 50.
-
-## Deviations from the brief, and why
-
-* **Gun shells are analytic, not colliders.** Shells arc *over* the water, so a collider-based shell
-  would wrongly hit ships it should fly past. They fly with a real time of flight to a dispersion
-  scattered aim point and resolve on landing — which is also what makes leading a target matter.
-  Torpedoes and capture zones do use `Collider2D` triggers, since they run in the water.
-* **Health bars are batched line-drawing, not a world-space Canvas per ship.** Same result on screen
-  — a bar above every spotted hull, at constant screen size — but 36 ships plus contacts would
-  otherwise mean dozens of extra canvases rebuilding every frame.
-* **A\* grid pathfinding** rather than NavMesh: the water is a height field with per-draft
-  passability, which a baked NavMesh cannot express (a destroyer and a battleship need different
-  navigable areas over the same water).
+---
 
 ## Reinforcement learning
 
-Ships have a `Controller`: `Human` (the player's orders), `RuleAI` (ShipAI under a FleetCommander) or
-`Learned` (a trained policy). A learned ship picks where to go, how fast, what to shoot, whether to
-hold fire, when to launch torpedoes and which consumable to use, and the existing autopilot, gun lead
-and turret training carry that out. `Training/` holds the MAPPO trainer (recurrent actor, critic
-that sees the true state, curriculum, self-play league). [Training/README.md](Training/README.md)
-<<<<<<< HEAD
-covers building the headless player and running it, and [RL_README.md](RL_README.md) explains how
-the whole system works, file by file, with diagrams.
-=======
-covers building the headless player and running it.
->>>>>>> 54a8e3c5ec5ccc60ed3cb77b484c2f2e01797910
+Every ship has a `Controller`:
 
-## Verifying without the editor
+| Controller | Driven by |
+|---|---|
+| `Human` | The player's orders |
+| `RuleAI` | `ShipAI` under a `FleetCommander` |
+| `Learned` | A trained policy |
 
-`dotnet` can type-check the whole game against Unity's assemblies without opening Unity, which is
-useful in CI or when the editor is closed:
+A learned ship decides where to go, how fast, what to shoot, whether to hold fire, when to launch
+torpedoes and which consumable to use. The existing autopilot, gun lead and turret training then
+carry out those decisions.
+
+`Training/` contains the MAPPO trainer: a recurrent actor, a critic that sees the true game state, a
+curriculum and a self-play league.
+
+- **[Training/README.md](Training/README.md)** — how to build the headless player, train, evaluate and
+  watch a policy, plus results so far.
+- **[RL_README.md](RL_README.md)** — how the whole system works, file by file, with diagrams.
+
+---
+
+## Type-checking without the editor
+
+`dotnet` can type-check the whole game against Unity's assemblies without opening Unity — useful in
+CI or when the editor is closed:
 
 ```bash
 dotnet build naval-check.csproj -v q --nologo
 ```
 
-The project file references `Editor/Data/Managed/UnityEngine/*.dll` plus the package assemblies in
-`Library/ScriptAssemblies` and compiles `Assets/Scripts/**/*.cs`.
+The project file compiles `Assets/Scripts/**/*.cs` against `Editor/Data/Managed/UnityEngine/*.dll`
+and the package assemblies in `Library/ScriptAssemblies`.
+
+---
+
+## Further documentation
+
+| Document | Covers |
+|---|---|
+| [SHIPS.md](SHIPS.md) | How each real ship's statistics were converted into game values |
+| [ENVIRONMENT.md](ENVIRONMENT.md) | Terrain, draft and grounding, deployment, weather, fog of war, objective rules |
+| [RL_README.md](RL_README.md) | The reinforcement-learning system in depth |
+| [Training/README.md](Training/README.md) | Building the training player, training, evaluation and results |

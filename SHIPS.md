@@ -6,6 +6,13 @@ something the simulation needs.
 
 The data lives in [`ShipDatabase.cs`](Assets/Scripts/Core/ShipDatabase.cs).
 
+## Contents
+
+1. [Conversion](#1-conversion)
+2. [The four hulls](#2-the-four-hulls) — hull, shells, torpedoes, submarine specifics, consumables
+3. [What the source data did not cover](#3-what-the-source-data-did-not-cover)
+4. [Consequences for the simulation](#4-consequences-for-the-simulation)
+
 ---
 
 ## 1. Conversion
@@ -25,15 +32,17 @@ Two derived quantities are not stored directly in the source data:
 
 **Turn rate** comes from the turning circle radius at full speed, `ω = v / r`:
 
-```
+```text
 TurnRateFor(knots, circleRadiusMetres) = Kn(knots) / Metres(radius) × Rad2Deg
 ```
 
 **Rudder shift** is stored as a time in seconds and becomes a rate of rudder travel, `1 / seconds`.
 
-These produce genuinely sluggish handling — a Yamato turns at 0.89°/s and takes 22 seconds just to
+These two produce genuinely sluggish handling — a Yamato turns at 0.89°/s and takes 22 seconds just to
 get the rudder over — because that is what the real figures say. Committing to a turn is a decision
 you live with for a minute.
+
+---
 
 ## 2. The four hulls
 
@@ -43,7 +52,7 @@ you live with for a minute.
 | Hull | 129.5 × 11.2 m | 218 × 23 m | 263 × 38.9 m | 95 × 8.3 m |
 | **HP** | 17 900 | 50 600 | 97 200 | 20 200 |
 | Bow / hull plating | 19 mm | 27 mm | 32 mm | 19 mm |
-| Citadel belt | — none | 152 mm | 410 mm | — none |
+| Citadel belt | none | 152 mm | 410 mm | none |
 | Torpedo protection | 0% | 7% | **55%** | 0% |
 | **Speed** | 39 kn (2.01 u/s) | 33 kn (1.70) | 27 kn (1.39) | 30 kn (1.55) |
 | Turning circle | 690 m | 770 m | 900 m | 590 m |
@@ -60,9 +69,9 @@ you live with for a minute.
 
 ### Shells
 
-| | HE damage | HE pen | Fire chance | AP damage | AP pen | Overmatch | Ricochet |
+| | HE damage | HE pen | Fire chance | AP damage | AP pen | Overmatch | Ricochet (starts / always) |
 |---|---|---|---|---|---|---|---|
-| Shimakaze | 2 150 | 21 mm | 9% | — HE only | — | 8.9 mm | 45° / 60° |
+| Shimakaze | 2 150 | 21 mm | 9% | — (HE only) | — | 8.9 mm | 45° / 60° |
 | Des Moines | 2 800 | 34 mm | 14% | 5 000 | **450 mm** | 14.2 mm | **60° / 75°** |
 | Yamato | 7 300 | 76 mm | 36% | **14 800** | **850 mm** | **32 mm** | 45° / 60° |
 
@@ -108,6 +117,8 @@ boat is found only by hydrophone or submarine surveillance.
 Radar, hydro, hydrophone and submarine surveillance grant **assured detection**: a contact inside the
 radius is spotted regardless of its concealment. Radar alone reaches through land.
 
+---
+
 ## 3. What the source data did not cover
 
 These are the places where a figure had to be supplied rather than converted. All are flagged in the
@@ -125,6 +136,8 @@ code comments too.
 | **Air detection** | Not modelled, for the same reason. |
 | **Fire and flood rates** | Not in the source. Set as a percentage of max HP per second, preserving the previous balance: roughly 0.16–0.32%/s for fire and 0.22–1.1%/s for flooding. |
 | **Acceleration, fuel, reverse speed** | Not in the source. Carried over proportionally from the previous values. |
+
+---
 
 ## 4. Consequences for the simulation
 
@@ -145,8 +158,5 @@ rather than 15. The two battle lines start 15.0 km apart — deliberately just o
 battleship spotting range, so the approach is still a phase of the battle rather than an immediate
 gun duel.
 
-| Preset | Start line | Fleet separation | Nearest cap | Destroyer arrives | Battleship arrives |
-|---|---|---|---|---|---|
-| Ocean Archipelago | ±750 u | 15.0 km | 7.5 km | 6:13 | 9:00 |
-| Open Sea | ±720 u | 14.4 km | 7.2 km | 5:58 | 8:38 |
-| Strait Clash | ±1100 u | 22.0 km | 4.95 km own flag | 4:06 | 5:56 |
+The start lines, fleet separation and destroyer / battleship arrival times for each battlefield are
+tabulated in [ENVIRONMENT.md § 4](ENVIRONMENT.md#4-deployment-geometry).

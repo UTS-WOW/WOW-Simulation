@@ -2,8 +2,11 @@
 
 This document covers all of the reinforcement learning (RL) in this project: where each piece lives,
 which RL method is used, and how data moves from a ship in the Unity game to the neural network and
-back. [Training/README.md](Training/README.md) is the short "how do I run it" page. This page
-explains how it works.
+back.
+
+- **How it works** — this page.
+- **How to run it** (build, train, evaluate, watch) and **results so far** —
+  [Training/README.md](Training/README.md).
 
 > Diagrams use [Mermaid](https://mermaid.js.org/). They render on GitHub and in VS Code (with a
 > Mermaid preview extension).
@@ -25,12 +28,9 @@ explains how it works.
 11. [Curriculum and self-play league](#11-curriculum-and-self-play-league)
 12. [Behaviour cloning warm start](#12-behaviour-cloning-warm-start)
 13. [Export and in-game inference](#13-export-and-in-game-inference)
-14. [Running it](#14-running-it)
-15. [What a run writes to disk](#15-what-a-run-writes-to-disk)
-16. [Ablation switches](#16-ablation-switches)
-17. [Results so far](#17-results-so-far)
-18. [Extending the system](#18-extending-the-system)
-19. [Glossary](#19-glossary)
+14. [Ablation switches](#14-ablation-switches)
+15. [Extending the system](#15-extending-the-system)
+16. [Glossary](#16-glossary)
 
 ---
 
@@ -95,7 +95,7 @@ flowchart LR
 
 ### 2.1 Folder map
 
-```
+```text
 WOW-Simulation/
 ├── RL_README.md                         <- this file
 ├── Assets/
@@ -270,6 +270,21 @@ flowchart TB
 | **Fixed-timestep simulation** | Game physics identical to 50 fps play, independent of CPU speed | `Time.captureDeltaTime` in `RLEnvironment.Init` |
 | **Parallel environments** | Throughput. Game systems are singletons, so each process runs one battle. | `make_workers` in [env.py](Training/naval_rl/env.py) |
 
+### 3.4 Design problems and how they are solved
+
+| Problem | How it is solved |
+|---|---|
+| The actions had no way to aim, and throttle and rudder alone are too hard to learn | **Intent actions** in [RLActions.cs](Assets/Scripts/RL/RLActions.cs): six masked heads (move, speed, target, fire / hold, torpedo, ability) carried out by the existing autopilot, gun lead and turret training. `--set action_mode=lowlevel` swaps in direct rudder and throttle as an ablation. See [§7](#7-actions--what-a-ship-can-do). |
+| A critic limited to what the team knows gives noisy values | [RLObservation.cs](Assets/Scripts/RL/RLObservation.cs) sends the actor only fog-of-war-legal information, but the critic also gets the true state of every enemy next to what the team believes about it. `--set critic_mode=belief` removes the privileged columns. See [§6.3](#63-critic-tokens-privileged-training-only). |
+| A fixed 178-number observation vector cannot cover fleets of 1 to 30 | Entities (self, allies, contacts, zones) go through a transformer, and targets and zones are chosen with pointer heads ([model.py](Training/naval_rl/model.py)). No layer depends on how many ships there are. See [§9](#9-the-neural-networks). |
+| The reward was never defined | [RLRewardTracker.cs](Assets/Scripts/RL/RLRewardTracker.cs) reports raw components; [rewards.py](Training/naval_rl/rewards.py) holds the weights. The team part is zero-sum, and shaping fades out over training. See [§8](#8-rewards). |
+| Updating after each episode does not fit 20-minute battles | Fixed-length rollouts with automatic resets ([mappo.py](Training/naval_rl/mappo.py)). The game's time limit counts as a real ending because time remaining is in the observation; a rollout cut mid-battle is bootstrapped from the critic. See [§10.3](#103-advantages-gae). |
+| Game logic ran on frame-rate-dependent `Time.deltaTime` | Training sets `Time.captureDeltaTime`: every frame is exactly `sim_dt` (20 ms) of game time and physics steps once per frame, the same as playing at 50 fps. See [§5.3](#53-deterministic-time). |
+| Global singletons prevent several battles in one scene | One battle per Unity process. [env.py](Training/naval_rl/env.py) launches N headless players on consecutive ports and steps them in parallel (send to all, then receive from all). |
+| `ShipAI` assumed the Player fleet is always human, and damage events dropped the attacker | `Ship.Controller` is `Human`, `RuleAI` or `Learned`, for either fleet (`GameManager.SetTeamController`). `OnShipDamaged` now carries the attacker, and `Contact.spotter` records which ship produced each contact, so spotting damage can be credited. See [§2.3](#23-game-code-that-rl-hooks-into). |
+| Partial observability | GRU actor, trained on 32-step chunks and reset at episode starts. See [§10.5](#105-recurrent-training-chunked-bptt). |
+| Only ever training against the scripted AI | [league.py](Training/naval_rl/league.py): curriculum stages against Recruit → Veteran → Elite, promotion on rolling win rate, then self-play (latest self, prioritised past snapshots, and the rule AI as an anchor). The learner's side is randomised every episode. See [§11](#11-curriculum-and-self-play-league). |
+
 ---
 
 ## 4. One training step, end to end
@@ -358,7 +373,7 @@ of game time, however fast the CPU runs it. With `fixedDeltaTime = sim_dt`, phys
 frame. AI, navigation, gunnery and detection all see the same `dt` as a normal 50 fps game. Raising
 `timeScale` would instead give them large, frame-rate-dependent steps.
 
-```
+```text
 decision_period = 1.0 s   sim_dt = 0.02 s   =>   50 frames per decision
 ```
 
@@ -378,7 +393,7 @@ back to the rule AI. For learned ships:
 Both sides use the same framing ([RLWire.cs](Assets/Scripts/RL/RLWire.cs) ⇄
 [protocol.py](Training/naval_rl/protocol.py)):
 
-```
+```text
 ┌──────────────┬──────────────┬─────────────────────────┬──────────────────────────────────┐
 │ uint32 total │ uint32 jsonN │ JSON header (jsonN B)   │ binary blob: arrays back to back │
 │ (payload len)│              │ {"type":..., "arrays":[ │ little-endian f4 / i4, C order   │
@@ -393,6 +408,8 @@ Both sides use the same framing ([RLWire.cs](Assets/Scripts/RL/RLWire.cs) ⇄
 | `step` + array `actions` int32 `[2, N, 6]` | `obs` |
 | `render` {path, width, height, reveal} | `rendered` (PNG written; needs a player with graphics) |
 | `close` | the player quits |
+
+Nothing is hard-coded on the Python side: every size comes from the `spec`.
 
 **The `obs` message.** Every array has a leading **team axis of 2** (0 = Player, 1 = Enemy). With
 the trainer defaults N = `max_team` = 8, A = 7, C = 8, Z = 5:
@@ -507,7 +524,9 @@ With the default caps (Z = 5, C = 8) there are 18 + 5 + 9 + 2 + 2 + 15 = **51 lo
 joint action is sampled as **six independent masked categoricals**. The log-probability of the joint
 action is the sum over heads, and so is the entropy.
 
-### 7.2 Action masks (what is legal, [RLActions.WriteMask](Assets/Scripts/RL/RLActions.cs:39))
+### 7.2 Action masks
+
+What is legal, as decided by [RLActions.WriteMask](Assets/Scripts/RL/RLActions.cs:39):
 
 | Option | Legal when |
 |---|---|
@@ -529,7 +548,9 @@ action is the sum over heads, and so is the entropy.
 Masking out wasted actions (a repair at full HP, torpedoes with no solution) saves the policy
 thousands of samples it would otherwise spend unlearning them.
 
-### 7.3 How a chosen action becomes orders ([RLActions.Apply](Assets/Scripts/RL/RLActions.cs:179))
+### 7.3 How a chosen action becomes orders
+
+Carried out by [RLActions.Apply](Assets/Scripts/RL/RLActions.cs:179):
 
 ```mermaid
 flowchart TD
@@ -792,7 +813,9 @@ start of each chunk was stored during collection**, so training replays the chun
 memory. `starts` flags zero the memory where a new episode began inside a chunk. Chunks are shuffled
 into minibatches.
 
-### 10.6 Hyperparameters (defaults in [config.py](Training/naval_rl/config.py))
+### 10.6 Hyperparameters
+
+Defaults, from [config.py](Training/naval_rl/config.py):
 
 | Group | Setting | Default |
 |---|---|---|
@@ -826,13 +849,16 @@ flowchart LR
     S3 --> S4["Stage 4: open<br/>random map, 4-8 a side, 20 min<br/>Elite + league<br/>final stage"]
 ```
 
-| Stage | What it teaches | Source | Min episodes |
-|---|---|---|---|
-| 0 | gunnery, target choice, angling, fire timing | [scenarios/stage0_bb_duel.json](Training/scenarios/stage0_bb_duel.json) | 100 |
-| 1 | capturing while fighting, mixed classes | [scenarios/stage1_koth_3v3.json](Training/scenarios/stage1_koth_3v3.json) | 100 |
-| 2 | spotting, smoke, radar, islands | [scenarios/stage2_archipelago_3v3.json](Training/scenarios/stage2_archipelago_3v3.json) | 150 |
-| 3 | the full game | procedural, world reused 20 episodes per worker | 200 |
-| 4 | generalisation over maps and fleet sizes | procedural, random preset and density | — |
+| Stage | What it teaches | Source | Opponent | Min episodes | Promote at |
+|---|---|---|---|---|---|
+| 0 `bb_duel` | gunnery, target choice, angling, fire timing | [scenarios/stage0_bb_duel.json](Training/scenarios/stage0_bb_duel.json) | Recruit | 100 | 55% (random play: 31%, a simple scripted tactic: 55%) |
+| 1 `koth_3v3` | capturing while fighting, mixed classes | [scenarios/stage1_koth_3v3.json](Training/scenarios/stage1_koth_3v3.json) | Veteran | 100 | 65% |
+| 2 `archipelago_3v3` | spotting, smoke, radar, islands | [scenarios/stage2_archipelago_3v3.json](Training/scenarios/stage2_archipelago_3v3.json) | Veteran | 150 | 65% |
+| 3 `domination_6v6` | the full game | procedural, world reused 20 episodes per worker | Elite + league | 200 | 60% |
+| 4 `open` | generalisation over maps and fleet sizes | procedural, random preset and density | Elite + league | — | final stage |
+
+The scenario files use the Scenario editor's JSON format, so any battle saved in the editor can be
+used as a stage.
 
 **Promotion:** `League.maybe_promote()` moves to the next stage when the rolling win rate (last 100
 games against the rule AI **at or above the stage difficulty**) clears the threshold after the
@@ -883,10 +909,11 @@ flowchart LR
     BCPT --> FT["train.py --init-from runs/bc/bc.pt<br/>critic-only warm-up, actor frozen 10 updates<br/>then MAPPO fine-tuning at stage 3"]
 ```
 
-### 12.1 How rule-AI behaviour is labelled ([RLExpertLabels.cs](Assets/Scripts/RL/RLExpertLabels.cs))
+### 12.1 How rule-AI behaviour is labelled
 
-The rule AI steers continuously and never "chooses head options", so each decision is inferred from
-what changed between two observations:
+The rule AI steers continuously and never "chooses head options", so
+[RLExpertLabels.cs](Assets/Scripts/RL/RLExpertLabels.cs) infers each decision from what changed
+between two observations:
 
 | Head | Label rule |
 |---|---|
@@ -907,14 +934,18 @@ lost on points.
   890 k decisions.
 - `bc.py train`: 64-step windows, 10% of ship sequences held out, Adam 3e-4, 8 epochs, batch 128.
   It reports held-out accuracy per head.
-- Then MAPPO fine-tuning with conservative settings:
+- Then MAPPO fine-tuning from `bc.pt` at stage 3, with conservative settings so the cloned
+  behaviour is not thrown away:
 
-```bash
-python train.py --unity-binary ../Builds/NavalTrainer/NavalTrainer.x86_64 --run-name full_mappo \
-    --init-from runs/bc/bc.pt --set start_stage=3 --set actor_freeze_updates=10 --set lr_actor=5e-5 \
-    --set ent_coef=0.002 --set ent_coef_final=0.0005 --set gamma=0.995 --set minibatches=16
-```
+  | Setting | Value | Why |
+  |---|---|---|
+  | `actor_freeze_updates` | 10 | Train only the critic at first, so a random critic cannot wreck the cloned actor |
+  | `lr_actor` | 5e-5 | Small actor steps |
+  | `ent_coef` → `ent_coef_final` | 0.002 → 0.0005 | Low exploration: the policy already knows what to do |
+  | `gamma` | 0.995 | Longer horizon for the full 20-minute game |
+  | `minibatches` | 16 | Smaller, more frequent updates |
 
+The exact command is in [Training/README.md](Training/README.md#recommended-recipe-for-the-full-game).
 [pipeline_bc_mappo.sh](Training/pipeline_bc_mappo.sh) chains all of it: BC → evaluate → install in
 the game → MAPPO → automatic checkpoint evaluation.
 
@@ -927,7 +958,7 @@ the game → MAPPO → automatic checkpoint evaluation.
 [export.py](Training/naval_rl/export.py) writes it every `export_every` updates and when a run ends,
 atomically (`.tmp` then rename, because the game may be reading it):
 
-```
+```text
 ┌────────┬───────────────┬────────────────────┬──────────────────────────────────┬────────────────────────┐
 │ "NAVP" │ int32 version │ int32 header bytes │ JSON header                      │ float32 tensors        │
 │ 4 B    │ = 1           │                    │ d, heads, layers, hidden, dims,  │ back to back, PyTorch  │
@@ -950,7 +981,10 @@ Attention over only the real tokens gives the same numbers as padded training ba
 network and a random input case, runs the C# code through `dotnet` ([tests/parity/](Training/tests/parity/)),
 and checks it against PyTorch (asserted to 1e-3; in practice about 1e-7).
 
-### 13.3 Flying ships in normal play ([RLPolicyDriver.cs](Assets/Scripts/RL/RLPolicyDriver.cs))
+### 13.3 Flying ships in normal play
+
+[RLPolicyDriver.cs](Assets/Scripts/RL/RLPolicyDriver.cs) flies every ship whose `Controller == Learned` outside of
+training:
 
 ```mermaid
 sequenceDiagram
@@ -985,91 +1019,7 @@ sequenceDiagram
 
 ---
 
-## 14. Running it
-
-Requirements: Python 3.10+, PyTorch, NumPy (TensorBoard and PyYAML are optional), a Linux Unity
-build.
-
-```bash
-Training/build_player.sh
-```
-
-Builds `Builds/NavalTrainer/NavalTrainer.x86_64` from a synced copy of the project, so the open
-editor is untouched. It is also available from the editor menu **Naval > RL > Build Training Player
-(Linux)**.
-
-```bash
-cd Training && python train.py --unity-binary ../Builds/NavalTrainer/NavalTrainer.x86_64 --workers 8 --run-name first
-```
-
-Trains from scratch with 8 parallel battles.
-
-```bash
-cd Training && python train.py --ports 5005 --run-name watch
-```
-
-Trains against the editor. Tick *Rl Training Server* on GameBootstrap and press Play first.
-
-```bash
-cd Training && python bc.py collect --battles 120 && python bc.py train
-```
-
-Collects rule-AI demonstrations and trains the behaviour cloning warm start.
-
-```bash
-cd Training && python evaluate.py --checkpoint runs/full_mappo/checkpoints/latest.pt --stage 3 --episodes 48
-```
-
-Win rate against the rule AI. Add `--random` or `--scripted` for baselines, `--max-team 12` for zero-shot on bigger fleets.
-
-```bash
-cd Training && python watch.py --checkpoint runs/full_mappo/checkpoints/latest.pt --stage 3
-```
-
-Films one battle to `runs/watch/battle.mp4` and `.gif`.
-
-```bash
-cd Training && python train.py --mock --workers 4 --set total_updates=50
-```
-
-Tests the trainer without Unity.
-
-```bash
-cd Training && python -m pytest tests
-```
-
-Unit tests plus the C# ⇄ PyTorch parity test (needs `dotnet`).
-
-```bash
-cd Training && ./check_paths.sh
-```
-
-Runs every curriculum stage, self-play and ablation briefly against the real game.
-
-Resume a run with `--resume runs/<run>/checkpoints/latest.pt`. It restores the optimisers, value
-normaliser, league, stage and counters.
-
----
-
-## 15. What a run writes to disk
-
-`Training/runs/<run_name>/`:
-
-| File | Contents |
-|---|---|
-| `config.json` | the exact config used |
-| `spec.json` | the environment spec (sizes, feature names, heads) |
-| `metrics.jsonl` | one line per update: losses, entropy, KL, clip fraction, grad norms, win rate vs rule AI, stage, decisions/s, sim timing, behaviour metrics |
-| `episodes.jsonl` | one line per battle: stage, learner side, opponent, result, and `learner_*` / `opponent_*` behaviour metrics |
-| `checkpoints/latest.pt` | everything `--resume` needs. A numbered copy is kept every 250 updates. |
-| `snapshots/actor_NNNNNN.pt` | frozen actors for the league |
-| `unity_logs/unity_<port>.log` | one Unity player log per worker |
-| `evals/summary.jsonl` | written by `watch_checkpoints.py` |
-| `tb/` | TensorBoard, if installed |
-
----
-
-## 16. Ablation switches
+## 14. Ablation switches
 
 | Switch | What it tests |
 |---|---|
@@ -1083,25 +1033,7 @@ normaliser, league, stage and counters.
 
 ---
 
-## 17. Results so far
-
-From [Training/README.md](Training/README.md). The full game is 6v6 domination against the **Elite**
-rule AI, 48 battles each, with sampled actions:
-
-| Player | Win rate | Damage dealt | Damage taken |
-|---|---|---|---|
-| random legal actions | 0.23 ± 0.06 | 4.77 | 3.58 |
-| behaviour cloning v1 | 0.71 ± 0.07 | 5.27 | 3.45 |
-| behaviour cloning v2 (zone labels from fleet commander) | 0.60 ± 0.07 | 4.95 | 4.65 |
-
-The stage 0 duel learned from scratch reached 0.42 ± 0.05, against 0.30 for random and 0.55 for a
-simple scripted tactic. The MAPPO fine-tuning run from BC v2 (`runs/full_mappo`) has logged 9
-updates so far. It is still inside the 10-update actor freeze, so there is no fine-tuning result
-yet.
-
----
-
-## 18. Extending the system
+## 15. Extending the system
 
 Python reads every size and name from the spec, so most changes are made **only on the Unity side**.
 
@@ -1134,7 +1066,7 @@ an entry to `DEFAULT_STAGES` in [config.py](Training/naval_rl/config.py), or pas
 
 ---
 
-## 19. Glossary
+## 16. Glossary
 
 | Term | Meaning |
 |---|---|
