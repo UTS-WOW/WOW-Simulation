@@ -9,6 +9,9 @@
     # no Unity at all: the mock environment, to check the trainer itself
     python train.py --mock --workers 4 --set total_updates=50
 
+    # continue a checkpoint a teammate shared through git (see share_checkpoint.py)
+    python train.py --unity-binary ../Builds/NavalTrainer/NavalTrainer.x86_64 --resume checkpoints/full_mappo/latest.pt
+
 Outputs go to runs/<run_name>/: config.json, metrics.jsonl (one line per update), episodes.jsonl
 (one line per finished battle), checkpoints/, snapshots/, and every export_every updates the
 policy is exported for the game to Assets/StreamingAssets/RL/naval_policy.bin.
@@ -25,6 +28,7 @@ import time
 import numpy as np
 import torch
 
+from naval_rl import share
 from naval_rl.config import Config
 from naval_rl.env import init_message, make_workers
 from naval_rl.export import export_policy
@@ -54,6 +58,10 @@ def main():
     # --config and --set still override them
     resume = torch.load(args.resume, map_location="cpu", weights_only=False) if args.resume else None
     cfg = Config.load(args.config, args.set, base=resume["config"] if resume else None)
+    # an environment named on the command line replaces the one a resumed checkpoint was trained on
+    # (a teammate's checkpoint may come from the editor, or from a run on other ports)
+    if args.unity_binary or args.ports or args.mock:
+        cfg.ports, cfg.mock = None, False
     if args.unity_binary:
         cfg.unity_binary = args.unity_binary
     if args.ports:
@@ -91,11 +99,19 @@ def main():
 
     league = League(cfg, HERE, seed=cfg.seed)
     algo = MAPPO(cfg, spec, workers, league, device)
+    lineage = share.lineage_for_run(resume, args.resume)
     if args.resume:
+        share.check_compatible(resume.get("spec"), spec, args.resume)
         algo.load_state_dict(resume)
+        share.localize_snapshots(league, args.resume, run_dir)
         print(f"[train] resumed from {args.resume} at update {algo.update}, stage {league.stage}")
+        if lineage["shared"] and lineage["from_update"] == algo.update:
+            print(f"[train] continuing the shared checkpoint '{lineage['shared']}'; when you stop, "
+                  f"publish with: python share_checkpoint.py publish {cfg.run_name} --name {lineage['shared']}")
     elif args.init_from:
-        algo.load_state_dict(torch.load(args.init_from, map_location=device, weights_only=False), weights_only=True)
+        start = torch.load(args.init_from, map_location=device, weights_only=False)
+        share.check_compatible(start.get("spec"), spec, args.init_from)
+        algo.load_state_dict(start, weights_only=True)
         print(f"[train] initialised weights from {args.init_from}")
 
     stop = {"now": False}
@@ -163,11 +179,11 @@ def main():
                 torch.save(algo.actor.state_dict(), path)
                 league.add_snapshot(path, algo.update)
             if algo.update % cfg.checkpoint_every == 0:
-                save(algo, run_dir)
+                save(algo, run_dir, lineage)
             if algo.update % cfg.export_every == 0:
                 export_policy(algo.actor, algo.critic if cfg.algo == "mappo" else None, spec, cfg, export_path, algo.value_norm)
     finally:
-        save(algo, run_dir)
+        save(algo, run_dir, lineage)
         try:
             export_policy(algo.actor, algo.critic if cfg.algo == "mappo" else None, spec, cfg, export_path, algo.value_norm)
             print(f"[train] exported policy to {export_path}")
@@ -179,9 +195,9 @@ def main():
         episodes_f.close()
 
 
-def save(algo, run_dir):
+def save(algo, run_dir, lineage):
     """latest.pt every time; a numbered copy every 10 checkpoints so disk use stays bounded."""
-    state = algo.state_dict()
+    state = {**algo.state_dict(), "lineage": lineage}
     torch.save(state, os.path.join(run_dir, "checkpoints", "latest.pt"))
     if algo.update % (algo.cfg.checkpoint_every * 10) == 0:
         torch.save(state, os.path.join(run_dir, "checkpoints", f"update_{algo.update:06d}.pt"))

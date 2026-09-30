@@ -124,6 +124,7 @@ WOW-Simulation/
     ├── build_player.sh                  build the headless Linux player from a synced project copy
     ├── check_paths.sh                   smoke-test every stage and ablation against the real game
     ├── pipeline_bc_mappo.sh             BC -> evaluate -> install -> MAPPO fine-tune -> auto-eval
+    ├── share_checkpoint.py              publish a run's checkpoint to checkpoints/ for the team / list them
     ├── requirements.txt                 torch, numpy (tensorboard / pyyaml optional)
     ├── naval_rl/
     │   ├── config.py                    every hyperparameter + the curriculum stage list
@@ -135,10 +136,12 @@ WOW-Simulation/
     │   ├── mappo.py                     rollout collection, GAE, PPO update
     │   ├── rewards.py                   reward weights + shaping annealing
     │   ├── league.py                    curriculum promotion, self-play opponent sampling (PFSP)
-    │   └── export.py                    writes naval_policy.bin + parity test cases
+    │   ├── export.py                    writes naval_policy.bin + parity test cases
+    │   └── share.py                     shared checkpoints: publish, relocate snapshots, overwrite guard
     ├── scenarios/                       stage 0-2 battles (Scenario editor JSON format)
     ├── tests/                           pytest suite + tests/parity (C# vs PyTorch check)
-    └── runs/                            outputs of every training / eval run
+    ├── checkpoints/                     checkpoints shared with the team through git
+    └── runs/                            outputs of every training / eval run (not in git)
 ```
 
 ### 2.2 Unity RL files
@@ -189,10 +192,12 @@ RL needed a few changes in the core game. These are the places:
 | [naval_rl/rewards.py](Training/naval_rl/rewards.py) | `RewardFunction`: default weights, shaping annealing. |
 | [naval_rl/league.py](Training/naval_rl/league.py) | `League` / `EpisodePlan`: stage promotion, opponent mix, PFSP, reset messages (scenario jitter, procedural worlds). |
 | [naval_rl/export.py](Training/naval_rl/export.py) | `export_policy` (the `NAVP` binary) and `export_parity_case`. |
+| [naval_rl/share.py](Training/naval_rl/share.py) | Shared checkpoints: `publish` (relative snapshot paths, overwrite guard), `localize_snapshots` (on `--resume`), `check_compatible` (layout check), lineage tracking. |
 | [bc.py](Training/bc.py) | `collect` (rule AI vs rule AI with labels → `demos.npz`) and `train` (cross-entropy → `bc.pt`). |
 | [evaluate.py](Training/evaluate.py) | N battles vs the rule AI → win rate ± standard error, damage dealt and taken. `--random`, `--scripted`, `--greedy`, `--max-team`. |
+| [share_checkpoint.py](Training/share_checkpoint.py) | CLI for `share.py`: `publish <run>` and `list`. See [Training/README.md](Training/README.md#training-as-a-team). |
 | [watch.py](Training/watch.py) / [watch_checkpoints.py](Training/watch_checkpoints.py) / [probe_actions.py](Training/probe_actions.py) | Film a battle / evaluate every new checkpoint / check each order type works. |
-| [tests/](Training/tests/) | GAE, protocol, rewards, model, export, a mock training run, and **C# ⇄ PyTorch parity** ([tests/parity/](Training/tests/parity/)). |
+| [tests/](Training/tests/) | GAE, protocol, rewards, model, export, shared checkpoints, a mock training run, and **C# ⇄ PyTorch parity** ([tests/parity/](Training/tests/parity/)). |
 
 ---
 

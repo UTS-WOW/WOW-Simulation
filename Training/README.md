@@ -10,6 +10,7 @@ the algorithm, curriculum and export, with diagrams — see [../RL_README.md](..
 
 - [Requirements](#requirements)
 - [Quick start](#quick-start)
+- [Training as a team](#training-as-a-team)
 - [Configuration](#configuration)
 - [Tools for checking and watching](#tools-for-checking-and-watching)
 - [Playing against the trained policy](#playing-against-the-trained-policy)
@@ -99,7 +100,95 @@ python -m pytest tests
 python train.py --unity-binary ../Builds/NavalTrainer/NavalTrainer.x86_64 --resume runs/<run>/checkpoints/latest.pt
 ```
 
-This restores the weights, optimisers, value normaliser, league, curriculum stage and counters.
+This restores the weights, optimisers, value normaliser, league, curriculum stage and counters. To
+continue a checkpoint a teammate shared, see [Training as a team](#training-as-a-team).
+
+---
+
+## Training as a team
+
+Your own runs stay on your machine (`runs/` is gitignored). To let the rest of the team continue your
+training, **publish** a checkpoint into `checkpoints/<name>/`, which is committed to git.
+
+### Shared checkpoints
+
+| Name | What it is | Use it with |
+|---|---|---|
+| `full_mappo` | MAPPO fine-tuning of behaviour cloning v2 on 6v6 domination (stage 3). **The main line to keep training.** | `--resume` |
+| `bc` | The behaviour cloning v2 warm start (0.60 win rate vs the Elite rule AI) | `--init-from`, to start a new line |
+
+`python share_checkpoint.py list` shows what is currently shared, who published it and when.
+
+### Continue the team's training
+
+1. Get the latest shared checkpoint:
+
+   ```bash
+   git pull
+   ```
+
+2. Build the headless player once, from the repository root. `Builds/` is not in git, so everyone
+   builds their own:
+
+   ```bash
+   Training/build_player.sh
+   ```
+
+3. Resume the shared checkpoint:
+
+   ```bash
+   python train.py --unity-binary ../Builds/NavalTrainer/NavalTrainer.x86_64 --resume checkpoints/full_mappo/latest.pt
+   ```
+
+   Its self-play opponents are copied into your own `runs/full_mappo/`. To watch in the editor
+   instead, use `--ports 5005` in place of `--unity-binary ...`.
+
+4. Stop with `Ctrl+C` whenever you like. The trainer saves a checkpoint before exiting.
+
+5. Pull again (in case someone published meanwhile), then publish your progress:
+
+   ```bash
+   git pull
+   python share_checkpoint.py publish full_mappo --note "what you changed or noticed"
+   ```
+
+6. Commit and push the checkpoint folder straight away:
+
+   ```bash
+   git add checkpoints/full_mappo
+   git commit -m "Share checkpoint full_mappo at update N"
+   git push
+   ```
+
+### Rules that keep everyone's training safe
+
+- **One shared name is one line of training — take turns.** Tell the team when you start a session.
+- `publish` **refuses** to overwrite a shared checkpoint when:
+  - your run did not start from it,
+  - your checkpoint is not ahead of it, or
+  - someone else published to it after you started.
+
+  In that case publish under your own name (for example `--name full_mappo_alex`), compare the two
+  with `evaluate.py`, and publish the better one onto the main line with `--force`.
+- **Pull right before publishing, push right after.** If git still reports a conflict on
+  `latest.pt`, do not simply keep your own copy — that discards a teammate's work. Publish yours
+  under another name instead.
+- **A checkpoint only fits a game with the same observation and action layout.** After changing
+  `RLLayout.cs`, `RLObservation.cs` or `RLActions.cs`, old checkpoints cannot be resumed (`train.py`
+  says so and lists the differences). Start a new line under a new name.
+- **Training also rewrites the game's policy file**, `Assets/StreamingAssets/RL/naval_policy.bin`.
+  Commit it together with the checkpoint if the game should play the new policy; otherwise discard
+  it with `git restore`.
+- Each publish adds about 7 MB to the repository, plus about 2 MB for each new self-play snapshot.
+
+### What a shared folder contains
+
+| File | Contents |
+|---|---|
+| `latest.pt` | The checkpoint, with its self-play snapshot paths made relative so it works on any machine |
+| `snapshots/` | The frozen past policies its self-play league needs |
+| `info.json` | Update, curriculum stage, rolling win rate vs the rule AI, author, date and note |
+| `history.jsonl` | One line per publish — the line's full history |
 
 ---
 
@@ -130,6 +219,7 @@ python train.py ... --set workers=12 --set rollout=512
 | `python watch.py --checkpoint runs/<run>/checkpoints/latest.pt --stage 3` | A trained policy plays one battle, filmed to `runs/watch/battle.mp4` and `.gif`. |
 | `python evaluate.py --checkpoint <ckpt> --stage 3 --episodes 48` | Win rate ± standard error and damage against the rule AI. `--random` and `--scripted` give baselines; `--max-team 12` tests zero-shot on bigger fleets. |
 | `python watch_checkpoints.py --run <run>` | Evaluates every checkpoint of a running training run (96 battles, same seed each time) and appends a row to `runs/<run>/evals/summary.jsonl`. |
+| `python share_checkpoint.py publish <run>` / `list` | Shares a run's checkpoint with the team through git, or lists what is shared — see [Training as a team](#training-as-a-team). |
 | `python bc.py collect` / `python bc.py train` | Records rule-AI battles with every decision labelled in the policy's action heads, then trains the actor to imitate them (the warm start for MAPPO). |
 | `NavalTrainer.x86_64 -rlDemo both` | Launches the game straight into a 6v6 with the exported policy flying both fleets. `enemy` = you against it, `player` = it against the rule AI. Also takes `-rlDemoShips 6` and `-rlDemoSeconds 60`. |
 
