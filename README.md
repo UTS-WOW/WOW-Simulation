@@ -345,8 +345,12 @@ Ships have a `Controller`: `Human` (the player's orders), `RuleAI` (ShipAI under
 hold fire, when to launch torpedoes and which consumable to use, and the existing autopilot, gun lead
 and turret training carry that out. `Training/` holds the MAPPO trainer (recurrent actor, critic
 that sees the true state, curriculum, self-play league). [Training/README.md](Training/README.md)
+<<<<<<< HEAD
 covers building the headless player and running it, and [RL_README.md](RL_README.md) explains how
 the whole system works, file by file, with diagrams.
+=======
+covers building the headless player and running it.
+>>>>>>> 54a8e3c5ec5ccc60ed3cb77b484c2f2e01797910
 
 ## Verifying without the editor
 

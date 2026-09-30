@@ -1,8 +1,12 @@
 # Training — MAPPO for the naval simulation
 
 A recurrent MAPPO trainer for the fleets in this Unity project. The Unity side lives in
+<<<<<<< HEAD
 `Assets/Scripts/RL/`, the Python side here. For how it all works (observations, actions, rewards,
 networks, the algorithm, curriculum, export), with diagrams, see [../RL_README.md](../RL_README.md).
+=======
+`Assets/Scripts/RL/`, the Python side here.
+>>>>>>> 54a8e3c5ec5ccc60ed3cb77b484c2f2e01797910
 
 ## Quick start
 
