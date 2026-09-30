@@ -1,8 +1,12 @@
 """Actor and critic networks.
 
-Both are entity encoders: every ship, contact and zone is a token, a small transformer lets the
-tokens attend to each other, and the result is independent of how many tokens there are. That is
-what lets a policy trained at 3v3 or 6v6 command a 12v12 or 30v30 fleet without retraining.
+Both are entity encoders: every ship, contact, zone and obstacle (island, rock, smoke cloud) is a
+token, a small transformer lets the tokens attend to each other, and the result is independent of
+how many tokens there are. That is what lets a policy trained at 3v3 or 6v6 command a 12v12 or 30v30
+fleet without retraining, and read any battlefield: terrain arrives as obstacle tokens plus the
+terrain rays in the self features, never as a fixed map.
+
+Actor token order: [self, allies, contacts, zones, obstacles].
 
 The actor's discrete choices over entities are pointer heads: the "target" head scores every
 contact token against the agent's query, and the zone part of the "move" head scores every zone
@@ -108,7 +112,7 @@ class Actor(nn.Module):
         self.d, self.hidden = d, hidden
         self.head_specs = [(h.name, h.fixed, h.pointer) for h in spec.heads]
         dm = spec.dims
-        self.encoder = EntityEncoder([dm["self"], dm["ally"], dm["contact"], dm["zone"]], d, heads, layers)
+        self.encoder = EntityEncoder([dm["self"], dm["ally"], dm["contact"], dm["zone"], dm["obstacle"]], d, heads, layers)
         self.fuse = nn.Linear(2 * d, d)
         self.gru = nn.GRUCell(d, hidden)
         self.fixed = nn.ModuleList([nn.Linear(hidden, fixed) for (_, fixed, _) in self.head_specs])
@@ -120,17 +124,17 @@ class Actor(nn.Module):
         B = obs["self"].shape[0]
         ones = obs["self"].new_ones(B, 1)
         tokens, mask, attn = self.encoder(
-            [obs["self"].unsqueeze(1), obs["allies"], obs["contacts"], obs["zones"]],
-            [ones, obs["ally_mask"], obs["contact_mask"], obs["zone_mask"]],
+            [obs["self"].unsqueeze(1), obs["allies"], obs["contacts"], obs["zones"], obs["obstacles"]],
+            [ones, obs["ally_mask"], obs["contact_mask"], obs["zone_mask"], obs["obstacle_mask"]],
         )
         x = F.relu(self.fuse(torch.cat([tokens[:, 0], masked_mean(tokens, mask)], dim=-1)))
         return x, tokens, attn
 
-    def heads(self, z, tokens, n_allies: int, n_contacts: int):
+    def heads(self, z, tokens, n_allies: int, n_contacts: int, n_zones: int):
         """Logits for every head, concatenated in spec order."""
         c0 = 1 + n_allies
         z0 = c0 + n_contacts
-        groups = {"contacts": tokens[:, c0:z0], "zones": tokens[:, z0:]}
+        groups = {"contacts": tokens[:, c0:z0], "zones": tokens[:, z0:z0 + n_zones]}
         out = []
         for (name, fixed, pointer), lin in zip(self.head_specs, self.fixed):
             out.append(lin(z))
@@ -145,7 +149,7 @@ class Actor(nn.Module):
         x, tokens, attn = self.encode(obs)
         h = h * (1.0 - starts).unsqueeze(-1)
         h = self.gru(x, h)
-        logits = self.heads(h, tokens, obs["allies"].shape[1], obs["contacts"].shape[1])
+        logits = self.heads(h, tokens, obs["allies"].shape[1], obs["contacts"].shape[1], obs["zones"].shape[1])
         return logits, h, attn
 
     def forward_sequence(self, obs: dict, h0, starts):
@@ -161,7 +165,7 @@ class Actor(nn.Module):
             h = self.gru(x[t], h)
             hs.append(h)
         hseq = torch.stack(hs).reshape(T * B, -1)
-        logits = self.heads(hseq, tokens, flat["allies"].shape[1], flat["contacts"].shape[1])
+        logits = self.heads(hseq, tokens, flat["allies"].shape[1], flat["contacts"].shape[1], flat["zones"].shape[1])
         return logits.view(T, B, -1)
 
     def initial_state(self, n: int, device=None):
@@ -203,7 +207,7 @@ class LocalCritic(nn.Module):
     def __init__(self, spec: Spec, d: int = 128, heads: int = 4, layers: int = 2):
         super().__init__()
         dm = spec.dims
-        self.encoder = EntityEncoder([dm["self"], dm["ally"], dm["contact"], dm["zone"]], d, heads, layers)
+        self.encoder = EntityEncoder([dm["self"], dm["ally"], dm["contact"], dm["zone"], dm["obstacle"]], d, heads, layers)
         self.fuse = nn.Linear(2 * d, d)
         self.value = nn.Linear(d, 1)
         self.win = nn.Linear(d, 1)
@@ -211,8 +215,8 @@ class LocalCritic(nn.Module):
     def forward(self, obs: dict):
         B = obs["self"].shape[0]
         tokens, mask, _ = self.encoder(
-            [obs["self"].unsqueeze(1), obs["allies"], obs["contacts"], obs["zones"]],
-            [obs["self"].new_ones(B, 1), obs["ally_mask"], obs["contact_mask"], obs["zone_mask"]],
+            [obs["self"].unsqueeze(1), obs["allies"], obs["contacts"], obs["zones"], obs["obstacles"]],
+            [obs["self"].new_ones(B, 1), obs["ally_mask"], obs["contact_mask"], obs["zone_mask"], obs["obstacle_mask"]],
         )
         x = F.relu(self.fuse(torch.cat([tokens[:, 0], masked_mean(tokens, mask)], dim=-1)))
         return self.value(x).squeeze(-1), self.win(x).squeeze(-1)

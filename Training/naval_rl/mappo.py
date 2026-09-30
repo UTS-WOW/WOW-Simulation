@@ -29,7 +29,7 @@ from .model import Actor, Critic, LocalCritic, ValueNorm, evaluate_actions, samp
 from .rewards import RewardFunction
 from .spec import Spec
 
-ACTOR_KEYS = ["self", "allies", "ally_mask", "contacts", "contact_mask", "zones", "zone_mask"]
+ACTOR_KEYS = ["self", "allies", "ally_mask", "contacts", "contact_mask", "zones", "zone_mask", "obstacles", "obstacle_mask"]
 CRITIC_KEYS = ["critic_own", "critic_enemy", "critic_enemy_mask", "critic_zones", "critic_zone_mask", "critic_match"]
 
 
@@ -207,7 +207,7 @@ class MAPPO:
         self.episode_start_t[:] = 0
         t0 = time.time()
         timing = {"policy_s": 0.0, "env_wait_s": 0.0, "reset_s": 0.0}
-        sim_ms = []
+        sim_ms, obs_ms = [], []
 
         for t in range(T):
             tp = time.time()
@@ -242,6 +242,8 @@ class MAPPO:
                 timing["env_wait_s"] += time.time() - tw
                 if o2.diag.get("sim_ms"):
                     sim_ms.append(o2.diag["sim_ms"])
+                if o2.diag.get("obs_ms"):
+                    obs_ms.append(o2.diag["obs_ms"])
                 ex = self.exists_mask(self.obs[w])
                 r = self.reward_fn(o2.arrays["team_reward"], o2.arrays["agent_reward"], self.update)
                 b["rewards"][t, w] = r * ex
@@ -265,6 +267,7 @@ class MAPPO:
             **timing,
             "sim_ms_mean": float(np.mean(sim_ms)) if sim_ms else 0.0,
             "sim_ms_max": float(np.max(sim_ms)) if sim_ms else 0.0,
+            "obs_ms_mean": float(np.mean(obs_ms)) if obs_ms else 0.0,
             "env_heap_mb_max": max((d.get("heap_mb", 0) for d in diag), default=0.0),
             "env_objects_max": max((d.get("objects", 0) for d in diag), default=0),
             "env_gc0_max": max((d.get("gc0", 0) for d in diag), default=0),

@@ -18,15 +18,22 @@ DEFAULT_STAGES = [
     # 2: spotting, smoke, radar, islands
     {"name": "archipelago_3v3", "scenario": "scenarios/stage2_archipelago_3v3.json", "difficulty": 1,
      "promote_winrate": 0.65, "min_episodes": 150},
-    # 3: the full game at 6v6
-    {"name": "domination_6v6", "procedural": {"mode": 0, "preset": 0, "density": 1, "ships": [6, 6],
-                                               "weather": "random", "time_limit": 900, "world_reuse": 20},
+    # 3: the full game at 6v6, on any battlefield: archipelago, open sea or strait, any island density
+    #    and weather, a fresh map every few battles - so the policy learns terrain, not one map
+    {"name": "domination_6v6", "procedural": {"mode": 0, "preset": "random", "density": "random", "ships": [6, 6],
+                                               "weather": "random", "time_limit": 900, "world_reuse": 8},
      "difficulty": 2, "promote_winrate": 0.6, "min_episodes": 200},
-    # 4: generalisation across battlefields and fleet sizes
-    {"name": "open", "procedural": {"mode": 0, "preset": "random", "density": "random", "ships": [4, 8],
-                                     "weather": "random", "time_limit": 1200, "world_reuse": 10},
+    # 4: generalisation: any mode with or without objectives (domination, skirmish, fleet battle,
+    #    capture and control), any map, cap size and fleet size
+    {"name": "open", "procedural": {"mode": "random", "preset": "random", "density": "random", "ships": [3, 8],
+                                     "weather": "random", "capture_radius": [130, 200], "time_limit": 1200,
+                                     "world_reuse": 4},
      "difficulty": 2, "promote_winrate": 1.01, "min_episodes": 0},
 ]
+
+# GameMode values a procedural stage may draw with "mode": "random". Escort is left out: it needs
+# transports and an anchorage objective the policy has no observation of.
+RANDOM_MODES = [0, 1, 2, 3]
 
 
 @dataclass
@@ -46,6 +53,7 @@ class Config:
     max_allies: int = 7
     max_contacts: int = 8
     max_zones: int = 5
+    max_obstacles: int = 8               # nearest islands / rocks / smoke clouds each ship sees
     action_mode: str = "intent"          # intent | lowlevel (ablation)
     decision_period: float = 1.0
     sim_dt: float = 0.02

@@ -133,16 +133,11 @@ namespace Naval
             var ab = ship.Abilities;
             if (ab == null) return;
 
+            // each consumable answers to the hotkey it declares (1-6 depending on the class)
             int num = InputHub.NumberRowDown();
-            if (num >= 1 && num <= 4 && !InputHub.Ctrl)
-            {
-                if (!ab.UseSlot(num - 1))
-                {
-                    var slot = ab.GetSlot(num - 1);
-                    if (slot != null && !slot.Ready)
-                        GameEvents.RaiseMessage(slot.label + (slot.HasCharges ? " reloading" : " - no charges left"), Team.Player);
-                }
-            }
+            var slot = num >= 1 && !InputHub.Ctrl ? ab.GetByHotkey(num.ToString()) : null;
+            if (slot != null && !ab.Use(slot.id) && !slot.Ready)
+                GameEvents.RaiseMessage(slot.label + (slot.HasCharges ? " reloading" : " - no charges left"), Team.Player);
 
             if (InputHub.KeyDown(Key.X) && ship.Submarine != null) ab.Use(AbilityId.Dive);
             if (InputHub.KeyDown(Key.E)) ab.Use(AbilityId.DamageControl);

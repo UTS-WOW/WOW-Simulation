@@ -14,6 +14,7 @@ def _obs(spec, B=2, n_allies=3, n_contacts=5, n_zones=3, seed=0):
         "allies": torch.randn(B, n_allies, d["ally"], generator=g), "ally_mask": torch.ones(B, n_allies),
         "contacts": torch.randn(B, n_contacts, d["contact"], generator=g), "contact_mask": torch.ones(B, n_contacts),
         "zones": torch.randn(B, n_zones, d["zone"], generator=g), "zone_mask": torch.ones(B, n_zones),
+        "obstacles": torch.randn(B, 4, d["obstacle"], generator=g), "obstacle_mask": torch.ones(B, 4),
     }
 
 

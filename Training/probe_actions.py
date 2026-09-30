@@ -25,8 +25,6 @@ import numpy as np
 from naval_rl.env import UnityWorker, init_message, launch_player
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-MOVE_FIXED = 13
-ZONE_B = MOVE_FIXED + 1
 ABILITY = {"smoke": 3, "radar": 5}
 
 
@@ -40,6 +38,7 @@ def main():
     w = UnityWorker(port, init_message(8, 7, 8, 5, "intent", 1.0, 0.02, True),
                     process=launch_player(os.path.abspath(binary), port, out, graphics=True))
     spec = w.spec
+    zone_b = spec.heads[0].fixed + 1        # the move head's zone options follow its fixed ones
     f = {name: i for i, name in enumerate(spec.features["self"])}
     zf = {name: i for i, name in enumerate(spec.features["zone"])}
     offsets = np.cumsum([0] + spec.head_sizes)
@@ -76,7 +75,7 @@ def main():
             for i in range(ships):
                 if o.arrays["alive"][0, i] < 0.5:
                     continue
-                a[0, i, 0] = ZONE_B if legal(i, 0, ZONE_B) else 0
+                a[0, i, 0] = zone_b if legal(i, 0, zone_b) else 0
                 if o.arrays["contact_mask"][0, i, 0] > 0.5:
                     a[0, i, 2] = 1                                   # shoot the nearest contact
                 a[0, i, 3] = 1 if (i == bb and step < 120) else 0    # battleship holds fire at first

@@ -25,6 +25,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from .config import RANDOM_MODES
+
 RULE, LATEST, SNAPSHOT = "rule", "latest", "snapshot"
 
 
@@ -125,14 +127,18 @@ class League:
         self._world[worker] = (seed, used + 1)
 
         def pick(v, choices):
-            return int(self.rng.choice(choices)) if v == "random" else int(v)
+            if v == "random":
+                return int(self.rng.choice(choices))
+            if isinstance(v, (list, tuple)):
+                return int(self.rng.choice(v))
+            return int(v)
 
         ships = p.get("ships", [6, 6])
         n = int(self.rng.integers(int(ships[0]), int(ships[1]) + 1))
         n = min(n, self.cfg.max_team)
         msg.update({
             "use_scenario": False,
-            "mode": int(p.get("mode", 0)),
+            "mode": pick(p.get("mode", 0), RANDOM_MODES),
             "preset": pick(p.get("preset", 0), [0, 1, 2]),
             "density": pick(p.get("density", 1), [0, 1, 2]),
             "weather": pick(p.get("weather", 0), [0, 1, 2, 3]),
@@ -142,7 +148,8 @@ class League:
             "time_limit": float(p.get("time_limit", 0)),
         })
         if "capture_radius" in p:
-            msg["capture_radius"] = float(p["capture_radius"])
+            r = p["capture_radius"]
+            msg["capture_radius"] = float(self.rng.uniform(r[0], r[1])) if isinstance(r, (list, tuple)) else float(r)
         return msg
 
     def _scenario(self, path: str) -> dict:

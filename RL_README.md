@@ -42,6 +42,12 @@ back.
   enemy state is used during training only.
 - **Warm start:** the actor first learns to **imitate the rule-based AI** (behaviour cloning), then
   MAPPO fine-tunes it.
+- **Any map:** nothing in the observation names a map. Each ship senses terrain with **16 egocentric
+  rays** (open water for its draft, distance to land that hides it) and sees the nearest **islands,
+  rocks and smoke screens as tokens**, and the full-game stages draw a **random battlefield** every few
+  battles. The same network plays an archipelago, open sea, a strait or a hand-built scenario.
+- **Every ability:** each consumable's charges, cooldown and time left are observed; allies' radar,
+  hydro, repair and smoke are visible; the critic sees the enemy's too.
 - **Opponents:** a **curriculum** of battles, from a 1v1 battleship duel up to the full 6v6+ game,
   against the rule AI at rising difficulty. After that comes a **self-play league**: the current
   policy, frozen past snapshots chosen by prioritised fictitious self-play, and the rule AI kept as
@@ -123,7 +129,7 @@ WOW-Simulation/
     ├── probe_actions.py                 sanity-check each order type in the real game
     ├── build_player.sh                  build the headless Linux player from a synced project copy
     ├── check_paths.sh                   smoke-test every stage and ablation against the real game
-    ├── pipeline_bc_mappo.sh             BC -> evaluate -> install -> MAPPO fine-tune -> auto-eval
+    ├── pipeline_bc_mappo.sh             collect -> BC -> evaluate -> install -> MAPPO -> auto-eval
     ├── share_checkpoint.py              publish a run's checkpoint to checkpoints/ for the team / list them
     ├── requirements.txt                 torch, numpy (tensorboard / pyyaml optional)
     ├── naval_rl/
@@ -148,11 +154,11 @@ WOW-Simulation/
 
 | File | What it does | Key members |
 |---|---|---|
-| [RLEnvironment.cs](Assets/Scripts/RL/RLEnvironment.cs) | One training environment per Unity process. Listens on TCP, runs the `init / reset / step / render / close` state machine, advances exactly `decision_period / sim_dt` frames per step, assembles the observation message. | `Init` [:290](Assets/Scripts/RL/RLEnvironment.cs:290), `Reset` [:323](Assets/Scripts/RL/RLEnvironment.cs:323), `StartEpisode` [:377](Assets/Scripts/RL/RLEnvironment.cs:377), `Step` [:425](Assets/Scripts/RL/RLEnvironment.cs:425), `SendObservation` [:519](Assets/Scripts/RL/RLEnvironment.cs:519) |
+| [RLEnvironment.cs](Assets/Scripts/RL/RLEnvironment.cs) | One training environment per Unity process. Listens on TCP, runs the `init / reset / step / render / close` state machine, advances exactly `decision_period / sim_dt` frames per step, assembles the observation message. | `Init` [:291](Assets/Scripts/RL/RLEnvironment.cs:291), `Reset` [:325](Assets/Scripts/RL/RLEnvironment.cs:325), `StartEpisode` [:379](Assets/Scripts/RL/RLEnvironment.cs:379), `Step` [:427](Assets/Scripts/RL/RLEnvironment.cs:427), `SendObservation` [:521](Assets/Scripts/RL/RLEnvironment.cs:521) |
 | [RLWire.cs](Assets/Scripts/RL/RLWire.cs) | Length-prefixed frames of a JSON header followed by raw little-endian arrays. | `Receive`, `Begin`, `AddArray`, `AddArrayPair`, `Send` |
 | [RLLayout.cs](Assets/Scripts/RL/RLLayout.cs) | The single source of truth for padding caps, feature names, dimensions and action heads. `SpecJson` sends all of it to Python. | `ShipStateFeatures`, `ContactFeatures`, `HeadSize`, `HeadOffset`, `SpecJson` |
-| [RLObservation.cs](Assets/Scripts/RL/RLObservation.cs) | Fills a `TeamObs` for one team: actor tokens (fog-of-war legal) and critic tokens (ground truth plus belief). | `Build` [:124](Assets/Scripts/RL/RLObservation.cs:124), `WriteShipState`, `WriteContact`, `WriteCriticEnemy` |
-| [RLActions.cs](Assets/Scripts/RL/RLActions.cs) | Builds the per-ship **action mask** and **applies** a chosen action through the ship's existing autopilot, gunnery and ability systems. | `WriteMask` [:39](Assets/Scripts/RL/RLActions.cs:39), `Apply` [:179](Assets/Scripts/RL/RLActions.cs:179), `AbilityUsable` |
+| [RLObservation.cs](Assets/Scripts/RL/RLObservation.cs) | Fills a `TeamObs` for one team: actor tokens (fog-of-war legal) and critic tokens (ground truth plus belief). Also casts the terrain rays, gathers island / smoke obstacles and finds each ship's cover point. | `Build` [:160](Assets/Scripts/RL/RLObservation.cs:160), `WriteShipState`, `WriteTerrainRays`, `WriteObstacles`, `FindCover`, `WriteCriticEnemy` |
+| [RLActions.cs](Assets/Scripts/RL/RLActions.cs) | Builds the per-ship **action mask** and **applies** a chosen action through the ship's existing autopilot, gunnery and ability systems. | `WriteMask` [:41](Assets/Scripts/RL/RLActions.cs:41), `Apply` [:205](Assets/Scripts/RL/RLActions.cs:205), `AbilityUsable` |
 | [RLRewardTracker.cs](Assets/Scripts/RL/RLRewardTracker.cs) | Subscribes to damage and kill events and accumulates raw reward components between decisions. | `TeamComponents`, `AgentComponents`, `OnDamaged`, `EndStep` |
 | [RLMetrics.cs](Assets/Scripts/RL/RLMetrics.cs) | Behaviour statistics for both fleets per battle: DD concealment, radar-on-DD, focus fire, hold-fire share, first capture time, spotting share, friendly fire. | `Sample`, `AppendJson` |
 | [RLExpertLabels.cs](Assets/Scripts/RL/RLExpertLabels.cs) | Watches a rule-AI ship between two decisions and says which of the policy's actions best describes what it did. These labels are the behaviour cloning targets. | `Remember`, `Label`, `MoveOption` |
@@ -170,7 +176,7 @@ RL needed a few changes in the core game. These are the places:
 |---|---|
 | [NavalTypes.cs:32](Assets/Scripts/Core/NavalTypes.cs:32) | `enum ShipController { Human, RuleAI, Learned }`. Any fleet can be flown by any of the three. |
 | [Ship.cs:43](Assets/Scripts/Ships/Ship.cs:43) | `Controller`, `ExternalHelm` (low-level rudder/throttle mode), `LearnedMove` (used by the "keep" action), `LearnedAmmoSwitchTime` (shell-switch cooldown). |
-| [ShipAI.cs:90](Assets/Scripts/AI/ShipAI.cs:90) | When a ship is `Learned`, the rule AI stops choosing targets, movement and consumables. Only the *reflexes* stay on: torpedo evasion (`AutoEvade`) and automatic damage control (`AutoDamageControl`). |
+| [ShipAI.cs:92](Assets/Scripts/AI/ShipAI.cs:92) | When a ship is `Learned`, the rule AI stops choosing targets, movement and consumables. Only the *reflexes* stay on: torpedo evasion (`AutoEvade`) and automatic damage control (`AutoDamageControl`). |
 | [GameManager.cs:457](Assets/Scripts/Core/GameManager.cs:457) | `SetTeamController` hands a fleet to a controller and switches the fleet commander's strategic control off for non-rule fleets. `BeginTrainingMatch` and `OverrideTimeLimit` let the trainer build battles directly. |
 | [GameBootstrap.cs:35](Assets/Scripts/Core/GameBootstrap.cs:35) | `rlTrainingServer` checkbox / `-rlTrain` flag, `rlPort` / `-rlPort`. Always creates `RLPolicyDriver`. In training mode it creates `RLEnvironment` instead of showing the menu. |
 | [GameEvents.cs:12](Assets/Scripts/Core/GameEvents.cs:12) | `OnShipDamaged(victim, amount, attacker)` now carries the attacker, so damage can be credited to a ship. |
@@ -256,6 +262,10 @@ flowchart TB
 | **Privileged critic** (true enemy state + belief) | Low-variance values under fog of war | `WriteCriticEnemy` in [RLObservation.cs](Assets/Scripts/RL/RLObservation.cs), `Critic` in [model.py](Training/naval_rl/model.py) |
 | **Per-agent critic token** ("which ship am I") | Each ship gets its own value from the shared team picture | `Critic.forward` (`is_me` one-hot) |
 | **Entity transformer encoder** | Works for 1 to 30 ships. No layer depends on fleet size. | `EntityEncoder` in [model.py](Training/naval_rl/model.py) |
+| **Egocentric terrain rays** | Map-independent terrain sensing: 16 rays report open water for the ship's draft (3 km) and land that blocks sight (6 km) | `WriteTerrainRays` in [RLObservation.cs](Assets/Scripts/RL/RLObservation.cs) |
+| **Obstacle tokens** | Islands, rocks and merged smoke screens as entities, with "blocks my target / my threat" flags, so cover is reasoned about on any map | `WriteObstacles`, `GatherObstacles` |
+| **Terrain-aware macro actions** | "Take cover" and "return to port" reuse the game's own line-of-sight test and port service instead of being learned from scratch | `FindCover` in [RLObservation.cs](Assets/Scripts/RL/RLObservation.cs), `RLActions.Apply` |
+| **Domain randomisation of maps** | The full-game stages draw a random battlefield, island density, weather, mode, cap size and fleet size, so the policy cannot memorise one map | `DEFAULT_STAGES` in [config.py](Training/naval_rl/config.py), `League._reset_message` |
 | **Pointer heads** | Choosing *which* contact / zone scales with the battle | `Actor.heads` (`ptr_q`, `ptr_k`) |
 | **GRU recurrent actor** | Memory under partial observability (where did that destroyer go?) | `Actor.gru`, chunked BPTT in `MAPPO.learn` |
 | **Factorised multi-discrete actions + masking** | Six heads, illegal options removed before sampling | `RLActions.WriteMask`, `sample_actions` |
@@ -281,13 +291,15 @@ flowchart TB
 |---|---|
 | The actions had no way to aim, and throttle and rudder alone are too hard to learn | **Intent actions** in [RLActions.cs](Assets/Scripts/RL/RLActions.cs): six masked heads (move, speed, target, fire / hold, torpedo, ability) carried out by the existing autopilot, gun lead and turret training. `--set action_mode=lowlevel` swaps in direct rudder and throttle as an ablation. See [§7](#7-actions--what-a-ship-can-do). |
 | A critic limited to what the team knows gives noisy values | [RLObservation.cs](Assets/Scripts/RL/RLObservation.cs) sends the actor only fog-of-war-legal information, but the critic also gets the true state of every enemy next to what the team believes about it. `--set critic_mode=belief` removes the privileged columns. See [§6.3](#63-critic-tokens-privileged-training-only). |
-| A fixed 178-number observation vector cannot cover fleets of 1 to 30 | Entities (self, allies, contacts, zones) go through a transformer, and targets and zones are chosen with pointer heads ([model.py](Training/naval_rl/model.py)). No layer depends on how many ships there are. See [§9](#9-the-neural-networks). |
+| A fixed 178-number observation vector cannot cover fleets of 1 to 30 | Entities (self, allies, contacts, zones, obstacles) go through a transformer, and targets and zones are chosen with pointer heads ([model.py](Training/naval_rl/model.py)). No layer depends on how many ships there are. See [§9](#9-the-neural-networks). |
 | The reward was never defined | [RLRewardTracker.cs](Assets/Scripts/RL/RLRewardTracker.cs) reports raw components; [rewards.py](Training/naval_rl/rewards.py) holds the weights. The team part is zero-sum, and shaping fades out over training. See [§8](#8-rewards). |
 | Updating after each episode does not fit 20-minute battles | Fixed-length rollouts with automatic resets ([mappo.py](Training/naval_rl/mappo.py)). The game's time limit counts as a real ending because time remaining is in the observation; a rollout cut mid-battle is bootstrapped from the critic. See [§10.3](#103-advantages-gae). |
 | Game logic ran on frame-rate-dependent `Time.deltaTime` | Training sets `Time.captureDeltaTime`: every frame is exactly `sim_dt` (20 ms) of game time and physics steps once per frame, the same as playing at 50 fps. See [§5.3](#53-deterministic-time). |
 | Global singletons prevent several battles in one scene | One battle per Unity process. [env.py](Training/naval_rl/env.py) launches N headless players on consecutive ports and steps them in parallel (send to all, then receive from all). |
 | `ShipAI` assumed the Player fleet is always human, and damage events dropped the attacker | `Ship.Controller` is `Human`, `RuleAI` or `Learned`, for either fleet (`GameManager.SetTeamController`). `OnShipDamaged` now carries the attacker, and `Contact.spotter` records which ship produced each contact, so spotting damage can be credited. See [§2.3](#23-game-code-that-rl-hooks-into). |
 | Partial observability | GRU actor, trained on 32-step chunks and reset at episode starts. See [§10.5](#105-recurrent-training-chunked-bptt). |
+| The policy was blind to terrain beyond its own hull and trained on one map, so it could not adapt when the battlefield changed | Terrain rays and obstacle tokens describe the land and smoke around each ship in its own frame; the map type, land fraction, mode and weather are in the match features; and stages 3–4 randomise the battlefield. See [§6](#6-observations--what-a-ship-sees) and [§11](#11-curriculum-and-self-play-league). |
+| Consumables were reduced to "has / ready / active" | Every tracked consumable also reports charges left, cooldown remaining and time left active; allies show radar / hydro range, repair and smoke; the critic sees the enemy's consumables. See [§6.2](#62-actor-tokens-fog-of-war-legal). |
 | Only ever training against the scripted AI | [league.py](Training/naval_rl/league.py): curriculum stages against Recruit → Veteran → Elite, promotion on rolling win rate, then self-play (latest self, prioritised past snapshots, and the rule AI as an anchor). The learner's side is randomised every episode. See [§11](#11-curriculum-and-self-play-league). |
 
 ---
@@ -408,7 +420,7 @@ Both sides use the same framing ([RLWire.cs](Assets/Scripts/RL/RLWire.cs) ⇄
 
 | Trainer sends | Environment replies |
 |---|---|
-| `init` {max_team, max_allies, max_contacts, max_zones, action_mode, decision_period, sim_dt, reflexes} | `spec` (all dims, feature names, heads, reward component names) |
+| `init` {max_team, max_allies, max_contacts, max_zones, max_obstacles, action_mode, decision_period, sim_dt, reflexes} | `spec` (all dims, feature names, heads, reward component names) |
 | `reset` {use_scenario, scenario \| mode/preset/density/weather/ships/seed, learned_teams, record_teams, opponent_difficulty, episode_seed, time_limit} | first `obs` |
 | `step` + array `actions` int32 `[2, N, 6]` | `obs` |
 | `render` {path, width, height, reveal} | `rendered` (PNG written; needs a player with graphics) |
@@ -417,28 +429,29 @@ Both sides use the same framing ([RLWire.cs](Assets/Scripts/RL/RLWire.cs) ⇄
 Nothing is hard-coded on the Python side: every size comes from the `spec`.
 
 **The `obs` message.** Every array has a leading **team axis of 2** (0 = Player, 1 = Enemy). With
-the trainer defaults N = `max_team` = 8, A = 7, C = 8, Z = 5:
+the trainer defaults N = `max_team` = 8, A = 7, C = 8, Z = 5, O = `max_obstacles` = 8:
 
 | Array | Shape | Meaning |
 |---|---|---|
-| `self` | [2, N, 94] | own ship state (84) + match state (10) |
-| `allies`, `ally_mask` | [2, N, A, 17], [2, N, A] | squadron mates, nearest first |
-| `contacts`, `contact_mask` | [2, N, C, 27], [2, N, C] | team contacts, nearest first |
+| `self` | [2, N, 200] | own ship state (172) + match state (28) |
+| `allies`, `ally_mask` | [2, N, A, 22], [2, N, A] | squadron mates, nearest first |
+| `contacts`, `contact_mask` | [2, N, C, 33], [2, N, C] | team contacts, nearest first |
 | `zones`, `zone_mask` | [2, N, Z, 12], [2, N, Z] | capture zones |
-| `action_mask` | [2, N, 51] | 1 = legal, over all heads concatenated |
+| `obstacles`, `obstacle_mask` | [2, N, O, 14], [2, N, O] | islands, rocks and smoke screens, nearest edge first |
+| `action_mask` | [2, N, 53] | 1 = legal, over all heads concatenated |
 | `alive` | [2, N] | ship afloat |
-| `critic_own` | [2, N, 85] | own ship state + alive |
-| `critic_enemy`, `critic_enemy_mask` | [2, N, 29], [2, N] | true enemy state + belief |
+| `critic_own` | [2, N, 173] | own ship state + alive |
+| `critic_enemy`, `critic_enemy_mask` | [2, N, 53], [2, N] | true enemy state (consumables included) + belief |
 | `critic_zones`, `critic_zone_mask` | [2, Z, 10], [2, Z] | absolute zone state |
-| `critic_match` | [2, 13] | match state + true fleet strengths |
+| `critic_match` | [2, 31] | match state + true fleet strengths |
 | `team_reward` | [2, 11] | raw team reward components this step |
 | `agent_reward` | [2, N, 5] | raw per-ship reward components this step |
 | `learned` | [2] | which teams are policy-controlled |
 | `expert_actions`, `expert_valid` | [2, N, 6], [2, N] | behaviour cloning labels (recorded teams only) |
 
 The JSON header also carries `terminal`, `winner`, `draw`, `reason`, `battle_time`, `episode`,
-`decision`, `ships` (hulls per team), a `diag` block (sim time per decision, GC count, heap,
-object count), and on the final step `stats` (scores, kills, and the [RLMetrics](Assets/Scripts/RL/RLMetrics.cs) behaviour metrics).
+`decision`, `ships` (hulls per team), a `diag` block (sim time per decision, of which observation
+building `obs_ms`, GC count, heap, object count), and on the final step `stats` (scores, kills, and the [RLMetrics](Assets/Scripts/RL/RLMetrics.cs) behaviour metrics).
 
 ---
 
@@ -449,50 +462,76 @@ object count), and on the final step `stats` (scores, kills, and the [RLMetrics]
 - **Team frame** (absolute positions and headings): the Enemy team sees the world **rotated
   180°**, so every policy believes its own base is to the south. A rotation is used rather than a
   mirror, so port and starboard stay correct, and with them turret arcs and torpedo tubes.
-- **Egocentric frame** (ally, contact and zone tokens): `x` = to starboard, `y` = ahead, relative to
-  the observing ship.
+- **Egocentric frame** (ally, contact, zone and obstacle tokens, terrain rays, ports, incoming
+  torpedoes): `x` = to starboard, `y` = ahead, relative to the observing ship.
 - **Scale:** 1 world unit = 10 m. Relative distances are divided by 1000 (10 km), ranges by 2800
   (the longest detection range), absolute positions by the half map size.
+
+Nothing in the observation identifies a particular map. Terrain reaches the policy only through
+rays and obstacle tokens in the ship's own frame, so what it learns about using an island on one
+battlefield applies to every other.
 
 ### 6.2 Actor tokens (fog-of-war legal)
 
 ```mermaid
 flowchart LR
-    SHIP["own Ship: hull, systems,<br/>weapons, abilities, detection"] --> S["SELF token - 94<br/>84 ship state + 10 match"]
-    MATES["alive squadron mates"] --> AL["ALLY tokens - up to 7 x 17<br/>nearest first"]
-    DS["DetectionSystem.Contacts(team)<br/>last-known positions only"] --> CO["CONTACT tokens - up to 8 x 27<br/>nearest first"]
+    SHIP["own Ship: hull, systems, weapons,<br/>consumables, detection"] --> S["SELF token - 200<br/>172 ship state + 28 match"]
+    TER["WorldMap height field<br/>ProjectileSystem torpedoes, ports"] --> S
+    MATES["alive squadron mates"] --> AL["ALLY tokens - up to 7 x 22<br/>nearest first"]
+    DS["DetectionSystem.Contacts(team)<br/>last-known positions only"] --> CO["CONTACT tokens - up to 8 x 33<br/>nearest first"]
     MAP["WorldMap.Zones"] --> ZO["ZONE tokens - up to 5 x 12"]
-    SHIP --> AM["ACTION MASK - 51"]
+    OBS["WorldMap.Islands<br/>SmokeSystem clouds, merged"] --> OB["OBSTACLE tokens - up to 8 x 14<br/>nearest edge first"]
+    SHIP --> AM["ACTION MASK - 53"]
     DS --> AM
     MAP --> AM
+    OBS --> AM
 ```
 
-**Self: ship state (84).**
-- class one-hot (DD / CA / BB / SS / TR), HP
-- 7 system integrities (hull, engine, steering, main guns, secondaries, sensors, propulsion)
-- speed, throttle, heading sin/cos, x, y
-- main reload, main ready, torpedo reload, torpedoes ready, torpedo ammo, main ammo, AP loaded
-- for each of **12 consumables**: has / ready / active
-- fires, floods, damage control ready, spotted, sonar-locked, in smoke, recently fired,
-  detectability, spot range
-- submarine depth one-hot, battery
-- depth under keel, shoal gradient x/y (to avoid running aground)
-- gun range, torpedo range, evading, time since hit, in a zone
+**Self: ship state (172).**
 
-**Self: match (10).** Time left (fraction and per 20 min), both scores, both zone point rates, own
+| Group | Features |
+|---|---|
+| Hull | class one-hot (DD / CA / BB / SS / TR), HP, 7 system integrities (hull, engine, steering, main guns, secondaries, sensors, propulsion) |
+| Motion | speed, throttle, heading sin/cos, x, y (team frame) |
+| Weapons and supply | main reload, main ready, torpedo reload, torpedoes ready, torpedo ammo, main ammo, AP loaded, carries torpedoes, homing torpedoes, fuel, needs resupply |
+| **Consumables** (×12) | for ShellHE, ShellAP, SmokeScreen, EngineBoost, SurveillanceRadar, HydroacousticSearch, RepairParty, DamageControl, SpotterPlane, SonarPing, Hydrophone, SubmarineSurveillance: **has / ready / active / charges left / cooldown remaining / time left active** |
+| Status | fires, floods, damage control ready, spotted, sonar-locked, in smoke, recently fired, detectability, spot range |
+| Submarine | depth one-hot, depth changing, battery |
+| Seabed | depth under keel, shoal gradient x/y |
+| Reach | gun range, torpedo range, assured-detection range (radar / hydro / hydrophone / surveillance running) |
+| Situation | evading, time since hit, in a zone |
+| **Terrain rays** (16 + 16) | clockwise from the bow every 22.5°: distance the ship can sail before the water is too shallow **for its own draft** or the map ends (to 3 km), and distance to land high enough to block line of sight (to 6 km). 1 = clear. |
+| **Incoming torpedoes** | spotted enemy torpedoes that will pass within ~1.6 hull lengths: count, nearest one's position, time to impact; friendly torpedoes on the same course |
+| **Ports** | own harbour: position, distance, inside the service radius, still standing; enemy harbour position and distance |
+| Map edge | distance to the nearest edge |
+
+**Self: match (28).** Time left (fraction and per 20 min), both scores, both zone point rates, own
 alive fraction, enemy alive fraction *as publicly known* (from kills), weather visibility, repair
-supply.
+supply, **game mode one-hot** (domination / skirmish / fleet battle / capture and control / escort),
+**weather one-hot** and time to the next weather change, sea state, **map type one-hot** (archipelago
+/ open sea / strait), **land fraction** of the map, zone count, both fleet sizes.
 
-**Ally (17).** Relative x/y, distance, relative heading sin/cos, speed, class one-hot, HP, spotted,
-main ready, torpedoes ready, in smoke, same target as me.
+**Ally (22).** Relative x/y, distance, relative heading sin/cos, speed, class one-hot, HP, spotted,
+main ready, torpedoes ready, in smoke, same target as me, **assured-detection range** (its radar /
+hydro running), **repair running**, **making smoke**, submerged, on fire.
 
-**Contact (27).** Relative x/y, distance, relative heading, aspect angle, contact state (confirmed /
+**Contact (33).** Relative x/y, distance, relative heading, aspect angle, contact state (confirmed /
 sonar / last-known), age, identified, class one-hot (if identified), HP and speed (only if
 confirmed), in gun range, in torpedo range, fraction of my barrels that bear, torpedo firing
-solution, is my target, how many allies target it, line of sight, submerged.
+solution, is my target, how many allies target it, line of sight, submerged, **in smoke**, **pinged**
+(our homing torpedoes will track it), **firing** (gun flashes), and — once its class is identified,
+since class stats are public — **its gun range, its torpedo range, and whether I am inside its gun
+range**.
 
 **Zone (12).** Relative x/y, distance, radius, owner (mine / theirs / neutral), capture progress
 (signed for my team), contested, how many of mine inside, am I inside, under attack.
+
+**Obstacle (14).** Relative x/y, distance to its edge and centre, radius, hazard (shallow shelf)
+radius, island / rock / smoke, smoke is ours, smoke life left, **blocks my target** (it sits between
+me and what I am shooting at), **blocks my threat** (between me and the heaviest identified gun that
+can reach me), am I inside it. A smoke screen is laid as a trail of overlapping puffs, so overlapping
+puffs are merged into one screen with a bounding circle, and smoke may take at most half the slots
+so islands are never crowded out.
 
 Dead and padded rows stay all zeros. Their mask only allows option 0 of each head, so they still
 form a valid probability distribution (MAPPO death masking).
@@ -501,14 +540,14 @@ form a valid probability distribution (MAPPO death masking).
 
 | Token | Size | Contents |
 |---|---|---|
-| match | 13 | the 10 match features + my fleet strength, their fleet strength (damage-weighted, by fleet point cost), their **true** alive fraction |
-| own ship ×N | 85 (+1 "is me" added in Python) | the same 84 ship-state features + alive |
-| enemy ×N | 29 | `alive`, then **columns 1–20 = ground truth** (true x/y, heading, speed, class, HP, main reload, torpedoes ready, in smoke, radar active, detectability, sub depth), then **columns 21–28 = team belief** (confirmed / sonar / last-known / none, age, believed x/y, belief error in 10 km units) |
+| match | 31 | the 28 match features + my fleet strength, their fleet strength (damage-weighted, by fleet point cost), their **true** alive fraction |
+| own ship ×N | 173 (+1 "is me" added in Python) | the same 172 ship-state features (terrain rays included) + alive |
+| enemy ×N | 53 | `alive`, then **columns 1–44 = ground truth** (true x/y, heading, speed, class, HP, main reload, torpedoes ready, in smoke, radar active, detectability, sub depth, and **every consumable's ready / active**), then **columns 45–52 = team belief** (confirmed / sonar / last-known / none, age, believed x/y, belief error in 10 km units) |
 | zone ×Z | 10 | absolute x/y, radius, owner, progress, contested, mine inside, theirs inside |
 
 Having both truth and belief lets the critic learn "we think the destroyer is here but it's actually
 over there", which is exactly the uncertainty the actor has to play around. The
-`critic_mode=belief` ablation zeroes columns 1–20 (see `spec.enemy_privileged = [1, 21]`).
+`critic_mode=belief` ablation zeroes columns 1–44 (see `spec.enemy_privileged = [1, 45]`).
 
 ---
 
@@ -518,20 +557,20 @@ over there", which is exactly the uncertainty the actor has to play around. The
 
 | Head | Options | Meaning |
 |---|---|---|
-| **move** | 13 fixed + 1 per zone (pointer) | `0` keep (repeat the last movement order) · `1–8` compass legs N, NE, E, SE, S, SW, W, NW in the team frame · `9` close on target · `10` turn broadside to target · `11` open range · `12` regroup on the nearest BB/CA · `13+i` go to zone *i* |
+| **move** | 15 fixed + 1 per zone (pointer) | `0` keep (repeat the last movement order) · `1–8` compass legs N, NE, E, SE, S, SW, W, NW in the team frame · `9` close on target · `10` turn broadside to target · `11` open range · `12` regroup on the nearest BB/CA · `13` **take cover** from the biggest threat · `14` **return to port** · `15+i` go to zone *i* |
 | **speed** | 5 | full · ⅔ · ⅓ · stop · astern |
 | **target** | 1 fixed + 1 per contact (pointer) | `0` auto (the ship's own gunnery choice) · `j` focus contact *j* |
 | **fire** | 2 | fire at will · hold fire (stay concealed) |
 | **torpedo** | 2 | none · launch |
 | **ability** | 15 | `0` none · `1–12` ShellHE, ShellAP, SmokeScreen, EngineBoost, SurveillanceRadar, HydroacousticSearch, RepairParty, DamageControl, SpotterPlane, SonarPing, Hydrophone, SubmarineSurveillance · `13` dive · `14` surface |
 
-With the default caps (Z = 5, C = 8) there are 18 + 5 + 9 + 2 + 2 + 15 = **51 logits** per ship. The
+With the default caps (Z = 5, C = 8) there are 20 + 5 + 9 + 2 + 2 + 15 = **53 logits** per ship. The
 joint action is sampled as **six independent masked categoricals**. The log-probability of the joint
 action is the sum over heads, and so is the entropy.
 
 ### 7.2 Action masks
 
-What is legal, as decided by [RLActions.WriteMask](Assets/Scripts/RL/RLActions.cs:39):
+What is legal, as decided by [RLActions.WriteMask](Assets/Scripts/RL/RLActions.cs:41):
 
 | Option | Legal when |
 |---|---|
@@ -539,6 +578,8 @@ What is legal, as decided by [RLActions.WriteMask](Assets/Scripts/RL/RLActions.c
 | compass leg *k* | the point 1.5 km away in that direction is in bounds and navigable for this ship's draft |
 | close / broadside / open | at least one contact exists |
 | regroup | a friendly battleship or cruiser is alive |
+| take cover | there is a confirmed threat (the heaviest identified gun in range, else the nearest confirmed contact) and a navigable spot 1.1–2.6 km away from it that land or smoke hides from it — tested with the detection system's own line-of-sight check |
+| return to port | the ship's harbour stands, and a visit pays off: HP below 60%, needs resupply, fuel or main ammunition below 30%, torpedoes empty — or it is already being serviced there |
 | zone *i* | the zone exists |
 | speed, fire | always |
 | target *j* | contact row *j* exists (lost contacts can still be hunted) |
@@ -555,7 +596,7 @@ thousands of samples it would otherwise spend unlearning them.
 
 ### 7.3 How a chosen action becomes orders
 
-Carried out by [RLActions.Apply](Assets/Scripts/RL/RLActions.cs:179):
+Carried out by [RLActions.Apply](Assets/Scripts/RL/RLActions.cs:205):
 
 ```mermaid
 flowchart TD
@@ -580,6 +621,8 @@ flowchart TD
     MV2 -->|"compass, close,<br/>broadside, open"| LEG["SteerLeg: 1.5 km direct leg<br/>collision + shoal avoidance<br/>held 1.25 decision periods"]
     MV2 -->|"regroup"| RG["station 800 m astern of anchor<br/>A* if far, direct leg if near"]
     MV2 -->|"zone i"| ZN["OrderMove: A* path to zone centre<br/>stop steering once inside half radius"]
+    MV2 -->|"cover"| CV["sail for the cover point found this decision<br/>A* if far, direct leg if near"]
+    MV2 -->|"port"| PT["OrderReturnToPort<br/>stop once inside the service radius"]
 ```
 
 Order of application: consumables first (so smoke or radar is up before the movement that needs
@@ -588,7 +631,7 @@ it), then target, fire discipline, torpedoes, then speed and movement.
 - **Short legs** (`SteerLeg`) are steered directly with collision and shoal avoidance, and are
   re-aimed every decision. They stay in force for `1.25 × decision_period`, so the ship never drops
   back to a standing order between decisions.
-- **Long legs** (zone, far regroup) go through A* (`OrderMove`), and are only re-planned when the
+- **Long legs** (zone, far regroup, far cover, port) go through A* (`OrderMove`), and are only re-planned when the
   destination really moved (`OrderMoveIfChanged`).
 - **Keep** repeats the last movement order. Without it, holding a course would mean choosing the
   same leg again every second.
@@ -676,30 +719,31 @@ battleships. It can be disabled with `--set spotting_reward=false`.
 ## 9. The neural networks
 
 Defaults: `d_model = 128`, 4 attention heads, 2 transformer layers, GRU hidden 128.
-**Actor ≈ 554 k parameters, critic ≈ 383 k.** A policy file is ~2.2 MB with the actor only and
-~3.75 MB with the critic included.
+**Actor ≈ 588 k parameters, critic ≈ 399 k.** A policy file is ~2.35 MB with the actor only and
+~3.95 MB with the critic included.
 
 ### 9.1 Actor
 
 ```mermaid
 flowchart TB
-    S["self 94"] --> E0["MLP embed to 128"]
-    A["allies A x 17"] --> E1["MLP embed to 128"]
-    C["contacts C x 27"] --> E2["MLP embed to 128"]
+    S["self 200<br/>incl. terrain rays"] --> E0["MLP embed to 128"]
+    A["allies A x 22"] --> E1["MLP embed to 128"]
+    C["contacts C x 33"] --> E2["MLP embed to 128"]
     Z["zones Z x 12"] --> E3["MLP embed to 128"]
-    E0 & E1 & E2 & E3 --> CAT["token sequence: 1 + A + C + Z tokens<br/>padding masked out of attention"]
+    O["obstacles O x 14"] --> E4["MLP embed to 128"]
+    E0 & E1 & E2 & E3 & E4 --> CAT["token sequence: 1 + A + C + Z + O tokens<br/>padding masked out of attention"]
     CAT --> TB1["Transformer block 1 - pre-norm<br/>LN, 4-head masked self-attention, residual<br/>LN, FF 128-256-128 ReLU, residual"]
     TB1 --> TB2["Transformer block 2"]
     TB2 --> LNF["final LayerNorm = entity tokens"]
     LNF --> FUSE["fuse: concat(self token, masked mean of tokens)<br/>Linear 256 to 128, ReLU"]
     FUSE --> GRU["GRUCell 128: memory h_t<br/>reset at each episode start"]
-    GRU --> FX["6 linear heads on h_t<br/>move 13, speed 5, target 1,<br/>fire 2, torpedo 2, ability 15"]
+    GRU --> FX["6 linear heads on h_t<br/>move 15, speed 5, target 1,<br/>fire 2, torpedo 2, ability 15"]
     GRU --> PQ["pointer queries q = Wq h_t"]
     LNF -->|"zone tokens"| KZ["zone keys = Wk token"]
     LNF -->|"contact tokens"| KC["contact keys = Wk token"]
     PQ & KZ --> PZ["move: +1 logit per zone<br/>key dot q / sqrt(128)"]
     PQ & KC --> PC["target: +1 logit per contact"]
-    FX & PZ & PC --> LOG["51 logits, then masked categorical per head"]
+    FX & PZ & PC --> LOG["53 logits, then masked categorical per head"]
 ```
 
 - **Entity encoder:** each token type has its own 2-layer MLP embedding. The transformer lets every
@@ -824,7 +868,7 @@ Defaults, from [config.py](Training/naval_rl/config.py):
 
 | Group | Setting | Default |
 |---|---|---|
-| env | workers / max_team / max_allies / max_contacts / max_zones | 8 / 8 / 7 / 8 / 5 |
+| env | workers / max_team / max_allies / max_contacts / max_zones / max_obstacles | 8 / 8 / 7 / 8 / 5 / 8 |
 | env | decision_period / sim_dt / reflexes | 1.0 s / 0.02 s / true |
 | PPO | rollout / epochs / minibatches / chunk | 1024 / 4 / 4 / 32 |
 | PPO | gamma / lambda / clip / value_clip | 0.99 / 0.95 / 0.2 / 0.2 |
@@ -850,8 +894,8 @@ Override anything with `--set key=value` (values are parsed as JSON), or `--conf
 flowchart LR
     S0["Stage 0: bb_duel<br/>1v1 battleships, open sea, 3 min<br/>vs Recruit<br/>promote at 55%"] --> S1["Stage 1: koth_3v3<br/>BB + CA + DD, 1 zone, 6 min<br/>vs Veteran<br/>promote at 65%"]
     S1 --> S2["Stage 2: archipelago_3v3<br/>islands, 3 zones, 8 min<br/>vs Veteran<br/>promote at 65%"]
-    S2 --> S3["Stage 3: domination_6v6<br/>procedural, random weather, 15 min<br/>vs Elite + self-play league<br/>promote at 60%"]
-    S3 --> S4["Stage 4: open<br/>random map, 4-8 a side, 20 min<br/>Elite + league<br/>final stage"]
+    S2 --> S3["Stage 3: domination_6v6<br/>random battlefield, density, weather<br/>15 min, vs Elite + self-play league<br/>promote at 60%"]
+    S3 --> S4["Stage 4: open<br/>random mode, map, cap size, 3-8 a side<br/>20 min, Elite + league<br/>final stage"]
 ```
 
 | Stage | What it teaches | Source | Opponent | Min episodes | Promote at |
@@ -859,8 +903,8 @@ flowchart LR
 | 0 `bb_duel` | gunnery, target choice, angling, fire timing | [scenarios/stage0_bb_duel.json](Training/scenarios/stage0_bb_duel.json) | Recruit | 100 | 55% (random play: 31%, a simple scripted tactic: 55%) |
 | 1 `koth_3v3` | capturing while fighting, mixed classes | [scenarios/stage1_koth_3v3.json](Training/scenarios/stage1_koth_3v3.json) | Veteran | 100 | 65% |
 | 2 `archipelago_3v3` | spotting, smoke, radar, islands | [scenarios/stage2_archipelago_3v3.json](Training/scenarios/stage2_archipelago_3v3.json) | Veteran | 150 | 65% |
-| 3 `domination_6v6` | the full game | procedural, world reused 20 episodes per worker | Elite + league | 200 | 60% |
-| 4 `open` | generalisation over maps and fleet sizes | procedural, random preset and density | Elite + league | — | final stage |
+| 3 `domination_6v6` | the full game **on any battlefield** | procedural: random preset (archipelago / open sea / strait), island density and weather; a new map every 8 episodes per worker | Elite + league | 200 | 60% |
+| 4 `open` | generalisation over modes, maps and fleet sizes | procedural: random mode (domination / skirmish / fleet battle / capture and control), preset, density, weather, cap radius 1.3–2 km, 3–8 a side; a new map every 4 episodes | Elite + league | — | final stage |
 
 The scenario files use the Scenario editor's JSON format, so any battle saved in the editor can be
 used as a stage.
@@ -871,7 +915,9 @@ minimum number of episodes.
 
 **Variety per episode:** the learner's side is random (Player or Enemy). Scenario ships are jittered
 by ±40 units and ±15° heading. Procedural worlds are regenerated every `world_reuse` episodes, and
-every episode gets a fresh gameplay seed (shell dispersion, fires, and so on).
+every episode gets a fresh gameplay seed (shell dispersion, fires, and so on). In a procedural stage
+`"preset"`, `"density"`, `"weather"` and `"mode"` can be a number, `"random"` or a list to draw from,
+and `"capture_radius"` a `[min, max]` range — this is what keeps the policy from memorising a map.
 
 ### 11.2 Self-play league (stage 3 onwards)
 
@@ -927,7 +973,7 @@ between two observations:
 | fire | `Weapons.HoldFire` |
 | target | `0` (auto) unless the ship's target differs from its own `PickGunTarget()`, then that contact's index |
 | speed | throttle bins: ≥0.83 full, ≥0.5 ⅔, ≥0.16 ⅓, else stop. Reverse → astern. |
-| move | 1) fleet commander assigned a zone (hold / contest / decap) → that zone. 2) A* path ending in a zone → that zone. 3) Relative to target bearing: <35° close, >145° open, 65–115° broadside. 4) Otherwise the nearest compass leg (team frame). 5) Parked in a zone → that zone, parked elsewhere → keep. |
+| move | 0) heading home to the harbour → port; retreating behind terrain from a threat (`ShipAI.TakingCover`) → cover. 1) fleet commander assigned a zone (hold / contest / decap) → that zone. 2) A* path ending in a zone → that zone. 3) Relative to target bearing: <35° close, >145° open, 65–115° broadside. 4) Otherwise the nearest compass leg (team frame). 5) Parked in a zone → that zone, parked elsewhere → keep. |
 
 Any label that would be illegal under the mask the ship saw is replaced by option 0. Step 1 of the
 move rule was added in "v2". In v1 the policy almost never chose "go to zone", won the fights, and
@@ -951,8 +997,8 @@ lost on points.
   | `minibatches` | 16 | Smaller, more frequent updates |
 
 The exact command is in [Training/README.md](Training/README.md#recommended-recipe-for-the-full-game).
-[pipeline_bc_mappo.sh](Training/pipeline_bc_mappo.sh) chains all of it: BC → evaluate → install in
-the game → MAPPO → automatic checkpoint evaluation.
+[pipeline_bc_mappo.sh](Training/pipeline_bc_mappo.sh) chains all of it: collect (if needed) → BC →
+evaluate → install in the game → MAPPO → automatic checkpoint evaluation.
 
 ---
 
@@ -1010,8 +1056,10 @@ sequenceDiagram
     end
 ```
 
-- Loaded at startup by `GameBootstrap`. `TryLoad` checks the head count and observation dims, so a
-  policy trained on an older layout is refused with a clear status message instead of misbehaving.
+- Loaded at startup by `GameBootstrap`. `TryLoad` checks every observation dimension and every
+  head's fixed option count, so a policy trained on an older layout is refused with a clear status
+  message instead of misbehaving. The obstacle count per ship is read from the policy file
+  (`max_obstacles`), so the game feeds the same number of obstacle tokens the network trained with.
 - It is inactive while `RLEnvironment` exists, because during training the trainer drives Learned
   ships.
 - It uses the same `RLObservation.Build` and `RLActions.Apply` code paths as training, so the network
@@ -1046,8 +1094,8 @@ Python reads every size and name from the spec, so most changes are made **only 
 1. Add its name to the right list in [RLLayout.cs](Assets/Scripts/RL/RLLayout.cs) (for example
    `ContactFeatures`).
 2. Write the value in the matching writer in [RLObservation.cs](Assets/Scripts/RL/RLObservation.cs),
-   **at the same position**. The dimension checks throw if the counts drift. Update `CheckDims()` if
-   you change ally, contact, zone or critic-zone sizes.
+   **at the same position**. Every writer checks its own count against the layout and throws if they
+   drift.
 3. Rebuild the player and retrain. Old `naval_policy.bin` files are refused by `RLPolicyDriver`
    because the dims no longer match.
 
@@ -1097,3 +1145,6 @@ an entry to `DEFAULT_STAGES` in [config.py](Training/naval_rl/config.py), or pas
 | **PFSP** | Prioritised Fictitious Self-Play: pick past opponents you still lose to more often |
 | **Team frame** | world coordinates rotated 180° for the Enemy team, so both teams see the same picture |
 | **Intent actions** | high-level orders (go there, target that) that the game's autopilot and gunnery carry out |
+| **Terrain rays** | per-ship distances, in 16 directions around the bow, to water too shallow for its draft and to land that blocks sight |
+| **Obstacle token** | one island, rock or merged smoke screen near the ship, as an entity the transformer can attend to |
+| **Domain randomisation** | drawing a different map, weather and mode for each episode, so the policy learns the game rather than one battlefield |

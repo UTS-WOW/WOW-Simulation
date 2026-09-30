@@ -52,11 +52,12 @@ class Obs:
 
 
 def init_message(max_team: int, max_allies: int, max_contacts: int, max_zones: int,
-                 action_mode: str, decision_period: float, sim_dt: float, reflexes: bool) -> dict:
+                 action_mode: str, decision_period: float, sim_dt: float, reflexes: bool,
+                 max_obstacles: int = 8) -> dict:
     return {
         "type": "init", "max_team": max_team, "max_allies": max_allies, "max_contacts": max_contacts,
-        "max_zones": max_zones, "action_mode": action_mode, "decision_period": decision_period,
-        "sim_dt": sim_dt, "reflexes": reflexes,
+        "max_zones": max_zones, "max_obstacles": max_obstacles, "action_mode": action_mode,
+        "decision_period": decision_period, "sim_dt": sim_dt, "reflexes": reflexes,
     }
 
 

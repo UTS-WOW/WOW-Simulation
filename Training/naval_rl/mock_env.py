@@ -18,7 +18,7 @@ from .spec import Spec
 def mock_spec(init: dict) -> Spec:
     Z, C = init["max_zones"], init["max_contacts"]
     intent = init.get("action_mode", "intent") == "intent"
-    move_fixed = 13 if intent else 5
+    move_fixed = 15 if intent else 5
     heads = [
         {"name": "move", "fixed": move_fixed, "pointer": "zones" if intent else "", "size": move_fixed + (Z if intent else 0)},
         {"name": "speed", "fixed": 5, "pointer": "", "size": 5},
@@ -27,13 +27,14 @@ def mock_spec(init: dict) -> Spec:
         {"name": "torpedo", "fixed": 2, "pointer": "", "size": 2},
         {"name": "ability", "fixed": 15, "pointer": "", "size": 15},
     ]
-    dims = {"self": 16, "ally": 8, "contact": 10, "zone": 6, "critic_own": 17, "critic_enemy": 12,
+    dims = {"self": 16, "ally": 8, "contact": 10, "zone": 6, "obstacle": 7, "critic_own": 17, "critic_enemy": 12,
             "critic_zone": 6, "critic_match": 8}
     team_rc = ["score_delta", "damage_dealt", "damage_taken", "zones_captured", "zones_lost", "kills", "losses",
                "friendly_fire_taken", "win", "loss", "draw"]
     agent_rc = ["damage_dealt", "spotting_damage", "friendly_fire_dealt", "damage_taken", "sunk"]
     return Spec.from_json({
         "max_team": init["max_team"], "max_allies": init["max_allies"], "max_contacts": C, "max_zones": Z,
+        "max_obstacles": init.get("max_obstacles", 4),
         "action_mode": init.get("action_mode", "intent"), "decision_period": init.get("decision_period", 1.0),
         "sim_dt": init.get("sim_dt", 0.02), "dims": dims, "heads": heads, "enemy_privileged": [1, 6],
         "features": {"critic_enemy": ["alive", "t1", "t2", "t3", "t4", "t5", "b0", "b1", "b2", "belief_none", "b4", "b5"]},
@@ -136,7 +137,7 @@ class MockWorker:
 
     def _build(self, terminal, team_rew, agent_rew, winner=-1, draw=False) -> Obs:
         s = self.spec
-        n, A, C, Z = s.max_team, s.max_allies, s.max_contacts, s.max_zones
+        n, A, C, Z, O = s.max_team, s.max_allies, s.max_contacts, s.max_zones, s.max_obstacles
         d = s.dims
         rng = self.rng
         alive = self._alive.astype(np.float32)
@@ -159,6 +160,8 @@ class MockWorker:
         ally_mask[..., :min(A, 2)] = 1.0
         zone_mask = np.zeros((2, n, Z), dtype=np.float32)
         zone_mask[..., :3] = 1.0
+        obstacle_mask = np.zeros((2, n, O), dtype=np.float32)
+        obstacle_mask[..., :min(O, 2)] = 1.0
         for t in range(2):
             if not self._learned[t]:
                 selfv[t] = 0.0
@@ -171,6 +174,8 @@ class MockWorker:
             "contact_mask": np.ones((2, n, C), dtype=np.float32),
             "zones": rng.normal(size=(2, n, Z, d["zone"])).astype(np.float32),
             "zone_mask": zone_mask,
+            "obstacles": rng.normal(size=(2, n, O, d["obstacle"])).astype(np.float32),
+            "obstacle_mask": obstacle_mask,
             "action_mask": mask,
             "alive": alive,
             "critic_own": np.concatenate([rng.normal(size=(2, n, d["critic_own"] - 1)).astype(np.float32),

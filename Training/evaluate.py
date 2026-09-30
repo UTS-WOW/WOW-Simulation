@@ -3,6 +3,8 @@
     python evaluate.py --checkpoint runs/<run>/checkpoints/latest.pt --stage 0 --episodes 96
     python evaluate.py --random --stage 0 --episodes 96          # uniform-random baseline
     python evaluate.py --checkpoint ... --stage 3 --max-team 12  # zero-shot on bigger fleets
+    python evaluate.py --checkpoint ... --stage 0 --set 'stages=[{"name": "x", "procedural": {"preset": 0,
+        "density": 1, "ships": [6, 6], "time_limit": 900}, "difficulty": 2}]'   # one chosen battlefield
 
 The learner's side is randomised per battle, as in training. --greedy takes the policy's likeliest
 action instead of sampling. Prints win rate with its standard error, and writes a JSON summary.
@@ -43,6 +45,8 @@ def main():
     p.add_argument("--base-port", type=int, default=5300)
     p.add_argument("--seed", type=int, default=123)
     p.add_argument("--out")
+    p.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
+                   help="override a config value, e.g. a stage list to test one battlefield")
     a = p.parse_args()
     if not (a.random or a.scripted or a.checkpoint):
         p.error("pass --checkpoint, --random or --scripted")
@@ -53,11 +57,14 @@ def main():
         ck = torch.load(a.checkpoint, map_location="cpu", weights_only=False)
         cfg = Config(**{k: v for k, v in ck["config"].items() if k in Config.__dataclass_fields__})
         spec = Spec.from_json(ck["spec"])
+    if a.set:
+        cfg = Config.load(None, a.set, base=cfg.to_dict())
     n = a.max_team or (spec.max_team if spec else cfg.max_team)
     caps = dict(max_team=n, max_allies=max(n - 1, cfg.max_allies), max_contacts=max(n, cfg.max_contacts),
-                max_zones=cfg.max_zones)
+                max_zones=cfg.max_zones, max_obstacles=spec.max_obstacles if spec and spec.max_obstacles else cfg.max_obstacles)
     init = init_message(caps["max_team"], caps["max_allies"], caps["max_contacts"], caps["max_zones"],
-                        spec.action_mode if spec else cfg.action_mode, cfg.decision_period, cfg.sim_dt, cfg.reflexes)
+                        spec.action_mode if spec else cfg.action_mode, cfg.decision_period, cfg.sim_dt, cfg.reflexes,
+                        caps["max_obstacles"])
     workers = make_workers(a.workers, init, os.path.abspath(a.unity_binary), a.base_port)
     wspec = workers[0].spec
     if a.checkpoint:

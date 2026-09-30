@@ -123,6 +123,9 @@ fields:
 | `G` | Retreat |
 | `Y` | Return to port |
 | `Q` | Smoke |
+| `Z` / `X` | Selected submarines dive one level / surface one level |
+| `E` | Damage control on the selected ships |
+| `Esc` | Cancel an order still waiting for its click (`C`, `V`, `B`, `T`) |
 
 **Formations**
 
@@ -538,14 +541,27 @@ Every ship has a `Controller`:
 | `Learned` | A trained policy |
 
 A learned ship decides where to go, how fast, what to shoot, whether to hold fire, when to launch
-torpedoes and which consumable to use. The existing autopilot, gun lead and turret training then
-carry out those decisions.
+torpedoes and which consumable to use — including when to **take cover** behind an island or smoke
+and when to **return to port** to rearm and repair. The existing autopilot, gun lead and turret
+training then carry out those decisions.
+
+What a learned ship perceives works on **any battlefield**:
+
+- **Terrain** — 16 rays around the ship report open water for its own draft and land that blocks
+  sight, and the nearest islands, rocks and smoke screens are given as separate objects, including
+  whether each one hides it from its target or from the biggest gun aimed at it.
+- **Every consumable** — charges left, cooldown and time remaining for its own; allies' radar, hydro,
+  repair and smoke; spotted torpedoes heading its way; its harbour.
+- **The kind of battle** — game mode, weather, map type and how much of the map is land.
+
+Training draws a random battlefield, weather, mode and fleet size, so the policy learns the game
+rather than one map.
 
 `Training/` contains the MAPPO trainer: a recurrent actor, a critic that sees the true game state, a
 curriculum and a self-play league.
 
 - **[Training/README.md](Training/README.md)** — how to build the headless player, train, evaluate and
-  watch a policy, plus results so far.
+  watch a policy, share checkpoints so the whole team can train it, plus results so far.
 - **[RL_README.md](RL_README.md)** — how the whole system works, file by file, with diagrams.
 
 ---
@@ -571,4 +587,4 @@ and the package assemblies in `Library/ScriptAssemblies`.
 | [SHIPS.md](SHIPS.md) | How each real ship's statistics were converted into game values |
 | [ENVIRONMENT.md](ENVIRONMENT.md) | Terrain, draft and grounding, deployment, weather, fog of war, objective rules |
 | [RL_README.md](RL_README.md) | The reinforcement-learning system in depth |
-| [Training/README.md](Training/README.md) | Building the training player, training, evaluation and results |
+| [Training/README.md](Training/README.md) | Building the training player, training, evaluation, sharing checkpoints with the team, and results |

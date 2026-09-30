@@ -10,9 +10,10 @@ namespace Naval.RL
     ///
     /// This mirrors Training/naval_rl/model.py operation for operation: MLP token embeddings, pre-norm
     /// transformer blocks with masked multi-head attention, masked-mean pooling, a GRU cell, linear
-    /// heads and pointer heads (dot products against the contact and zone tokens). There is no
-    /// padding here - the game feeds exactly the ships, contacts and zones that exist - and attention
-    /// over real tokens gives the same numbers as the padded training batches.
+    /// heads and pointer heads (dot products against the contact and zone tokens). Tokens are ordered
+    /// [self, allies, contacts, zones, obstacles]. There is no padding here - the game feeds exactly
+    /// the ships, contacts, zones and obstacles that exist - and attention over real tokens gives the
+    /// same numbers as the padded training batches.
     ///
     /// Deliberately free of UnityEngine so the numerics can be checked against PyTorch outside the
     /// editor (Training/tests/parity/).
@@ -33,6 +34,8 @@ namespace Naval.RL
         public string ActionMode { get; private set; } = "intent";
         public float DecisionPeriod { get; private set; } = 1f;
         public bool HasCritic { get; private set; }
+        /// <summary>How many obstacle tokens the policy was trained with; the game feeds the same number.</summary>
+        public int MaxObstacles { get; private set; } = 8;
         public readonly Dictionary<string, int> Dims = new Dictionary<string, int>();
         public readonly List<HeadInfo> ActionHeads = new List<HeadInfo>();
 
@@ -61,6 +64,7 @@ namespace Naval.RL
                 DecisionPeriod = (float)MiniJson.Num(header["decision_period"]),
                 HasCritic = (bool)header["has_critic"],
             };
+            if (header.TryGetValue("max_obstacles", out var mo)) p.MaxObstacles = MiniJson.Int(mo);
             foreach (var kv in (Dictionary<string, object>)header["dims"]) p.Dims[kv.Key] = MiniJson.Int(kv.Value);
             foreach (var o in (List<object>)header["action_heads"])
             {
@@ -238,13 +242,14 @@ namespace Naval.RL
         /// <summary>
         /// One decision for one ship. Inputs are packed rows: allies [nAllies, allyDim] and so on.
         /// hidden is read and overwritten with the new GRU state. logits must hold LogitCount();
-        /// attention (optional) receives 1 + nAllies + nContacts + nZones weights.
+        /// attention (optional) receives 1 + nAllies + nContacts + nZones + nObstacles weights.
         /// </summary>
         public void Act(float[] self, float[] allies, int nAllies, float[] contacts, int nContacts,
-                        float[] zones, int nZones, float[] hidden, float[] logits, float[] attention = null)
+                        float[] zones, int nZones, float[] obstacles, int nObstacles,
+                        float[] hidden, float[] logits, float[] attention = null)
         {
             int d = D;
-            int T = 1 + nAllies + nContacts + nZones;
+            int T = 1 + nAllies + nContacts + nZones + nObstacles;
             var x = new float[T * d];
             Embed("actor.encoder.embeds.0", self, 0, Dims["self"], x, 0);
             for (int i = 0; i < nAllies; i++) Embed("actor.encoder.embeds.1", allies, i * Dims["ally"], Dims["ally"], x, (1 + i) * d);
@@ -252,6 +257,8 @@ namespace Naval.RL
             for (int i = 0; i < nContacts; i++) Embed("actor.encoder.embeds.2", contacts, i * Dims["contact"], Dims["contact"], x, (c0 + i) * d);
             int z0 = c0 + nContacts;
             for (int i = 0; i < nZones; i++) Embed("actor.encoder.embeds.3", zones, i * Dims["zone"], Dims["zone"], x, (z0 + i) * d);
+            int o0 = z0 + nZones;
+            for (int i = 0; i < nObstacles; i++) Embed("actor.encoder.embeds.4", obstacles, i * Dims["obstacle"], Dims["obstacle"], x, (o0 + i) * d);
 
             var tokens = Encode("actor.encoder", x, T, attention);
             var fused = FuseFirstAndMean("actor", tokens, T, 0);

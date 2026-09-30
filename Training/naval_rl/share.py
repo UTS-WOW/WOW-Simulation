@@ -130,11 +130,6 @@ def _check_can_replace(dest_dir: str, name: str, update: int, mine: dict) -> Non
             f"This run did not start from the shared checkpoint '{name}', so publishing it there would "
             f"replace {current['author']}'s training rather than continue it. Resume from "
             f"checkpoints/{name}/latest.pt first, publish under another --name, or pass --force.")
-    if update <= int(current["update"]):
-        raise SystemExit(
-            f"'{name}' is already at update {current['update']} ({current['author']}, "
-            f"{current['published']}); this checkpoint is at update {update}, so there is nothing "
-            f"new to publish. Pass --force to replace it anyway.")
     base = mine["from_update"] if mine.get("shared") == name else min(h["update"] for h in own)
     others = [h for h in history if h.get("line") != mine.get("line") and int(h["update"]) > base]
     if others:
@@ -143,6 +138,11 @@ def _check_can_replace(dest_dir: str, name: str, update: int, mine: dict) -> Non
             f"This run continues '{name}' from update {base}, but {h['author']} published update "
             f"{h['update']} on {h['published']} since then. Publishing would throw their training "
             f"away. Publish under another --name (and compare the two with evaluate.py), or pass --force.")
+    if update <= int(current["update"]):
+        raise SystemExit(
+            f"'{name}' is already at update {current['update']} ({current['author']}, "
+            f"{current['published']}); this checkpoint is at update {update}, so there is nothing "
+            f"new to publish. Pass --force to replace it anyway.")
 
 
 # ------------------------------------------------------------------ publishing

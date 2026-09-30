@@ -32,6 +32,10 @@ the algorithm, curriculum and export, with diagrams — see [../RL_README.md](..
 - **A Linux build of the game** — see step 1 below.
 - **`dotnet`**, only for the C# ⇄ PyTorch parity test.
 
+The commands below call `python`; use the interpreter that has PyTorch (for example after
+`conda activate`). The shell scripts (`check_paths.sh`, `pipeline_bc_mappo.sh`) take it from the
+`PYTHON` environment variable when set, e.g. `PYTHON=~/anaconda3/bin/python ./check_paths.sh`.
+
 ---
 
 ## Quick start
@@ -79,13 +83,14 @@ python bc.py collect --battles 120
 python bc.py train
 
 # 3. MAPPO fine-tuning from the cloned policy
-python train.py --unity-binary ../Builds/NavalTrainer/NavalTrainer.x86_64 --run-name full_mappo \
+python train.py --unity-binary ../Builds/NavalTrainer/NavalTrainer.x86_64 --run-name bc_mappo \
     --init-from runs/bc/bc.pt --set start_stage=3 --set actor_freeze_updates=10 --set lr_actor=5e-5 \
     --set ent_coef=0.002 --set ent_coef_final=0.0005 --set gamma=0.995 --set minibatches=16
 ```
 
-[`pipeline_bc_mappo.sh`](pipeline_bc_mappo.sh) chains the whole thing: behaviour cloning → evaluate
-→ install in the game → MAPPO fine-tuning → automatic checkpoint evaluation.
+[`pipeline_bc_mappo.sh`](pipeline_bc_mappo.sh) chains the whole thing: collect demonstrations (unless
+`runs/bc/demos.npz` exists) → behaviour cloning → evaluate → install in the game → MAPPO fine-tuning
+→ automatic checkpoint evaluation.
 
 ### Check the trainer without Unity
 
@@ -108,14 +113,16 @@ continue a checkpoint a teammate shared, see [Training as a team](#training-as-a
 ## Training as a team
 
 Your own runs stay on your machine (`runs/` is gitignored). To let the rest of the team continue your
-training, **publish** a checkpoint into `checkpoints/<name>/`, which is committed to git.
+training, **publish** a checkpoint into `checkpoints/<name>/`, which is committed to git. Run every
+command in this section from the `Training/` folder unless it says otherwise.
 
 ### Shared checkpoints
 
 | Name | What it is | Use it with |
 |---|---|---|
-| `full_mappo` | MAPPO fine-tuning of behaviour cloning v2 on 6v6 domination (stage 3). **The main line to keep training.** | `--resume` |
-| `bc` | The behaviour cloning v2 warm start (0.60 win rate vs the Elite rule AI) | `--init-from`, to start a new line |
+| `mappo_terrain` | MAPPO fine-tuning of `bc_terrain` on 6v6 domination over random battlefields (stage 3). **The main line to keep training.** | `--resume` |
+| `bc_terrain` | Behaviour cloning of the Elite rule AI with the current observation layout (terrain, obstacles, full consumable state) | `--init-from`, to start a new line |
+| `full_mappo`, `bc` | The previous lines, trained on the **first observation layout**. The current game cannot resume or load them; kept only for the record. | — |
 
 `python share_checkpoint.py list` shows what is currently shared, who published it and when.
 
@@ -127,8 +134,8 @@ training, **publish** a checkpoint into `checkpoints/<name>/`, which is committe
    git pull
    ```
 
-2. Build the headless player once, from the repository root. `Builds/` is not in git, so everyone
-   builds their own:
+2. Build the headless player once, **from the repository root** (`Builds/` is not in git, so
+   everyone builds their own; rebuild after pulling game code changes):
 
    ```bash
    Training/build_player.sh
@@ -137,42 +144,63 @@ training, **publish** a checkpoint into `checkpoints/<name>/`, which is committe
 3. Resume the shared checkpoint:
 
    ```bash
-   python train.py --unity-binary ../Builds/NavalTrainer/NavalTrainer.x86_64 --resume checkpoints/full_mappo/latest.pt
+   python train.py --unity-binary ../Builds/NavalTrainer/NavalTrainer.x86_64 --resume checkpoints/mappo_terrain/latest.pt
    ```
 
-   Its self-play opponents are copied into your own `runs/full_mappo/`. To watch in the editor
-   instead, use `--ports 5005` in place of `--unity-binary ...`.
+   This trains in your own `runs/mappo_terrain/`, with the shared checkpoint's settings, and copies
+   its self-play opponents there. To watch in the editor instead, use `--ports 5005` in place of
+   `--unity-binary ...`. Use `--workers` to match your machine; it does not change the training.
 
 4. Stop with `Ctrl+C` whenever you like. The trainer saves a checkpoint before exiting.
+   To carry on later with **your own** session, resume `runs/mappo_terrain/checkpoints/latest.pt`
+   instead — but if a teammate has published in the meantime, resume their new shared checkpoint
+   (step 3) rather than yours, or your next publish will be refused.
 
-5. Pull again (in case someone published meanwhile), then publish your progress:
+5. Pull again (in case someone published meanwhile), then publish your progress. The trainer
+   prints this exact command when you resume a shared checkpoint:
 
    ```bash
    git pull
-   python share_checkpoint.py publish full_mappo --note "what you changed or noticed"
+   python share_checkpoint.py publish mappo_terrain --note "what you changed or noticed"
    ```
 
-6. Commit and push the checkpoint folder straight away:
+6. Commit and push the checkpoint folder straight away (the publish command prints these too):
 
    ```bash
-   git add checkpoints/full_mappo
-   git commit -m "Share checkpoint full_mappo at update N"
+   git add checkpoints/mappo_terrain
+   git commit -m "Share checkpoint mappo_terrain at update N"
    git push
    ```
+
+### Start a new shared line
+
+After changing the observation or action layout, or to try different settings without disturbing
+the main line, start from a warm start and publish under a new name:
+
+```bash
+python train.py --unity-binary ../Builds/NavalTrainer/NavalTrainer.x86_64 --run-name my_line \
+    --init-from checkpoints/bc_terrain/latest.pt --set start_stage=3 --set actor_freeze_updates=10 --set lr_actor=5e-5 \
+    --set ent_coef=0.002 --set ent_coef_final=0.0005 --set gamma=0.995 --set minibatches=16
+python share_checkpoint.py publish my_line --note "what this line is for"
+```
 
 ### Rules that keep everyone's training safe
 
 - **One shared name is one line of training — take turns.** Tell the team when you start a session.
 - `publish` **refuses** to overwrite a shared checkpoint when:
   - your run did not start from it,
-  - your checkpoint is not ahead of it, or
-  - someone else published to it after you started.
+  - someone else published to it after your run started, or
+  - your checkpoint is not ahead of it.
 
-  In that case publish under your own name (for example `--name full_mappo_alex`), compare the two
-  with `evaluate.py`, and publish the better one onto the main line with `--force`.
+  In that case publish under your own name (for example `--name mappo_terrain_alex`), compare the two
+  with `python evaluate.py --checkpoint checkpoints/<name>/latest.pt --stage 3 --episodes 48`, and
+  publish the better one onto the main line with `--force`.
 - **Pull right before publishing, push right after.** If git still reports a conflict on
   `latest.pt`, do not simply keep your own copy — that discards a teammate's work. Publish yours
   under another name instead.
+- **Settings travel with the checkpoint.** Any `--set` you pass when resuming (for example a smaller
+  `rollout`) is saved into your checkpoint, and everyone who resumes your publish inherits it. Only
+  override training settings on purpose, and say so in `--note`.
 - **A checkpoint only fits a game with the same observation and action layout.** After changing
   `RLLayout.cs`, `RLObservation.cs` or `RLActions.cs`, old checkpoints cannot be resumed (`train.py`
   says so and lists the differences). Start a new line under a new name.
@@ -217,7 +245,7 @@ python train.py ... --set workers=12 --set rollout=512
 | `./check_paths.sh` | Briefly runs every curriculum stage, self-play against snapshots, and every ablation mode against the real game. |
 | `python probe_actions.py` | Issues hand-written orders in the archipelago battle and checks each one works: moving through islands without grounding, radar, smoke, torpedoes, hold fire. Films it to `runs/probe/battle.mp4`. |
 | `python watch.py --checkpoint runs/<run>/checkpoints/latest.pt --stage 3` | A trained policy plays one battle, filmed to `runs/watch/battle.mp4` and `.gif`. |
-| `python evaluate.py --checkpoint <ckpt> --stage 3 --episodes 48` | Win rate ± standard error and damage against the rule AI. `--random` and `--scripted` give baselines; `--max-team 12` tests zero-shot on bigger fleets. |
+| `python evaluate.py --checkpoint <ckpt> --stage 3 --episodes 48` | Win rate ± standard error and damage against the rule AI. `--random` and `--scripted` give baselines; `--max-team 12` tests zero-shot on bigger fleets; `--set 'stages=[...]' --stage 0` tests one chosen battlefield. |
 | `python watch_checkpoints.py --run <run>` | Evaluates every checkpoint of a running training run (96 battles, same seed each time) and appends a row to `runs/<run>/evals/summary.jsonl`. |
 | `python share_checkpoint.py publish <run>` / `list` | Shares a run's checkpoint with the team through git, or lists what is shared — see [Training as a team](#training-as-a-team). |
 | `python bc.py collect` / `python bc.py train` | Records rule-AI battles with every decision labelled in the policy's action heads, then trains the actor to imitate them (the warm start for MAPPO). |
@@ -248,7 +276,7 @@ Each run writes to `runs/<run_name>/`:
 |---|---|
 | `config.json` | The exact config used |
 | `spec.json` | The environment spec (sizes, feature names, action heads) |
-| `metrics.jsonl` | One line per update: losses, entropy, KL, clip fraction, grad norms, win rate vs the rule AI, curriculum stage, decisions/s, sim timing, behaviour metrics |
+| `metrics.jsonl` | One line per update: losses, entropy, KL, clip fraction, grad norms, win rate vs the rule AI, curriculum stage, decisions/s, sim timing (`sim_ms_mean`, and `obs_ms_mean` for building observations), behaviour metrics |
 | `episodes.jsonl` | One line per battle: stage, learner side, opponent, result, and `learner_*` / `opponent_*` behaviour metrics |
 | `checkpoints/latest.pt` | Everything `--resume` needs. A numbered copy is kept every 250 updates. |
 | `snapshots/actor_NNNNNN.pt` | Frozen past policies for the self-play league |
@@ -263,7 +291,36 @@ Each run writes to `runs/<run_name>/`:
 All evaluations use **sampled** actions. Early policies sit near 50/50 on fire vs hold, so always
 taking the likelier option (greedy) can mean never firing.
 
-### Full game — behaviour cloning
+> **Observation layouts.** The "first layout" sections below were measured before ships could
+> sense terrain, obstacles, torpedoes, ports and the full state of every consumable, and before the
+> move head gained "take cover" and "return to port". Policies from that layout cannot be loaded by
+> the current game (`RLPolicyDriver` refuses them) or resumed by `train.py` (it lists the
+> differences), so they have to be retrained.
+
+### Current layout — behaviour cloning (`bc_terrain`)
+
+**Training data:** 120 Elite-vs-Elite battles over stages 1–4 — which now include random
+battlefields, modes and fleet sizes — about 863k decisions, 80% usable labels. The rule AI takes
+cover in 3.3% of its movement labels and heads home to port in 10.1%, so both new moves are learned.
+
+**Held-out accuracy per head:**
+
+| move | speed | target | fire | torpedo | ability |
+|---|---|---|---|---|---|
+| 0.70 | 0.94 | 0.93 | 0.99 | 1.00 | 0.98 |
+
+**Against the Elite rule AI** (48 battles each, sampled actions):
+
+| Battlefields | Win rate | Damage dealt | Damage taken |
+|---|---|---|---|
+| Stage 3: random preset, island density and weather | 0.38 ± 0.07 | 4.57 | 3.60 |
+
+It out-damages the rule AI but loses mostly on objective points (every battle ended on points or the
+clock, none by a fleet being sunk), which is what MAPPO fine-tuning is for. The main line
+`mappo_terrain` starts from it; its actor is frozen for the first 10 updates while the critic warms
+up, so there is no fine-tuning result yet.
+
+### First layout — full game, behaviour cloning
 
 6v6 domination against the **Elite** rule AI, 48 battles each:
 
@@ -293,7 +350,7 @@ taking the likelier option (greedy) can mean never firing.
 `runs/full_mappo/evals/summary.jsonl`). It has logged 9 updates so far and is still inside the
 10-update actor freeze, so there is no fine-tuning result yet.
 
-### Stage 0 — battleship duel, learned from scratch
+### First layout — stage 0 battleship duel, learned from scratch
 
 1v1 battleships against the **Recruit** AI, 96 battles each:
 
@@ -307,7 +364,7 @@ The settings that produced this run — rollout 1024, 4 minibatches, 4 epochs, a
 2e-4, gamma 0.99, win/loss ±1 — are now the defaults. The earlier ones (256-step rollout, gamma
 0.995, ±3 win bonus) left the duel too noisy to learn from.
 
-### Experiments that did not learn
+### First layout — experiments that did not learn
 
 Kept for the record (96 battles each, sampled actions):
 

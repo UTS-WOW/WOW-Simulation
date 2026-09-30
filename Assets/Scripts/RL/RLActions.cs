@@ -10,6 +10,8 @@ namespace Naval.RL
     /// avoidance-steered direct legs for short ones), gunnery through the existing auto-lead, and
     /// consumables through ShipAbilities. What the policy decides is where to go, how fast, what to
     /// shoot, whether to shoot at all, when to launch torpedoes and which consumable to spend.
+    /// Two moves lean on the terrain for it: "cover" sails for the nearby spot that land or smoke
+    /// hides from the biggest threat, "port" sails home to rearm, refuel and repair.
     /// </summary>
     public static class RLActions
     {
@@ -64,6 +66,8 @@ namespace Naval.RL
                 mask[m + RLLayout.MoveBroadside] = rel;
                 mask[m + RLLayout.MoveOpen] = rel;
                 mask[m + RLLayout.MoveRegroup] = RegroupAnchor(s) != null ? 1f : 0f;
+                mask[m + RLLayout.MoveCover] = o.hasCover[row] ? 1f : 0f;
+                mask[m + RLLayout.MovePort] = PortWorthVisiting(s) ? 1f : 0f;
                 int zones = map != null ? Mathf.Min(map.Zones.Count, L.maxZones) : 0;
                 for (int z = 0; z < zones; z++)
                     mask[m + RLLayout.MoveFixedIntent + z] = map.Zones[z] != null ? 1f : 0f;
@@ -149,6 +153,28 @@ namespace Naval.RL
                 if (c != null && c.IsLive && RLObservation.TorpedoSolution(s, c)) return c;
             }
             return null;
+        }
+
+        /// <summary>
+        /// The harbour is a long way back, so the option is only open when a visit would pay off -
+        /// damaged, short of ammunition or fuel - or to stay on station while being serviced.
+        /// </summary>
+        static bool PortWorthVisiting(Ship s)
+        {
+            var port = OwnPort(s);
+            if (port == null) return false;
+            var r = s.Resources;
+            if (Vector2.Distance(port.Position, s.Position) <= port.serviceRadius) return true;
+            return s.HealthFraction < 0.6f || r.NeedsResupply || r.FuelFraction < 0.3f ||
+                   (r.MainAmmoMax > 0 && r.MainAmmo < r.MainAmmoMax * 0.3f) ||
+                   (r.TorpedoAmmoMax > 0 && r.TorpedoAmmo == 0);
+        }
+
+        static NavalPort OwnPort(Ship s)
+        {
+            var map = WorldMap.I;
+            var port = map != null ? map.NearestPort(s.Position, s.team) : null;
+            return port != null && !port.IsDestroyed ? port : null;
         }
 
         static Ship RegroupAnchor(Ship s)
@@ -282,6 +308,25 @@ namespace Naval.RL
                 Vector2 station = anchor.Position - anchor.Forward * 80f;
                 if ((station - s.Position).magnitude > 260f) OrderMoveIfChanged(s, station, 60f);
                 else SteerLeg(s, station, hold);
+                return;
+            }
+
+            if (move == RLLayout.MoveCover)
+            {
+                if (!o.hasCover[row]) return;        // no cover from here right now: keep the standing order
+                Vector2 cover = o.coverPoint[row];
+                if ((cover - s.Position).magnitude > 260f) OrderMoveIfChanged(s, cover, 40f);
+                else SteerLeg(s, cover, hold);
+                return;
+            }
+
+            if (move == RLLayout.MovePort)
+            {
+                var port = OwnPort(s);
+                if (port == null) return;
+                // inside the service radius the ship just waits to be rearmed and repaired
+                if (Vector2.Distance(port.Position, s.Position) <= port.serviceRadius * 0.5f) nav.OrderStop();
+                else if (nav.Order != OrderType.ReturnToPort) nav.OrderReturnToPort(port.Position);
                 return;
             }
 

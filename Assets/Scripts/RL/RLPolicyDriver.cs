@@ -33,7 +33,7 @@ namespace Naval.RL
         /// <summary>Sample from the policy like in training (true) or always take its likeliest choice.</summary>
         public bool Sample = true;
 
-        /// <summary>The attention of each ship's last decision over [self, allies, contacts, zones].</summary>
+        /// <summary>The attention of each ship's last decision over [self, allies, contacts, zones, obstacles].</summary>
         public readonly Dictionary<Ship, ShipDecision> LastDecision = new Dictionary<Ship, ShipDecision>();
 
         public sealed class ShipDecision
@@ -42,6 +42,7 @@ namespace Naval.RL
             public Ship[] allies = Array.Empty<Ship>();
             public Ship[] contacts = Array.Empty<Ship>();
             public int zones;
+            public int obstacles;
             public int[] actions = new int[RLLayout.HeadCount];
         }
 
@@ -62,7 +63,7 @@ namespace Naval.RL
         readonly int[] _actions = new int[RLLayout.HeadCount];
 
         // scratch rows for one forward pass
-        float[] _self, _allies, _contacts, _zones, _logits, _attention;
+        float[] _self, _allies, _contacts, _zones, _obstacles, _logits;
 
         public static RLPolicyDriver Create(Transform parent)
         {
@@ -89,8 +90,8 @@ namespace Naval.RL
                 Policy = RLPolicy.Load(File.ReadAllBytes(path));
                 if (Policy.ActionHeads.Count != RLLayout.HeadCount)
                     throw new FormatException("policy has " + Policy.ActionHeads.Count + " action heads, the game has " + RLLayout.HeadCount);
-                if (Policy.Dims["self"] != RLLayout.SelfDim || Policy.Dims["contact"] != RLLayout.ContactDim)
-                    throw new FormatException("policy was trained on a different observation layout - retrain or re-export it");
+                if (!SameLayout(Policy))
+                    throw new FormatException("policy was trained on a different observation or action layout - retrain it");
                 Status = "trained policy loaded (" + Policy.ActionMode + ", " + File.GetLastWriteTime(path).ToString("yyyy-MM-dd HH:mm") + ")";
                 return true;
             }
@@ -101,6 +102,24 @@ namespace Naval.RL
                 Debug.LogWarning("[RL] " + Status);
                 return false;
             }
+        }
+
+        /// <summary>Every observation size and fixed action count must match what this build of the game produces.</summary>
+        static bool SameLayout(RLPolicy p)
+        {
+            bool Dim(string key, int want) => p.Dims.TryGetValue(key, out int got) && got == want;
+            if (!Dim("self", RLLayout.SelfDim) || !Dim("ally", RLLayout.AllyDim) || !Dim("contact", RLLayout.ContactDim) ||
+                !Dim("zone", RLLayout.ZoneDim) || !Dim("obstacle", RLLayout.ObstacleDim)) return false;
+            if (p.HasCritic && (!Dim("critic_own", RLLayout.CriticOwnDim) || !Dim("critic_enemy", RLLayout.CriticEnemyDim) ||
+                                !Dim("critic_zone", RLLayout.CriticZoneDim) || !Dim("critic_match", RLLayout.CriticMatchDim))) return false;
+            var mode = p.ActionMode == "lowlevel" ? ActionMode.LowLevel : ActionMode.Intent;
+            var L = new RLLayout { actionMode = mode };
+            for (int h = 0; h < RLLayout.HeadCount; h++)
+            {
+                int wantFixed = h == RLLayout.HeadMove ? L.MoveFixed : h == RLLayout.HeadTarget ? 1 : L.HeadSize(h);
+                if (p.ActionHeads[h].fixedCount != wantFixed) return false;
+            }
+            return true;
         }
 
         void Update()
@@ -179,10 +198,15 @@ namespace Naval.RL
             int maxContacts = Mathf.Max(1, side.enemies.Count);
             int maxZones = Mathf.Clamp(zones, 1, 8);
             var mode = Policy.ActionMode == "lowlevel" ? ActionMode.LowLevel : ActionMode.Intent;
+            int maxObstacles = Mathf.Max(1, Policy.MaxObstacles);
             if (L == null || L.maxTeam != maxTeam || L.maxAllies != maxAllies || L.maxContacts != maxContacts ||
-                L.maxZones != maxZones || L.actionMode != mode)
+                L.maxZones != maxZones || L.maxObstacles != maxObstacles || L.actionMode != mode)
             {
-                side.layout = new RLLayout { maxTeam = maxTeam, maxAllies = maxAllies, maxContacts = maxContacts, maxZones = maxZones, actionMode = mode };
+                side.layout = new RLLayout
+                {
+                    maxTeam = maxTeam, maxAllies = maxAllies, maxContacts = maxContacts, maxZones = maxZones,
+                    maxObstacles = maxObstacles, actionMode = mode
+                };
                 side.obs = new TeamObs(side.layout);
             }
             RLObservation.Build(side.team, side.slots, side.enemies, side.obs);
@@ -200,20 +224,23 @@ namespace Naval.RL
             for (int j = 0; j < L.maxAllies; j++) if (o.allyMask[i * L.maxAllies + j] > 0.5f) na++;
             for (int j = 0; j < L.maxZones; j++) if (o.zoneMask[i * L.maxZones + j] > 0.5f) nz++;
             int nc = o.contactCount[i];
+            int no = o.obstacleCount[i];
 
             Ensure(ref _self, RLLayout.SelfDim);
             Ensure(ref _allies, Mathf.Max(1, na) * RLLayout.AllyDim);
             Ensure(ref _contacts, Mathf.Max(1, nc) * RLLayout.ContactDim);
             Ensure(ref _zones, Mathf.Max(1, nz) * RLLayout.ZoneDim);
+            Ensure(ref _obstacles, Mathf.Max(1, no) * RLLayout.ObstacleDim);
             Ensure(ref _logits, Policy.LogitCount(nc, nz));
             Array.Copy(o.self, i * RLLayout.SelfDim, _self, 0, RLLayout.SelfDim);
             Array.Copy(o.allies, i * L.maxAllies * RLLayout.AllyDim, _allies, 0, na * RLLayout.AllyDim);
             Array.Copy(o.contacts, i * L.maxContacts * RLLayout.ContactDim, _contacts, 0, nc * RLLayout.ContactDim);
             Array.Copy(o.zones, i * L.maxZones * RLLayout.ZoneDim, _zones, 0, nz * RLLayout.ZoneDim);
+            Array.Copy(o.obstacles, i * L.maxObstacles * RLLayout.ObstacleDim, _obstacles, 0, no * RLLayout.ObstacleDim);
 
             if (!side.hidden.TryGetValue(s, out var h)) { h = new float[Policy.Hidden]; side.hidden[s] = h; }
-            var attention = new float[1 + na + nc + nz];
-            Policy.Act(_self, _allies, na, _contacts, nc, _zones, nz, h, _logits, attention);
+            var attention = new float[1 + na + nc + nz + no];
+            Policy.Act(_self, _allies, na, _contacts, nc, _zones, nz, _obstacles, no, h, _logits, attention);
 
             // one choice per head; option j of a head means the same thing in the compact logits and in the mask
             int k = 0;
@@ -233,6 +260,7 @@ namespace Naval.RL
             rec.allies = Slice(o.allySlots[i], na);
             rec.contacts = Slice(o.contactSlots[i], nc);
             rec.zones = nz;
+            rec.obstacles = no;
             Array.Copy(_actions, rec.actions, _actions.Length);
             return true;
         }

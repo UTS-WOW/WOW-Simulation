@@ -87,32 +87,40 @@ def main():
         json.dump(cfg.to_dict(), f, indent=2)
 
     init = init_message(cfg.max_team, cfg.max_allies, cfg.max_contacts, cfg.max_zones, cfg.action_mode,
-                        cfg.decision_period, cfg.sim_dt, cfg.reflexes)
+                        cfg.decision_period, cfg.sim_dt, cfg.reflexes, cfg.max_obstacles)
     binary = cfg.unity_binary if cfg.unity_binary is None or os.path.isabs(cfg.unity_binary) \
         else os.path.abspath(cfg.unity_binary)
     print(f"[train] starting {cfg.workers} {'mock ' if cfg.mock else ''}environment(s) on {device}")
     workers = make_workers(cfg.workers, init, binary, cfg.base_port, cfg.ports,
                            log_dir=os.path.join(run_dir, "unity_logs"), mock=cfg.mock)
-    spec = workers[0].spec
-    with open(os.path.join(run_dir, "spec.json"), "w") as f:
-        json.dump(spec.to_json(), f, indent=2)
+    # the players are running from here on: whatever goes wrong while setting up (an incompatible
+    # checkpoint, a bad --set), close them before leaving rather than leaving them to time out
+    try:
+        spec = workers[0].spec
+        with open(os.path.join(run_dir, "spec.json"), "w") as f:
+            json.dump(spec.to_json(), f, indent=2)
 
-    league = League(cfg, HERE, seed=cfg.seed)
-    algo = MAPPO(cfg, spec, workers, league, device)
-    lineage = share.lineage_for_run(resume, args.resume)
-    if args.resume:
-        share.check_compatible(resume.get("spec"), spec, args.resume)
-        algo.load_state_dict(resume)
-        share.localize_snapshots(league, args.resume, run_dir)
-        print(f"[train] resumed from {args.resume} at update {algo.update}, stage {league.stage}")
-        if lineage["shared"] and lineage["from_update"] == algo.update:
-            print(f"[train] continuing the shared checkpoint '{lineage['shared']}'; when you stop, "
-                  f"publish with: python share_checkpoint.py publish {cfg.run_name} --name {lineage['shared']}")
-    elif args.init_from:
-        start = torch.load(args.init_from, map_location=device, weights_only=False)
-        share.check_compatible(start.get("spec"), spec, args.init_from)
-        algo.load_state_dict(start, weights_only=True)
-        print(f"[train] initialised weights from {args.init_from}")
+        league = League(cfg, HERE, seed=cfg.seed)
+        algo = MAPPO(cfg, spec, workers, league, device)
+        lineage = share.lineage_for_run(resume, args.resume)
+        if args.resume:
+            share.check_compatible(resume.get("spec"), spec, args.resume)
+            algo.load_state_dict(resume)
+            share.localize_snapshots(league, args.resume, run_dir)
+            print(f"[train] resumed from {args.resume} at update {algo.update}, stage {league.stage}")
+            if lineage["shared"] and lineage["from_update"] == algo.update:
+                name = "" if cfg.run_name == lineage["shared"] else f" --name {lineage['shared']}"
+                print(f"[train] continuing the shared checkpoint '{lineage['shared']}'; when you stop, "
+                      f"publish with: python share_checkpoint.py publish {cfg.run_name}{name}")
+        elif args.init_from:
+            start = torch.load(args.init_from, map_location=device, weights_only=False)
+            share.check_compatible(start.get("spec"), spec, args.init_from)
+            algo.load_state_dict(start, weights_only=True)
+            print(f"[train] initialised weights from {args.init_from}")
+    except BaseException:
+        for w in workers:
+            w.close()
+        raise
 
     stop = {"now": False}
     signal.signal(signal.SIGINT, lambda *_: stop.update(now=True))

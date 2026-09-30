@@ -54,7 +54,7 @@ def main():
     os.makedirs(frames)
     proc = launch_player(os.path.abspath(a.unity_binary), a.port, a.out, graphics=True)
     init = init_message(spec.max_team, spec.max_allies, spec.max_contacts, spec.max_zones, spec.action_mode,
-                        spec.decision_period, spec.sim_dt, cfg.reflexes)
+                        spec.decision_period, spec.sim_dt, cfg.reflexes, spec.max_obstacles or cfg.max_obstacles)
     w = UnityWorker(a.port, init, process=proc)
     try:
         stage = DEFAULT_STAGES[a.stage]

@@ -47,6 +47,7 @@ def export_policy(actor, critic, spec, cfg, path: str, value_norm=None) -> str:
         "version": VERSION,
         "d": cfg.d_model, "heads": cfg.heads, "layers": cfg.layers, "hidden": cfg.hidden,
         "dims": spec.dims,
+        "max_obstacles": spec.max_obstacles,
         "action_heads": [{"name": h.name, "fixed": h.fixed, "pointer": h.pointer} for h in spec.heads],
         "action_mode": spec.action_mode,
         "decision_period": spec.decision_period,
@@ -67,7 +68,8 @@ def export_policy(actor, critic, spec, cfg, path: str, value_norm=None) -> str:
 
 
 @torch.no_grad()
-def export_parity_case(actor, critic, spec, path: str, seed: int = 0, n_allies=3, n_contacts=4, n_zones=3, n_own=4, n_enemy=4):
+def export_parity_case(actor, critic, spec, path: str, seed: int = 0, n_allies=3, n_contacts=4, n_zones=3,
+                       n_obstacles=5, n_own=4, n_enemy=4):
     """Unpadded random inputs (exactly the counts the game would feed) and the reference outputs."""
     g = torch.Generator().manual_seed(seed)
     d = spec.dims
@@ -76,6 +78,7 @@ def export_parity_case(actor, critic, spec, path: str, seed: int = 0, n_allies=3
         "self": r(1, d["self"]), "allies": r(1, n_allies, d["ally"]), "ally_mask": torch.ones(1, n_allies),
         "contacts": r(1, n_contacts, d["contact"]), "contact_mask": torch.ones(1, n_contacts),
         "zones": r(1, n_zones, d["zone"]), "zone_mask": torch.ones(1, n_zones),
+        "obstacles": r(1, n_obstacles, d["obstacle"]), "obstacle_mask": torch.ones(1, n_obstacles),
     }
     h = r(1, actor.hidden) * 0.5
     actor.eval()
@@ -83,7 +86,8 @@ def export_parity_case(actor, critic, spec, path: str, seed: int = 0, n_allies=3
     case = {
         "self": obs["self"][0].tolist(), "allies": obs["allies"][0].flatten().tolist(),
         "contacts": obs["contacts"][0].flatten().tolist(), "zones": obs["zones"][0].flatten().tolist(),
-        "n_allies": n_allies, "n_contacts": n_contacts, "n_zones": n_zones,
+        "obstacles": obs["obstacles"][0].flatten().tolist(),
+        "n_allies": n_allies, "n_contacts": n_contacts, "n_zones": n_zones, "n_obstacles": n_obstacles,
         "hidden_in": h[0].tolist(), "logits": logits[0].tolist(), "hidden_out": h2[0].tolist(),
         "attention_self": attn[0, :, 0, :].mean(0).tolist(),
     }

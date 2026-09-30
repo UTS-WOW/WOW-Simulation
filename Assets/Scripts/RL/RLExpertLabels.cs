@@ -118,6 +118,16 @@ namespace Naval.RL
             var map = WorldMap.I;
             Vector2 pos = s.Position;
 
+            // heading home to rearm and repair, or hiding behind terrain from the biggest gun
+            if (nav.Order == OrderType.ReturnToPort) return RLLayout.MovePort;
+            if (nav.Order == OrderType.Retreat && map != null)
+            {
+                var port = map.NearestPort(pos, s.team);
+                if (port != null && Vector2.Distance(nav.CurrentDestination, port.Position) < port.serviceRadius * 2f)
+                    return RLLayout.MovePort;
+                if (s.AI != null && s.AI.TakingCover) return RLLayout.MoveCover;
+            }
+
             // The fleet commander told this ship to take, hold or break a capture: that is a zone order,
             // however the ship happens to be steering there (usually direct legs, not a pathed move).
             var ai = s.AI;

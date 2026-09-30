@@ -71,7 +71,7 @@ you live with for a minute.
 
 | | HE damage | HE pen | Fire chance | AP damage | AP pen | Overmatch | Ricochet (starts / always) |
 |---|---|---|---|---|---|---|---|
-| Shimakaze | 2 150 | 21 mm | 9% | — (HE only) | — | 8.9 mm | 45° / 60° |
+| Shimakaze | 2 150 | 21 mm | 9% | 2 300 | 40 mm | 8.9 mm | 45° / 60° |
 | Des Moines | 2 800 | 34 mm | 14% | 5 000 | **450 mm** | 14.2 mm | **60° / 75°** |
 | Yamato | 7 300 | 76 mm | 36% | **14 800** | **850 mm** | **32 mm** | 45° / 60° |
 
@@ -97,7 +97,7 @@ Des Moines carries super-heavy AP with **improved ricochet angles**: it does not
 ### Submarine specifics
 
 Dive capacity is the real resource, not the hull: **240 seconds** submerged, draining at 1/s and
-recharging at 1/s. Speed is unchanged at periscope depth and drops to 18 knots at maximum depth.
+recharging at 1/s. Speed is unchanged at periscope depth and drops to 18 knots once fully submerged.
 Concealment falls from 5.9 km surfaced to 2.3 km at periscope depth, and to nothing at depth — a deep
 boat is found only by hydrophone or submarine surveillance.
 

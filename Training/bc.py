@@ -39,14 +39,15 @@ KEYS = ACTOR_KEYS + ["action_mask"]
 # ---------------------------------------------------------------------------------------- collect
 
 def collect(a):
-    os.makedirs(OUT, exist_ok=True)
+    out_dir = os.path.dirname(os.path.abspath(a.out))      # spec.json and logs go next to the demos
+    os.makedirs(out_dir, exist_ok=True)
     cfg = Config()
     init = init_message(cfg.max_team, cfg.max_allies, cfg.max_contacts, cfg.max_zones, "intent",
-                        cfg.decision_period, cfg.sim_dt, cfg.reflexes)
+                        cfg.decision_period, cfg.sim_dt, cfg.reflexes, cfg.max_obstacles)
     workers = make_workers(a.workers, init, os.path.abspath(a.unity_binary), a.base_port,
-                           log_dir=os.path.join(OUT, "unity_logs"))
+                           log_dir=os.path.join(out_dir, "unity_logs"))
     spec = workers[0].spec
-    with open(os.path.join(OUT, "spec.json"), "w") as f:
+    with open(os.path.join(out_dir, "spec.json"), "w") as f:
         json.dump(spec.to_json(), f)
 
     stages = [int(s) for s in a.stages.split(",")]
@@ -180,7 +181,7 @@ def head_losses(logits, mask, labels, valid, sizes):
 
 def train(a):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    with open(os.path.join(OUT, "spec.json")) as f:
+    with open(os.path.join(os.path.dirname(os.path.abspath(a.demos)), "spec.json")) as f:
         spec = Spec.from_json(json.load(f))
     raw = np.load(a.demos)
     data = {k: raw[k] for k in raw.files}

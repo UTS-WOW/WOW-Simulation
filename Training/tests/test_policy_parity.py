@@ -16,15 +16,16 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 
 @pytest.mark.skipif(shutil.which("dotnet") is None, reason="dotnet SDK not installed")
-@pytest.mark.parametrize("counts", [(3, 4, 3), (0, 1, 1), (7, 9, 5)])
+@pytest.mark.parametrize("counts", [(3, 4, 3, 5), (0, 1, 1, 0), (7, 9, 5, 8)])
 def test_csharp_policy_matches_pytorch(tmp_path, counts):
     torch.manual_seed(1)
     spec = mock_spec({"max_team": 8, "max_allies": 7, "max_contacts": 9, "max_zones": 5})
     cfg = Config(d_model=32, heads=4, layers=2, hidden=24)
     actor, critic = Actor(spec, 32, 4, 2, 24), Critic(spec, 32, 4, 2)
     policy = export_policy(actor, critic, spec, cfg, str(tmp_path / "p.bin"), ValueNorm())
-    na, nc, nz = counts
-    case = export_parity_case(actor, critic, spec, str(tmp_path / "c.json"), n_allies=na, n_contacts=nc, n_zones=nz)
+    na, nc, nz, no = counts
+    case = export_parity_case(actor, critic, spec, str(tmp_path / "c.json"), n_allies=na, n_contacts=nc, n_zones=nz,
+                              n_obstacles=no)
     r = subprocess.run(["dotnet", "run", "--project", os.path.join(HERE, "parity"), "--", policy, case],
                        capture_output=True, text=True, timeout=300)
     print(r.stdout, r.stderr)

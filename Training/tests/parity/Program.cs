@@ -11,12 +11,13 @@ static class Program
         var policy = RLPolicy.Load(File.ReadAllBytes(args[0]));
         var c = (Dictionary<string, object>)MiniJson.Parse(File.ReadAllText(args[1]));
         int na = MiniJson.Int(c["n_allies"]), nc = MiniJson.Int(c["n_contacts"]), nz = MiniJson.Int(c["n_zones"]);
+        int no = MiniJson.Int(c["n_obstacles"]);
 
         var hidden = MiniJson.Floats(c["hidden_in"]);
         var logits = new float[policy.LogitCount(nc, nz)];
-        var attn = new float[1 + na + nc + nz];
+        var attn = new float[1 + na + nc + nz + no];
         policy.Act(MiniJson.Floats(c["self"]), MiniJson.Floats(c["allies"]), na, MiniJson.Floats(c["contacts"]), nc,
-                   MiniJson.Floats(c["zones"]), nz, hidden, logits, attn);
+                   MiniJson.Floats(c["zones"]), nz, MiniJson.Floats(c["obstacles"]), no, hidden, logits, attn);
 
         double worst = 0;
         worst = Math.Max(worst, Report("logits", logits, MiniJson.Floats(c["logits"])));

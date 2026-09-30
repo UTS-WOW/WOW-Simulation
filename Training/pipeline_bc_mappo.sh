@@ -1,19 +1,21 @@
 #!/usr/bin/env bash
-# Behaviour cloning -> evaluation -> install in the game -> MAPPO fine-tuning (+ automatic evaluation).
-# Waits for a running `bc.py collect` to finish (runs/bc_collect2.log) if its demos are not there yet.
-# Usage: Training/pipeline_bc_mappo.sh [run_name]
+# Rule-AI demonstrations -> behaviour cloning -> evaluation -> install in the game -> MAPPO
+# fine-tuning (+ automatic evaluation). Demonstrations are collected first unless runs/bc/demos.npz
+# already exists.
+# Usage: Training/pipeline_bc_mappo.sh [run_name]   (set PYTHON=... if `python` is not the one with PyTorch)
 set -uo pipefail
 cd "$(dirname "$0")"
-PY="${PYTHON:-$HOME/anaconda3/bin/python}"
-RUN="${1:-full_mappo}"
+PY="${PYTHON:-python}"
+RUN="${1:-bc_mappo}"
 BIN=../Builds/NavalTrainer/NavalTrainer.x86_64
 
-until grep -q "^saved" runs/bc_collect2.log 2>/dev/null && [ -f runs/bc/demos.npz ]; do sleep 15; done
-sleep 5
+if [ ! -f runs/bc/demos.npz ]; then
+  echo "== collecting rule-AI demonstrations"; "$PY" -u bc.py collect --battles 120 || exit 1
+fi
 echo "== behaviour cloning"; "$PY" -u bc.py train --epochs 8 || exit 1
 echo "== evaluating the cloned policy (6v6 domination vs Elite)"
 "$PY" -u evaluate.py --checkpoint runs/bc/bc.pt --stage 3 --difficulty 2 --episodes 48 --workers 8 \
-      --out runs/eval_bc2_stage3_elite.json 2>/dev/null | tail -1
+      --out runs/eval_bc_stage3_elite.json 2>/dev/null | tail -1
 echo "== installing it in the game"
 "$PY" - <<'PYEOF'
 import sys, torch, shutil
@@ -31,7 +33,7 @@ shutil.copyfile("runs/bc/bc_policy.bin", "../Assets/StreamingAssets/RL/naval_pol
 print("installed runs/bc/bc_policy.bin as the game's policy")
 PYEOF
 echo "== MAPPO fine-tuning ($RUN)"
-WIN=$("$PY" -c "import json; s=json.load(open('runs/eval_bc2_stage3_elite.json'))['summary']; print(json.dumps({'update':0,'win_rate':s['win_rate'],'stderr':s['stderr'],'damage_dealt':s['damage_dealt'],'damage_taken':s['damage_taken'],'episodes':s['episodes'],'minutes':0,'note':'behaviour cloning only'}))")
+WIN=$("$PY" -c "import json; s=json.load(open('runs/eval_bc_stage3_elite.json'))['summary']; print(json.dumps({'update':0,'win_rate':s['win_rate'],'stderr':s['stderr'],'damage_dealt':s['damage_dealt'],'damage_taken':s['damage_taken'],'episodes':s['episodes'],'minutes':0,'note':'behaviour cloning only'}))")
 mkdir -p "runs/$RUN/evals"; echo "$WIN" > "runs/$RUN/evals/summary.jsonl"
 setsid nohup "$PY" -u train.py --unity-binary "$BIN" --workers 8 --run-name "$RUN" --init-from runs/bc/bc.pt \
     --set start_stage=3 --set actor_freeze_updates=10 --set lr_actor=5e-5 --set ent_coef=0.002 \

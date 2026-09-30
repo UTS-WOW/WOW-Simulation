@@ -39,7 +39,7 @@ namespace Naval
     }
 
     /// <summary>
-    /// Consumables. Each class carries four slots on keys 1-4 (submarines also use X to dive).
+    /// Consumables. Each class carries up to six slots on keys 1-6 (submarines also use X to dive).
     /// The same code path serves the player's action bar and the AI - the AI simply calls Use().
     /// </summary>
     public class ShipAbilities
@@ -146,6 +146,13 @@ namespace Naval
         }
 
         public Ability GetSlot(int index) => index >= 0 && index < Slots.Count ? Slots[index] : null;
+
+        /// <summary>The slot bound to a hotkey ("1".."6", "X"), or null.</summary>
+        public Ability GetByHotkey(string key)
+        {
+            for (int i = 0; i < Slots.Count; i++) if (Slots[i].hotkey == key) return Slots[i];
+            return null;
+        }
 
         public bool Has(AbilityId id) => Get(id) != null;
 

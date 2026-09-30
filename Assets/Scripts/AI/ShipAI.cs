@@ -64,6 +64,8 @@ namespace Naval
 
         public bool IsPlayerControlled => _s.Controller == ShipController.Human;
         public bool IsLearned => _s.Controller == ShipController.Learned;
+        /// <summary>Retreating to a spot an island or smoke hides from the biggest threat (read by RL behaviour cloning).</summary>
+        public bool TakingCover => _coverTimer > 0f && _s.Navigation.Order == OrderType.Retreat;
 
         // ------------------------------------------------------------------ tick
 

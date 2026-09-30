@@ -26,4 +26,4 @@ def test_export_layout(tmp_path):
     names = {t["name"] for t in header["tensors"]}
     assert "actor.gru.weight_ih" in names and "critic.win.weight" in names
     case = json.load(open(export_parity_case(actor, critic, spec, str(tmp_path / "c.json"))))
-    assert len(case["logits"]) == 13 + 3 + 5 + 1 + 4 + 2 + 2 + 15
+    assert len(case["logits"]) == 15 + 3 + 5 + 1 + 4 + 2 + 2 + 15

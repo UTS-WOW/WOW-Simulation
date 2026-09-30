@@ -477,6 +477,18 @@ Several environment choices were made deliberately to make the game legible to a
 - **Zone-count-normalised scoring**, so the reward scale of holding ground does not silently change
   when the map layout does.
 
+How a learned ship perceives this environment, so one policy works on every battlefield (details in
+[RL_README.md § 6](RL_README.md#6-observations--what-a-ship-sees)):
+
+- **Terrain** — rays sample the height field around the ship with the same thresholds the game
+  uses: water deep enough for *its* draft (`WorldMap.DraftToDepth`), and land higher than `0.06`,
+  which is what blocks line of sight (section 7). Islands and rocks from `WorldMap.Islands`, with
+  their hazard shelves, and smoke clouds from `SmokeSystem` are given as obstacle tokens.
+- **Map context** — preset, land fraction, zone count, game mode and weather (including when it
+  will next change) are part of the match features, since all of them change what a good move is.
+- **Ports** — distance to its own harbour and whether it is inside the service radius, so rearming
+  and repair (section 5) can be planned.
+
 Available reward signals: objective score (`PlayerScore` / `EnemyScore`), kills (`KillPoints`), and
 damage-weighted fleet strength (`FleetPoints`), which moves continuously with damage rather than only
 on hull loss. Natural episode termination is `GamePhase.Victory` / `GamePhase.Defeat`, with

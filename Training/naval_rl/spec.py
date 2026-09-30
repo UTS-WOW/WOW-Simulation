@@ -27,6 +27,7 @@ class Spec:
     heads: list[Head]
     enemy_privileged: tuple[int, int]
     features: dict = field(default_factory=dict)
+    max_obstacles: int = 0
     team_reward_components: list[str] = field(default_factory=list)
     agent_reward_components: list[str] = field(default_factory=list)
 
@@ -44,6 +45,7 @@ class Spec:
             heads=[Head(**h) for h in j["heads"]],
             enemy_privileged=tuple(j["enemy_privileged"]),
             features=j.get("features", {}),
+            max_obstacles=j.get("max_obstacles", 0),
             team_reward_components=j.get("team_reward_components", []),
             agent_reward_components=j.get("agent_reward_components", []),
         )
@@ -51,7 +53,8 @@ class Spec:
     def to_json(self) -> dict:
         return {
             "max_team": self.max_team, "max_allies": self.max_allies, "max_contacts": self.max_contacts,
-            "max_zones": self.max_zones, "action_mode": self.action_mode, "decision_period": self.decision_period,
+            "max_zones": self.max_zones, "max_obstacles": self.max_obstacles, "action_mode": self.action_mode,
+            "decision_period": self.decision_period,
             "sim_dt": self.sim_dt, "dims": self.dims,
             "heads": [h.__dict__ for h in self.heads], "enemy_privileged": list(self.enemy_privileged),
             "features": self.features, "team_reward_components": self.team_reward_components,
@@ -66,13 +69,15 @@ class Spec:
     def head_sizes(self) -> list[int]:
         return [h.size for h in self.heads]
 
-    def with_caps(self, max_team=None, max_allies=None, max_contacts=None, max_zones=None) -> "Spec":
+    def with_caps(self, max_team=None, max_allies=None, max_contacts=None, max_zones=None,
+                  max_obstacles=None) -> "Spec":
         """The same network on a bigger battle: only the padding caps (and pointer head sizes) change."""
         s = Spec.from_json(self.to_json())
         s.max_team = max_team or s.max_team
         s.max_allies = max_allies if max_allies is not None else s.max_allies
         s.max_contacts = max_contacts or s.max_contacts
         s.max_zones = max_zones or s.max_zones
+        s.max_obstacles = max_obstacles or s.max_obstacles
         for h in s.heads:
             if h.pointer == "zones":
                 h.size = h.fixed + s.max_zones

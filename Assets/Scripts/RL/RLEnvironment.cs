@@ -22,7 +22,7 @@ namespace Naval.RL
         public string type = "";
 
         // ---- init ----
-        public int max_team = 6, max_allies = 5, max_contacts = 6, max_zones = 5;
+        public int max_team = 6, max_allies = 5, max_contacts = 6, max_zones = 5, max_obstacles = 8;
         public string action_mode = "intent";
         public float decision_period = 1f;
         public float sim_dt = 0.02f;
@@ -109,6 +109,7 @@ namespace Naval.RL
 
         // self-reported timing, so throughput problems can be traced from the trainer's logs
         readonly System.Diagnostics.Stopwatch _simClock = new System.Diagnostics.Stopwatch();
+        readonly System.Diagnostics.Stopwatch _obsClock = new System.Diagnostics.Stopwatch();
         float _lastSimMs;
         int _objectsAtStart;      // scene object count at each episode start: steady unless something leaks
 
@@ -295,6 +296,7 @@ namespace Naval.RL
                 maxAllies = Mathf.Clamp(cmd.max_allies, 0, 63),
                 maxContacts = Mathf.Clamp(cmd.max_contacts, 1, 64),
                 maxZones = Mathf.Clamp(cmd.max_zones, 1, 8),
+                maxObstacles = Mathf.Clamp(cmd.max_obstacles, 1, 32),
                 actionMode = cmd.action_mode == "lowlevel" ? ActionMode.LowLevel : ActionMode.Intent
             };
             _decisionPeriod = Mathf.Max(0.1f, cmd.decision_period);
@@ -538,6 +540,7 @@ namespace Naval.RL
                 }
             }
 
+            _obsClock.Restart();
             for (int t = 0; t < 2; t++)
             {
                 if (_learned[t] || _record[t])
@@ -551,6 +554,7 @@ namespace Naval.RL
                                _agentReward, t * _layout.maxTeam * RLRewardTracker.AgentComponents.Length);
             }
             _rewards.ClearStep();
+            float obsMs = (float)_obsClock.Elapsed.TotalMilliseconds;
 
             var L = _layout;
             int N = L.maxTeam;
@@ -567,6 +571,7 @@ namespace Naval.RL
             if (_simClock.IsRunning) { _lastSimMs = (float)_simClock.Elapsed.TotalMilliseconds; _simClock.Reset(); }
             sb.Append("\"diag\":{");
             Json.Field(sb, "sim_ms", _lastSimMs); sb.Append(',');
+            Json.Field(sb, "obs_ms", obsMs); sb.Append(',');
             Json.Field(sb, "frames", _framesPerDecision - Mathf.Max(0, _framesLeft)); sb.Append(',');
             Json.Field(sb, "gc0", GC.CollectionCount(0)); sb.Append(',');
             Json.Field(sb, "heap_mb", GC.GetTotalMemory(false) / (1024f * 1024f)); sb.Append(',');
@@ -594,6 +599,8 @@ namespace Naval.RL
             _wire.AddArrayPair("contact_mask", a.contactMask, b.contactMask, 2, N, L.maxContacts);
             _wire.AddArrayPair("zones", a.zones, b.zones, 2, N, L.maxZones, RLLayout.ZoneDim);
             _wire.AddArrayPair("zone_mask", a.zoneMask, b.zoneMask, 2, N, L.maxZones);
+            _wire.AddArrayPair("obstacles", a.obstacles, b.obstacles, 2, N, L.maxObstacles, RLLayout.ObstacleDim);
+            _wire.AddArrayPair("obstacle_mask", a.obstacleMask, b.obstacleMask, 2, N, L.maxObstacles);
             _wire.AddArrayPair("action_mask", a.actionMask, b.actionMask, 2, N, L.TotalLogits);
             _wire.AddArrayPair("alive", a.alive, b.alive, 2, N);
             _wire.AddArrayPair("critic_own", a.criticOwn, b.criticOwn, 2, N, RLLayout.CriticOwnDim);
