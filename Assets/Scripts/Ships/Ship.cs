@@ -39,6 +39,17 @@ namespace Naval
         public bool IsDead { get; private set; }
         public bool Selected { get; set; }
         public bool IsDirectlyControlled { get; set; }
+        /// <summary>Who issues this ship's orders. Defaults to Human for the player, RuleAI for the enemy.</summary>
+        public ShipController Controller = ShipController.Human;
+        /// <summary>
+        /// Throttle and rudder are being set from outside every decision (a low-level learned policy),
+        /// so the autopilot must not overwrite them.
+        /// </summary>
+        public bool ExternalHelm { get; set; }
+        /// <summary>The learned policy's last movement choice, repeated when it picks "keep" (-1 = none yet).</summary>
+        [System.NonSerialized] public int LearnedMove = -1;
+        /// <summary>When the learned policy last changed shell type (game time).</summary>
+        [System.NonSerialized] public float LearnedAmmoSwitchTime = -999f;
         public int ControlGroup { get; set; } = -1;
 
         public Ship CurrentTarget;             // gunnery target
@@ -96,6 +107,7 @@ namespace Naval
             var s = go.AddComponent<Ship>();
             s.id = _nextId++;
             s.team = team;
+            s.Controller = team == Team.Player ? ShipController.Human : ShipController.RuleAI;
             s.Stats = stats;
             s.shipName = string.IsNullOrEmpty(name) ? ShipDatabase.NextName(team, cls) : name;
             go.name = s.shipName;
@@ -164,7 +176,7 @@ namespace Naval
             {
                 AI.Tick(dt);
                 // a ship under direct control takes its helm orders from the player, not the autopilot
-                if (!IsDirectlyControlled) Navigation.Tick(dt);
+                if (!IsDirectlyControlled && !ExternalHelm) Navigation.Tick(dt);
                 Movement.CommandTick(dt);
                 Weapons.Tick(dt);
             }

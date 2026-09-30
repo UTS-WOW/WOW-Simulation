@@ -44,6 +44,8 @@ namespace Naval
         float _directCap = 1f;
         bool _directFinal;
         public bool IsDirectSteering => _directTimer > 0f;
+        /// <summary>Where the current direct-steering leg is heading (valid while IsDirectSteering).</summary>
+        public Vector2 DirectPoint => _directPoint;
 
         public float LastProbeAhead { get; private set; }
         public Vector2 SteerDebug { get; private set; }
@@ -168,12 +170,12 @@ namespace Naval
         /// and re-followed (with avoidance) every frame until the next decision arrives.
         /// It takes priority over the standing order while it is fresh.
         /// </summary>
-        public void SteerDirect(Vector2 point, float throttleCap = 1f, bool isFinal = false)
+        public void SteerDirect(Vector2 point, float throttleCap = 1f, bool isFinal = false, float hold = 0.5f)
         {
             _directPoint = point;
             _directCap = throttleCap;
             _directFinal = isFinal;
-            _directTimer = 0.5f;
+            _directTimer = hold;
         }
 
         public void CancelDirectSteering() => _directTimer = 0f;

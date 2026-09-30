@@ -15,6 +15,11 @@ namespace Naval
         public bool sonarOnly;
         public bool classIdentified;
         public ShipClassType knownClass;
+        /// <summary>
+        /// The friendly ship whose sensors produced (or last produced) this contact. Lets damage dealt
+        /// by the rest of the team be credited to whoever spotted for it.
+        /// </summary>
+        public Ship spotter;
 
         public bool IsLive => state == ContactState.Confirmed || state == ContactState.Unknown;
         public float Age => Time.time - lastSeenTime;
@@ -83,6 +88,7 @@ namespace Naval
                 if (target == null || target.IsDead) continue;
 
                 bool visual = false, sonar = false;
+                Ship visualSpotter = null, sonarSpotter = null;
 
                 for (int o = 0; o < observers.Count; o++)
                 {
@@ -135,10 +141,11 @@ namespace Naval
                         else if (dist <= obs.Detection.EffectiveHydroRange && HasLineOfSight(obs.Position, target.Position, false)) visual = true;
                     }
 
-                    if (visual) break;
+                    if (sonar && sonarSpotter == null) sonarSpotter = obs;
+                    if (visual) { visualSpotter = obs; break; }
                 }
 
-                UpdateContact(dict, target, visual, sonar, observerTeam);
+                UpdateContact(dict, target, visual, sonar, observerTeam, visualSpotter != null ? visualSpotter : sonarSpotter);
             }
 
             // age out stale contacts
@@ -152,7 +159,7 @@ namespace Naval
             }
         }
 
-        void UpdateContact(Dictionary<int, Contact> dict, Ship target, bool visual, bool sonar, Team observerTeam)
+        void UpdateContact(Dictionary<int, Contact> dict, Ship target, bool visual, bool sonar, Team observerTeam, Ship spotter)
         {
             dict.TryGetValue(target.id, out var c);
             bool isNew = c == null;
@@ -170,6 +177,7 @@ namespace Naval
                 c.lastKnownPosition = target.Position;
                 c.lastKnownHeading = target.Heading;
                 c.lastSeenTime = Time.time;
+                if (spotter != null) c.spotter = spotter;
                 if (visual) { c.classIdentified = true; c.knownClass = target.Stats.classType; }
 
                 target.Detection.SpottedByEnemy = true;

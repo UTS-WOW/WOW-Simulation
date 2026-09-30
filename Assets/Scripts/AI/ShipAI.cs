@@ -62,7 +62,8 @@ namespace Naval
             _decisionTimer = Random.Range(0f, 0.4f);
         }
 
-        public bool IsPlayerControlled => _s.team == Team.Player;
+        public bool IsPlayerControlled => _s.Controller == ShipController.Human;
+        public bool IsLearned => _s.Controller == ShipController.Learned;
 
         // ------------------------------------------------------------------ tick
 
@@ -85,6 +86,15 @@ namespace Naval
 
             _intel = BattleAssessment.For(_s.team);
             if (_intel != null) LocalRatio = _intel.LocalStrengthRatio(_s.Position, 380f);
+
+            if (IsLearned)
+            {
+                // A learned policy chooses targets, consumables and movement itself. Only the
+                // reflexes it was trained with stay on (AutoEvade above, damage control here).
+                if (AutoDamageControl) ConsiderDamageControl();
+                SetState(MapPlayerState(), "learned policy");
+                return;
+            }
 
             GatherEnemies();
             if (AutoDamageControl) ConsiderDamageControl();
@@ -322,6 +332,25 @@ namespace Naval
                 if (score > bestScore) { bestScore = score; best = e; }
             }
             _s.CurrentTarget = best;
+        }
+
+        /// <summary>
+        /// The target this ship's own gunnery logic would pick right now, without assigning it. A
+        /// learned policy's "auto" target uses this, so it only has to learn when to override it.
+        /// </summary>
+        public Ship PickGunTarget()
+        {
+            GatherEnemies();
+            Ship best = null;
+            float bestScore = float.MinValue;
+            for (int i = 0; i < _visibleEnemies.Count; i++)
+            {
+                var e = _visibleEnemies[i];
+                if (!CanEngage(e)) continue;
+                float score = ScoreTarget(e);
+                if (score > bestScore) { bestScore = score; best = e; }
+            }
+            return best;
         }
 
         bool CanEngage(Ship e)

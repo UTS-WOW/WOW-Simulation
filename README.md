@@ -230,6 +230,9 @@ UI/        UIManager (fleet menu, HUD, action bar), Minimap, WorldOverlay, Debug
 FX/        ParticleFX (batched CPU particles), LineDrawer (batched world lines)
 Audio/     AudioManager (procedurally synthesised clips)
 Util/      NavalMath, SpriteFactory, InputHub
+RL/        RLEnvironment (trainer link, lockstep), RLObservation (entity tokens, fog-of-war legal
+           actor view + privileged critic view), RLActions (intent actions and masks),
+           RLRewardTracker, RLMetrics, RLWire, RLLayout
 Shaders/   NavalOcean, NavalFog, NavalParticle
 ```
 
@@ -334,6 +337,16 @@ about 17 units out, a battleship needs roughly 50.
 * **A\* grid pathfinding** rather than NavMesh: the water is a height field with per-draft
   passability, which a baked NavMesh cannot express (a destroyer and a battleship need different
   navigable areas over the same water).
+
+## Reinforcement learning
+
+Ships have a `Controller`: `Human` (the player's orders), `RuleAI` (ShipAI under a FleetCommander) or
+`Learned` (a trained policy). A learned ship picks where to go, how fast, what to shoot, whether to
+hold fire, when to launch torpedoes and which consumable to use, and the existing autopilot, gun lead
+and turret training carry that out. `Training/` holds the MAPPO trainer (recurrent actor, critic
+that sees the true state, curriculum, self-play league). [Training/README.md](Training/README.md)
+covers building the headless player and running it, and [RL_README.md](RL_README.md) explains how
+the whole system works, file by file, with diagrams.
 
 ## Verifying without the editor
 

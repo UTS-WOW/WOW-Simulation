@@ -24,6 +24,13 @@ namespace Naval
 
     public enum ContactState { Confirmed, Unknown, LastKnown }
 
+    /// <summary>
+    /// Who decides what a ship does. Human ships take the player's orders (and only run survival and
+    /// gunnery reflexes on their own), RuleAI ships run the full ShipAI state machine under a
+    /// FleetCommander, Learned ships take their orders from a trained policy (Naval.RL).
+    /// </summary>
+    public enum ShipController { Human, RuleAI, Learned }
+
     public enum HitResult { Miss, Shatter, Ricochet, Overpenetration, Penetration, Citadel }
 
     public static class Teams

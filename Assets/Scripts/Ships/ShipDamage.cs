@@ -60,7 +60,7 @@ namespace Naval
             TimeSinceHit = 0f;
             if (attacker != null) LastAttacker = attacker;
 
-            GameEvents.RaiseDamaged(_s, amount);
+            GameEvents.RaiseDamaged(_s, amount, attacker);
 
             if (Health <= 0f)
             {

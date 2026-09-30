@@ -168,7 +168,7 @@ namespace Naval
                 case AbilityId.ShellHE:
                 case AbilityId.ShellAP:
                     ShellType = id;
-                    if (_s.team == Team.Player)
+                    if (_s.team == Team.Player && _s.Controller == ShipController.Human)
                         GameEvents.RaiseMessage(_s.shipName + ": loading " + (id == AbilityId.ShellHE ? "HE" : "AP"), Team.Player);
                     return true;
 

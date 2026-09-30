@@ -19,6 +19,12 @@ namespace Naval
         readonly List<Vector2> _uvs = new List<Vector2>(4096);
         readonly List<int> _tris = new List<int>(6144);
 
+        // The buffer is only emptied when a frame is actually rendered. With no rendering at all
+        // (headless training players, -nographics) it used to grow forever - gigabytes within minutes -
+        // so the first draw of a new frame discards whatever the previous frame never got to show.
+        int _bufferFrame = -1;
+        int _flushFrame = -1;
+
         public static LineDrawer Create(Transform parent, int sortingOrder = 40)
         {
             var go = new GameObject("LineDrawer");
@@ -144,6 +150,12 @@ namespace Naval
 
         void AddQuad(Vector2 p0, Vector2 p1, Vector2 p2, Vector2 p3, Color c)
         {
+            int frame = Time.frameCount;
+            if (frame != _bufferFrame)
+            {
+                if (_flushFrame < _bufferFrame) ClearBuffers();
+                _bufferFrame = frame;
+            }
             int v0 = _verts.Count;
             _verts.Add(new Vector3(p0.x, p0.y, 0f));
             _verts.Add(new Vector3(p1.x, p1.y, 0f));
@@ -182,6 +194,12 @@ namespace Naval
                 _mesh.SetTriangles(_tris, 0, false);
                 _mesh.bounds = new Bounds(Vector3.zero, new Vector3(GameConfig.WorldSize * 2f, GameConfig.WorldSize * 2f, 10f));
             }
+            ClearBuffers();
+            _flushFrame = Time.frameCount;
+        }
+
+        void ClearBuffers()
+        {
             _verts.Clear(); _cols.Clear(); _uvs.Clear(); _tris.Clear();
         }
     }

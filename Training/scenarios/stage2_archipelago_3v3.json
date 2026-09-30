@@ -1,0 +1,81 @@
+{
+  "scenarioName": "RL Stage 2 - Archipelago 3v3",
+  "seed": 4242,
+  "preset": 0,
+  "weather": 0,
+  "density": 1,
+  "timeLimit": 480.0,
+  "scoreToWin": 1000.0,
+  "aiDifficulty": 0,
+  "fogOfWar": true,
+  "useCustomIslands": false,
+  "ships": [
+    {
+      "cls": 2,
+      "team": 0,
+      "x": 0.0,
+      "y": -650.0,
+      "heading": 0.0
+    },
+    {
+      "cls": 1,
+      "team": 0,
+      "x": -300.0,
+      "y": -600.0,
+      "heading": 0.0
+    },
+    {
+      "cls": 0,
+      "team": 0,
+      "x": 300.0,
+      "y": -560.0,
+      "heading": 0.0
+    },
+    {
+      "cls": 2,
+      "team": 1,
+      "x": -0.0,
+      "y": 650.0,
+      "heading": 180.0
+    },
+    {
+      "cls": 1,
+      "team": 1,
+      "x": 300.0,
+      "y": 600.0,
+      "heading": 180.0
+    },
+    {
+      "cls": 0,
+      "team": 1,
+      "x": -300.0,
+      "y": 560.0,
+      "heading": 180.0
+    }
+  ],
+  "zones": [
+    {
+      "name": "A",
+      "x": -520.0,
+      "y": 0.0,
+      "radius": 130.0,
+      "owner": 2
+    },
+    {
+      "name": "B",
+      "x": 0.0,
+      "y": 0.0,
+      "radius": 130.0,
+      "owner": 2
+    },
+    {
+      "name": "C",
+      "x": 520.0,
+      "y": 0.0,
+      "radius": 130.0,
+      "owner": 2
+    }
+  ],
+  "islands": [],
+  "_notes": "Islands break line of sight: spotting, smoke, radar and cover start to matter."
+}

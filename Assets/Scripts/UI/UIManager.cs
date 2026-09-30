@@ -102,6 +102,7 @@ namespace Naval
         MapConfig _menuMap = MapConfig.ForPreset(MapPreset.OceanArchipelago);
         Text _aiDebugText;
         Text _mapSummaryText;
+        Text _policyStatusText;
 
         public bool HelpVisible { get; private set; }
 
@@ -751,6 +752,26 @@ namespace Naval
             _mapSummaryText = Label("MapSummary", p, "", 12, TextAnchor.MiddleLeft, TextDim,
                 new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(430f, -556f), new Vector2(-30f, -530f));
 
+            // ---- who drives each fleet: the rule AI, you, or a trained policy -----------
+            Label("AiHdr", p, "ENEMY AI", 12, TextAnchor.MiddleLeft, TextDim,
+                new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(30f, -598f), new Vector2(120f, -574f));
+            Button("RULE-BASED", p, new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(122f, -600f), new Vector2(252f, -572f),
+                () => { _menuSetup.enemyController = ShipController.RuleAI; }, null,
+                () => _menuSetup.enemyController == ShipController.RuleAI);
+            Button("LEARNED", p, new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(258f, -600f), new Vector2(388f, -572f),
+                () => { _menuSetup.enemyController = ShipController.Learned; }, PolicyAvailable,
+                () => _menuSetup.enemyController == ShipController.Learned);
+            Label("YouHdr", p, "YOUR FLEET", 12, TextAnchor.MiddleLeft, TextDim,
+                new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(424f, -598f), new Vector2(520f, -574f));
+            Button("YOU COMMAND", p, new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(522f, -600f), new Vector2(662f, -572f),
+                () => { _menuSetup.playerController = ShipController.Human; }, null,
+                () => _menuSetup.playerController == ShipController.Human);
+            Button("LEARNED", p, new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(668f, -600f), new Vector2(798f, -572f),
+                () => { _menuSetup.playerController = ShipController.Learned; }, PolicyAvailable,
+                () => _menuSetup.playerController == ShipController.Learned);
+            _policyStatusText = Label("PolicyStatus", p, "", 11, TextAnchor.MiddleLeft, TextDim,
+                new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(30f, -628f), new Vector2(-30f, -606f));
+
             _menuTotalText = Label("Total", p, "", 16, TextAnchor.MiddleCenter, TextMain,
                 new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(0f, 96f), new Vector2(0f, 124f), FontStyle.Bold);
 
@@ -776,8 +797,14 @@ namespace Naval
             _menuPanel.SetActive(false);
         }
 
+        static bool PolicyAvailable() => RL.RLPolicyDriver.I != null && RL.RLPolicyDriver.I.Available;
+
+        bool PolicyMissing() =>
+            (_menuSetup.enemyController == ShipController.Learned || _menuSetup.playerController == ShipController.Learned) && !PolicyAvailable();
+
         bool MenuIsValid()
         {
+            if (PolicyMissing()) return false;
             if (_menuSetup.compositionMode == FleetCompositionMode.Custom && _menuSetup.CustomTotal < 1) return false;
             if (_menuSetup.playerShipCount < FleetSetup.MinShips || _menuSetup.enemyShipCount < FleetSetup.MinShips) return false;
             return true;
@@ -1582,11 +1609,16 @@ namespace Naval
                 _mapSummaryText.text = _menuMap.LayoutName + "  -  " +
                     Mathf.RoundToInt(_menuMap.captureRadius * 10f) + " m caps";
 
+            if (_policyStatusText != null)
+                _policyStatusText.text = RL.RLPolicyDriver.I != null ? RL.RLPolicyDriver.I.Status : "no trained policy";
+
             bool ok = MenuIsValid();
+            bool spectating = _menuSetup.playerController == ShipController.Learned;
             _menuTotalText.text = ok
                 ? player + " v " + enemy + "   -   " + mode +
+                  (spectating ? "   -   your fleet is flown by the trained policy" : "") +
                   (_menuSetup.startAsCaptain ? "   -   you take the helm of a " + _menuSetup.controlClass.ToString().ToUpper() : "")
-                : "Set at least one ship per side";
+                : (PolicyMissing() ? "No trained policy to fly a Learned fleet yet" : "Set at least one ship per side");
             _menuTotalText.color = ok ? new Color(0.5f, 1f, 0.7f) : new Color(1f, 0.75f, 0.4f);
         }
 

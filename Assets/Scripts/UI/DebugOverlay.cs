@@ -30,6 +30,16 @@ namespace Naval
 
         float PS => RTSCamera.I != null ? RTSCamera.I.PixelScale : 0.15f;
 
+        /// <summary>Show every ship regardless of fog of war (F2). Also used by replay rendering.</summary>
+        public static void SetReveal(bool on)
+        {
+            ShowAll = on;
+            if (FogOfWarRenderer.I != null) FogOfWarRenderer.I.Enabled = !on;
+        }
+
+        /// <summary>Turn the F1 debug drawing on or off from code.</summary>
+        public static void SetDebugDraw(bool on) => Enabled = on;
+
         void Update()
         {
             if (InputHub.KeyDown(Key.F1))
@@ -39,8 +49,7 @@ namespace Naval
             }
             if (InputHub.KeyDown(Key.F2))
             {
-                ShowAll = !ShowAll;
-                if (FogOfWarRenderer.I != null) FogOfWarRenderer.I.Enabled = !ShowAll;
+                SetReveal(!ShowAll);
                 GameEvents.RaiseMessage("Fog of war " + (ShowAll ? "DISABLED" : "ENABLED"), Team.Neutral);
             }
             if (InputHub.KeyDown(Key.F3))

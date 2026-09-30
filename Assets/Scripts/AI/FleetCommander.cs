@@ -64,6 +64,8 @@ namespace Naval
             Assessment.Rebuild(team, mode, difficulty, _mine);
             BattleAssessment.Publish(team, Assessment);
 
+            // the assessment covers the whole team, but orders only go to ships the rule AI drives
+            _mine.RemoveAll(s => s.Controller != ShipController.RuleAI);
             if (!strategicControl || _mine.Count == 0) return;
 
             if (Assessment.IsObjectiveMode && Assessment.Zones.Length > 0) AssignObjective();

@@ -25,6 +25,9 @@ namespace Naval
         public int submarines = 1;
 
         public ShipClassType controlClass = ShipClassType.Cruiser;
+        /// <summary>Who drives each fleet. A trained policy can take either side (Naval.RL).</summary>
+        public ShipController playerController = ShipController.Human;
+        public ShipController enemyController = ShipController.RuleAI;
         /// <summary>Start conning a ship, or start as fleet commander (the default).</summary>
         public bool startAsCaptain = false;
 
@@ -157,6 +160,14 @@ namespace Naval
         public int PlayerKills { get; private set; }
         public int EnemyKills { get; private set; }
         public string ResultSummary { get; private set; } = "";
+        /// <summary>Which side won the finished match. Only meaningful in Victory / Defeat.</summary>
+        public Team Winner { get; private set; } = Team.Neutral;
+        /// <summary>
+        /// The clock ran out with the sides exactly level. The match still resolves as a defeat for the
+        /// player, but a learning agent should see it as the draw it is.
+        /// </summary>
+        public bool IsDraw { get; private set; }
+        public string EndReason { get; private set; } = "";
 
         static readonly float[] SpeedSteps = { 0f, 1f, 2f, 4f, 8f };
 
@@ -237,7 +248,7 @@ namespace Naval
         /// Builds a hand-authored battle: the scenario's terrain and objectives, and its exact ship
         /// list rather than the procedural three-squadron deployment.
         /// </summary>
-        public void BeginScenario(Scenario sc)
+        public void BeginScenario(Scenario sc, bool regenerateWorld = true)
         {
             if (sc == null) return;
             ActiveScenario = sc;
@@ -250,6 +261,7 @@ namespace Naval
             PlayerKills = EnemyKills = 0;
             _repair[0] = _repair[1] = 100f;
             ResultSummary = "";
+            Winner = Team.Neutral; IsDraw = false; EndReason = "";
             EnemyDifficulty = sc.aiDifficulty;
             ApplyTimeScale();
 
@@ -262,14 +274,18 @@ namespace Naval
             map.islandDensity = sc.density;
             Map = map;
 
-            int largest = Mathf.Max(1, Mathf.Max(sc.CountOf(Team.Player), sc.CountOf(Team.Enemy)));
-            WorldMap.I.ConfigureDeployment(largest);
-            WorldMap.I.ApplyScenario(sc);
-            WorldMap.I.Generate(sc.seed, Mode, 512, Map);
-            NavGrid.I.Build(WorldMap.I);
+            if (regenerateWorld)
+            {
+                int largest = Mathf.Max(1, Mathf.Max(sc.CountOf(Team.Player), sc.CountOf(Team.Enemy)));
+                WorldMap.I.ConfigureDeployment(largest);
+                WorldMap.I.ApplyScenario(sc);
+                WorldMap.I.Generate(sc.seed, Mode, 512, Map);
+                NavGrid.I.Build(WorldMap.I);
+                if (Minimap.I != null) Minimap.I.BakeTerrain();
+            }
+            else ResetObjectivesInPlace(sc);
 
             if (WeatherSystem.I != null) WeatherSystem.I.ForceWeather(sc.weather);
-            if (Minimap.I != null) Minimap.I.BakeTerrain();
             if (FogOfWarRenderer.I != null) FogOfWarRenderer.I.Enabled = sc.fogOfWar && !DebugOverlay.ShowAll;
 
             if (_shipRoot != null) Destroy(_shipRoot.gameObject);
@@ -295,6 +311,8 @@ namespace Naval
 
             var cam = RTSCamera.I;
             if (cam != null) cam.FocusOn(WorldMap.I.PlayerDeployCenter, 420f);
+
+            ApplySetupControllers();
 
             GameEvents.RaiseMessage("Scenario: " + sc.scenarioName, Team.Neutral);
             GameEvents.RaiseMessage(ObjectiveText, Team.Neutral);
@@ -347,6 +365,7 @@ namespace Naval
             PlayerKills = EnemyKills = 0;
             _repair[0] = _repair[1] = 100f;
             ResultSummary = "";
+            Winner = Team.Neutral; IsDraw = false; EndReason = "";
             ApplyTimeScale();
 
             ClearBattlefield();
@@ -362,9 +381,10 @@ namespace Naval
             {
                 WorldMap.I.Generate(seed, mode, 512, Map);
                 NavGrid.I.Build(WorldMap.I);
+                if (Minimap.I != null) Minimap.I.BakeTerrain();
             }
+            else ResetObjectivesInPlace(null);
             if (WeatherSystem.I != null) WeatherSystem.I.ForceWeather(Map.weather);
-            if (Minimap.I != null) Minimap.I.BakeTerrain();
             if (FogOfWarRenderer.I != null) FogOfWarRenderer.I.Enabled = !DebugOverlay.ShowAll;
 
             if (_shipRoot != null) Destroy(_shipRoot.gameObject);
@@ -418,8 +438,77 @@ namespace Naval
             var cam = RTSCamera.I;
             if (cam != null) cam.FocusOn(WorldMap.I.PlayerDeployCenter, 420f);
 
+            ApplySetupControllers();
+
             GameEvents.RaiseMessage("Mission: " + ModeName, Team.Neutral);
             GameEvents.RaiseMessage(ObjectiveText, Team.Neutral);
+        }
+
+        void ApplySetupControllers()
+        {
+            SetTeamController(Team.Player, Setup.playerController);
+            SetTeamController(Team.Enemy, Setup.enemyController);
+        }
+
+        /// <summary>
+        /// Hands a whole fleet to a controller. The fleet commander only issues orders while its side
+        /// is rule-driven; it keeps publishing the team's BattleAssessment either way.
+        /// </summary>
+        public void SetTeamController(Team team, ShipController controller, AIDifficulty? difficulty = null)
+        {
+            var ships = ShipRegistry.OfTeam(team);
+            for (int i = 0; i < ships.Count; i++)
+            {
+                var s = ships[i];
+                if (s == null) continue;
+                s.Controller = controller;
+                if (controller != ShipController.RuleAI && s.AI != null) s.AI.ManualTarget = null;
+            }
+
+            var commander = team == Team.Enemy ? _enemyCommander : _playerAnalyst;
+            if (commander != null)
+            {
+                commander.strategicControl = controller == ShipController.RuleAI;
+                if (difficulty.HasValue) commander.difficulty = difficulty.Value;
+            }
+            if (team == Team.Enemy && difficulty.HasValue) EnemyDifficulty = difficulty.Value;
+        }
+
+        /// <summary>Shortens or lengthens the current match clock (training curricula use short battles).</summary>
+        public void OverrideTimeLimit(float seconds) => TimeLimit = Mathf.Max(10f, seconds);
+
+        /// <summary>
+        /// Starts a procedural match with an explicit fleet, battlefield and mode - the training entry
+        /// point, which bypasses the setup screen.
+        /// </summary>
+        public void BeginTrainingMatch(GameMode mode, FleetSetup setup, MapConfig map, int seed, bool regenerateWorld)
+        {
+            Setup = setup != null ? setup.Clone() : FleetSetup.Default();
+            if (map != null) Map = map.Clone();
+            _worldFresh = false;
+            BeginMatch(mode, seed, regenerateWorld);
+        }
+
+        /// <summary>
+        /// Reusing a world means its objectives still hold the last battle's state: flags captured,
+        /// meters part-filled, ports shot up. Put them back to the opening position.
+        /// </summary>
+        void ResetObjectivesInPlace(Scenario sc)
+        {
+            var map = WorldMap.I;
+            if (map == null) return;
+            for (int i = 0; i < map.Zones.Count; i++)
+            {
+                var z = map.Zones[i];
+                if (z == null) continue;
+                Team owner = Team.Neutral;
+                if (sc != null)
+                    for (int k = 0; k < sc.zones.Count; k++)
+                        if (sc.zones[k].name == z.zoneName) { owner = sc.zones[k].owner; break; }
+                z.ResetState(owner);
+            }
+            for (int i = 0; i < map.Ports.Count; i++)
+                if (map.Ports[i] != null) map.Ports[i].health = map.Ports[i].maxHealth;
         }
 
         void ClearBattlefield()
@@ -548,7 +637,8 @@ namespace Naval
             GameEvents.RaiseMessage("Action stations - the battle has begun", Team.Player);
 
             // The player commands the fleet by default; only take the helm if they asked for it.
-            if (Setup.startAsCaptain && ControlModeManager.I != null)
+            // taking the helm makes no sense when the trained policy is flying your fleet
+            if (Setup.startAsCaptain && Setup.playerController == ShipController.Human && ControlModeManager.I != null)
             {
                 var ship = FindStartingShip(Setup.controlClass);
                 if (ship != null) ControlModeManager.I.EnterDirect(ship);
@@ -794,10 +884,17 @@ namespace Naval
             {
                 bool win;
                 if (Mode == GameMode.Domination || Mode == GameMode.CaptureAndControl)
-                    win = PlayerScore > EnemyScore || (Mathf.Approximately(PlayerScore, EnemyScore) && FleetPoints > EnemyFleetPoints);
+                {
+                    bool level = Mathf.Approximately(PlayerScore, EnemyScore);
+                    win = PlayerScore > EnemyScore || (level && FleetPoints > EnemyFleetPoints);
+                    IsDraw = level && FleetPoints == EnemyFleetPoints;
+                }
                 else
+                {
                     win = FleetPoints > EnemyFleetPoints;
-                End(win, "Time limit reached.");
+                    IsDraw = FleetPoints == EnemyFleetPoints;
+                }
+                End(win, IsDraw ? "Time limit reached - dead level." : "Time limit reached.");
             }
         }
 
@@ -805,6 +902,8 @@ namespace Naval
         {
             if (Phase == GamePhase.Victory || Phase == GamePhase.Defeat) return;
             Phase = victory ? GamePhase.Victory : GamePhase.Defeat;
+            Winner = IsDraw ? Team.Neutral : victory ? Team.Player : Team.Enemy;
+            EndReason = reason;
             ApplyTimeScale();
 
             ResultSummary =

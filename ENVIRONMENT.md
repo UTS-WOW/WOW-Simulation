@@ -443,7 +443,9 @@ damage-weighted fleet strength (`FleetPoints`), which moves continuously with da
 on hull loss. Natural episode termination is `GamePhase.Victory` / `GamePhase.Defeat`, with
 `ResultSummary` describing the cause.
 
-**There is no gym or ML-Agents wrapper in this repository.** The above describes the state and reward
-surface a wrapper would sit on; the observation encoding, action space and stepping loop would still
-need to be written. Time compression (up to 8×) and seeded generation are the two facilities most
-useful for building one.
+**The training environment is `Assets/Scripts/RL/`, and the MAPPO trainer is `Training/`** (see
+[Training/README.md](Training/README.md)). The environment speaks a small lockstep TCP protocol
+instead of ML-Agents. Every simulation system is a singleton, so one Unity process holds one battle,
+and parallel environments are parallel headless players. Training fixes `Time.captureDeltaTime`, so
+every frame is exactly 20 ms of game time no matter how fast the machine runs it, rather than relying
+on time compression.

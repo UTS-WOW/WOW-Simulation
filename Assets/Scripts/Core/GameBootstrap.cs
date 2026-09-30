@@ -21,12 +21,32 @@ namespace Naval
         [Header("World")]
         public int heightmapResolution = 512;
 
+        [Header("Reinforcement learning")]
+        [Tooltip("Start as a training environment and wait for the Python trainer (Training/train.py) " +
+                 "instead of showing the menu. Built players use the -rlTrain command-line flag instead.")]
+        public bool rlTrainingServer = false;
+        [Tooltip("Port the training environment listens on. Overridden by -rlPort.")]
+        public int rlPort = 5005;
+
         Transform _root;
 
         void Awake()
         {
-            Application.targetFrameRate = 60;
-            QualitySettings.vSyncCount = 1;
+            bool training = rlTrainingServer || RL.RLCommandLine.Has("-rlTrain");
+            int port = RL.RLCommandLine.Int("-rlPort", rlPort);
+
+            if (training)
+            {
+                // the trainer sets Time.captureDeltaTime; frames then run as fast as the CPU allows
+                Application.targetFrameRate = -1;
+                QualitySettings.vSyncCount = 0;
+                Application.runInBackground = true;
+            }
+            else
+            {
+                Application.targetFrameRate = 60;
+                QualitySettings.vSyncCount = 1;
+            }
 
             // top-down naval combat: no gravity, and ships need room to push each other around
             Physics2D.gravity = Vector2.zero;
@@ -39,9 +59,11 @@ namespace Naval
             _root = rootGo.transform;
 
             // ---- presentation services --------------------------------------
-            ParticleFX.Create(_root);
+            // Training runs headless: particles and synthesised audio are pure cost there, and every
+            // caller already tolerates them being absent.
+            if (!training) ParticleFX.Create(_root);
             LineDrawer.Create(_root);
-            AudioManager.Create(_root);
+            if (!training) AudioManager.Create(_root);
 
             // ---- world ------------------------------------------------------
             var map = WorldMap.Create(_root);
@@ -76,7 +98,13 @@ namespace Naval
             // ---- match --------------------------------------------------------
             var gm = GameManager.Create(_root);
             gm.EnemyDifficulty = enemyDifficulty;
-            if (skipMenu) gm.BeginMatch(startMode, seed, false);   // world above was built with this seed
+
+            // a trained policy, if one has been exported, for human-vs-learned battles
+            RL.RLPolicyDriver.Create(_root);
+
+            if (training) RL.RLEnvironment.Create(_root, port);   // the trainer drives resets
+            else if (RL.RLDemo.Requested) RL.RLDemo.Create(_root);   // -rlDemo: straight into a policy battle
+            else if (skipMenu) gm.BeginMatch(startMode, seed, false);   // world above was built with this seed
             else gm.EnterMenu(true);
         }
 

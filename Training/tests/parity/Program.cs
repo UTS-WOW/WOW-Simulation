@@ -1,0 +1,46 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using Naval.RL;
+
+// usage: dotnet run -- policy.bin case.json   (exit code 0 = C# matches PyTorch)
+static class Program
+{
+    static int Main(string[] args)
+    {
+        var policy = RLPolicy.Load(File.ReadAllBytes(args[0]));
+        var c = (Dictionary<string, object>)MiniJson.Parse(File.ReadAllText(args[1]));
+        int na = MiniJson.Int(c["n_allies"]), nc = MiniJson.Int(c["n_contacts"]), nz = MiniJson.Int(c["n_zones"]);
+
+        var hidden = MiniJson.Floats(c["hidden_in"]);
+        var logits = new float[policy.LogitCount(nc, nz)];
+        var attn = new float[1 + na + nc + nz];
+        policy.Act(MiniJson.Floats(c["self"]), MiniJson.Floats(c["allies"]), na, MiniJson.Floats(c["contacts"]), nc,
+                   MiniJson.Floats(c["zones"]), nz, hidden, logits, attn);
+
+        double worst = 0;
+        worst = Math.Max(worst, Report("logits", logits, MiniJson.Floats(c["logits"])));
+        worst = Math.Max(worst, Report("hidden", hidden, MiniJson.Floats(c["hidden_out"])));
+        worst = Math.Max(worst, Report("attention", attn, MiniJson.Floats(c["attention_self"])));
+
+        if (c.ContainsKey("value"))
+        {
+            policy.Evaluate(MiniJson.Floats(c["critic_match"]), MiniJson.Floats(c["critic_own"]), MiniJson.Int(c["n_own"]),
+                            MiniJson.Floats(c["critic_enemy"]), MiniJson.Int(c["n_enemy"]), MiniJson.Floats(c["critic_zones"]), nz,
+                            MiniJson.Int(c["agent_index"]), out float v, out float w);
+            worst = Math.Max(worst, Report("value", new[] { v }, new[] { (float)MiniJson.Num(c["value"]) }));
+            worst = Math.Max(worst, Report("win_logit", new[] { w }, new[] { (float)MiniJson.Num(c["win_logit"]) }));
+        }
+        Console.WriteLine("worst abs error " + worst.ToString("E2"));
+        return worst < 1e-3 ? 0 : 1;
+    }
+
+    static double Report(string name, float[] got, float[] want)
+    {
+        if (got.Length != want.Length) { Console.WriteLine(name + ": length " + got.Length + " vs " + want.Length); return double.MaxValue; }
+        double e = 0;
+        for (int i = 0; i < got.Length; i++) e = Math.Max(e, Math.Abs(got[i] - want[i]));
+        Console.WriteLine(name + ": " + got.Length + " values, max abs error " + e.ToString("E2"));
+        return e;
+    }
+}

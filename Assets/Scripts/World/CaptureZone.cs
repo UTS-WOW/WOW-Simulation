@@ -49,6 +49,20 @@ namespace Naval
             Progress = t == Team.Player ? 1f : t == Team.Enemy ? -1f : 0f;
         }
 
+        /// <summary>
+        /// Puts the zone back to its opening state without rebuilding the world, so repeated battles
+        /// on the same map (training episodes) all start from the same objective picture.
+        /// </summary>
+        public void ResetState(Team owner)
+        {
+            _inside.Clear();
+            _stale.Clear();
+            PlayerShips = EnemyShips = 0;
+            Contested = false;
+            _tickTimer = 0f;
+            SetInitialOwner(owner);
+        }
+
         public static CaptureZone Create(Transform parent, Vector2 pos, float radius, string name)
         {
             var go = new GameObject("Zone_" + name);
