@@ -1,0 +1,13 @@
+{
+  "winrate_window": 50,
+  "stages": [
+    {"name": "t1_ship_handling", "scenario": "scenarios/stage0_bb_duel.json", "difficulty": 0,
+     "promote_winrate": 1.01, "min_episodes": 0},
+    {"name": "t2_gunnery_recruit",
+     "scenarios": ["scenarios/gunnery_dd_2v2.json", "scenarios/gunnery_ca_3v3.json", "scenarios/gunnery_bb_4v4.json"],
+     "difficulty": 0, "promote_winrate": 0.6, "min_episodes": 50},
+    {"name": "t2_gunnery_veteran",
+     "scenarios": ["scenarios/gunnery_dd_2v2.json", "scenarios/gunnery_ca_3v3.json", "scenarios/gunnery_bb_4v4.json"],
+     "difficulty": 1, "promote_winrate": 1.01, "min_episodes": 0}
+  ]
+}

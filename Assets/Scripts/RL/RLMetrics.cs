@@ -16,7 +16,9 @@ namespace Naval.RL
         readonly float[] _focusSum = new float[2], _focusSamples = new float[2];
         readonly float[] _holdFireSteps = new float[2], _shipSteps = new float[2];
         readonly float[] _firstCapture = new float[2];
+        readonly float[] _groundings = new float[2], _agroundSteps = new float[2];
         readonly HashSet<Ship> _radarWasActive = new HashSet<Ship>();
+        readonly HashSet<Ship> _wasAground = new HashSet<Ship>();
         readonly Dictionary<Ship, int> _targetCounts = new Dictionary<Ship, int>();
 
         public void Begin()
@@ -26,8 +28,10 @@ namespace Naval.RL
                 _ddExposed[t] = _ddConcealed[t] = _radarUses[t] = _radarOnDD[t] = 0f;
                 _focusSum[t] = _focusSamples[t] = _holdFireSteps[t] = _shipSteps[t] = 0f;
                 _firstCapture[t] = -1f;
+                _groundings[t] = _agroundSteps[t] = 0f;
             }
             _radarWasActive.Clear();
+            _wasAground.Clear();
         }
 
         public void Sample()
@@ -47,6 +51,15 @@ namespace Naval.RL
                     if (s == null || s.IsDead || s.IsSinking) continue;
                     _shipSteps[t] += 1f;
                     if (s.Weapons.HoldFire) _holdFireSteps[t] += 1f;
+
+                    // Aground holds for 1.5 s after the last contact, so sampling once per decision
+                    // sees every grounding; a rising edge is one event
+                    if (s.Movement.Aground)
+                    {
+                        _agroundSteps[t] += 1f;
+                        if (_wasAground.Add(s)) _groundings[t] += 1f;
+                    }
+                    else _wasAground.Remove(s);
 
                     if (s.CurrentTarget != null && !s.CurrentTarget.IsDead)
                     {
@@ -126,7 +139,9 @@ namespace Naval.RL
             AppendPair(sb, "damage_dealt_hulls", rewards.EpisodeDamage[0], rewards.EpisodeDamage[1]); sb.Append(',');
             AppendPair(sb, "spotting_damage_hulls", rewards.EpisodeSpotting[0], rewards.EpisodeSpotting[1]); sb.Append(',');
             AppendPair(sb, "spotting_share", Ratio(rewards.EpisodeSpotting[0], rewards.EpisodeDamage[0]), Ratio(rewards.EpisodeSpotting[1], rewards.EpisodeDamage[1])); sb.Append(',');
-            AppendPair(sb, "friendly_fire_hulls", rewards.EpisodeFriendlyFire[0], rewards.EpisodeFriendlyFire[1]);
+            AppendPair(sb, "friendly_fire_hulls", rewards.EpisodeFriendlyFire[0], rewards.EpisodeFriendlyFire[1]); sb.Append(',');
+            AppendPair(sb, "groundings", _groundings[0], _groundings[1]); sb.Append(',');
+            AppendPair(sb, "aground_ship_steps", _agroundSteps[0], _agroundSteps[1]);
         }
 
         static void AppendPair(StringBuilder sb, string name, float a, float b)

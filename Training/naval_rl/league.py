@@ -107,8 +107,10 @@ class League:
             "opponent_difficulty": plan.difficulty,
             "episode_seed": int(self.rng.integers(1, 2**31 - 1)),
         }
-        if "scenario" in st:
-            sc = copy.deepcopy(self._scenario(st["scenario"]))
+        if "scenario" in st or "scenarios" in st:
+            # "scenarios": a list to draw one from per episode
+            path = st["scenario"] if "scenario" in st else st["scenarios"][int(self.rng.integers(len(st["scenarios"])))]
+            sc = copy.deepcopy(self._scenario(path))
             j = float(self.cfg.jitter)
             for ship in sc.get("ships", []):
                 ship["x"] = float(ship["x"]) + float(self.rng.uniform(-j, j))

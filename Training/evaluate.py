@@ -8,6 +8,10 @@
 
 The learner's side is randomised per battle, as in training. --greedy takes the policy's likeliest
 action instead of sampling. Prints win rate with its standard error, and writes a JSON summary.
+
+Each battle also records the learner's return - the training reward at full shaping, summed over
+the battle and averaged over the learner's ships - and how many times its ships ran aground.
+--rounds K splits the battles into K evaluations and reports each one's mean return.
 """
 
 from __future__ import annotations
@@ -24,6 +28,7 @@ from naval_rl.env import init_message, make_workers
 from naval_rl.league import League
 from naval_rl.mappo import ACTOR_KEYS, to_t
 from naval_rl.model import Actor, sample_actions
+from naval_rl.rewards import RewardFunction
 from naval_rl.spec import Spec
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -44,6 +49,7 @@ def main():
     p.add_argument("--max-team", type=int, help="bigger padding caps for zero-shot evaluation")
     p.add_argument("--base-port", type=int, default=5300)
     p.add_argument("--seed", type=int, default=123)
+    p.add_argument("--rounds", type=int, default=1, help="split the battles into this many evaluations")
     p.add_argument("--out")
     p.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
                    help="override a config value, e.g. a stage list to test one battlefield")
@@ -78,6 +84,11 @@ def main():
     rng = np.random.default_rng(a.seed)
     sizes = wspec.head_sizes
     N, H = wspec.max_team, len(wspec.heads)
+    # update 0 = full shaping, so every checkpoint's return is measured on the same scale
+    reward_fn = RewardFunction(wspec.team_reward_components, wspec.agent_reward_components,
+                               cfg.team_weights, cfg.agent_weights, cfg.anneal_updates,
+                               cfg.shaping_floor, cfg.spotting_reward)
+    returns = np.zeros(len(workers))
 
     plans, obs = [None] * len(workers), [None] * len(workers)
     hidden = torch.zeros(len(workers), N, cfg.hidden)
@@ -121,16 +132,24 @@ def main():
             starts[w] = 0.0
             workers[w].step_async(acts)
         for w in list(active):
+            ships = int(obs[w].ships[plans[w].learner_team])
             o = workers[w].recv()
+            L = plans[w].learner_team
+            r = reward_fn(o.arrays["team_reward"], o.arrays["agent_reward"], 0)[L]
+            returns[w] += float(np.mean(r[:max(1, min(ships, N))]))
             if o.terminal:
-                L = plans[w].learner_team
                 st = o.stats or {}
                 results.append({
                     "score": 0.5 if o.draw else float(o.winner == L),
                     "dealt": st.get("damage_dealt_hulls", [0, 0])[L],
                     "taken": st.get("damage_dealt_hulls", [0, 0])[1 - L],
+                    "return": float(returns[w]),
+                    "groundings": st.get("groundings", [0, 0])[L],
+                    "opponent_groundings": st.get("groundings", [0, 0])[1 - L],
                     "reason": o.reason,
+                    "scenario": (plans[w].reset.get("scenario") or {}).get("scenarioName", ""),
                 })
+                returns[w] = 0.0
                 if launched < a.episodes:
                     start(w)
                     o = workers[w].recv()
@@ -144,15 +163,28 @@ def main():
     for wk in workers:
         wk.close()
     s = np.array([r["score"] for r in results])
+    ret = np.array([r["return"] for r in results])
+    rounds = [float(np.mean(c)) for c in np.array_split(ret, max(1, a.rounds)) if len(c)]
     summary = {
         "who": "random" if a.random else "scripted" if a.scripted else a.checkpoint, "stage": a.stage, "episodes": len(results),
         "win_rate": float(s.mean()), "stderr": float(s.std(ddof=1) / np.sqrt(len(s))) if len(s) > 1 else 0.0,
         "damage_dealt": float(np.mean([r["dealt"] for r in results])),
         "damage_taken": float(np.mean([r["taken"] for r in results])),
+        "mean_return": float(ret.mean()),
+        "return_stderr": float(ret.std(ddof=1) / np.sqrt(len(ret))) if len(ret) > 1 else 0.0,
+        "round_returns": rounds,
+        "groundings": float(np.sum([r["groundings"] for r in results])),
+        "battles_with_grounding": int(np.sum([r["groundings"] > 0 for r in results])),
+        "opponent_groundings": float(np.sum([r["opponent_groundings"] for r in results])),
+        "difficulty": a.difficulty,
         "greedy": a.greedy,
     }
     print(f"{summary['who']}: win rate {summary['win_rate']:.2f} ± {summary['stderr']:.2f} over {len(results)} battles, "
-          f"damage dealt {summary['damage_dealt']:.2f} vs taken {summary['damage_taken']:.2f} (hulls)")
+          f"damage dealt {summary['damage_dealt']:.2f} vs taken {summary['damage_taken']:.2f} (hulls), "
+          f"return {summary['mean_return']:+.3f} ± {summary['return_stderr']:.3f}, "
+          f"groundings {summary['groundings']:.0f} (rule AI {summary['opponent_groundings']:.0f})")
+    if a.rounds > 1:
+        print("  return per evaluation: " + " ".join(f"{x:+.3f}" for x in rounds))
     if a.out:
         with open(a.out, "w") as f:
             json.dump({"summary": summary, "battles": results}, f, indent=1)
