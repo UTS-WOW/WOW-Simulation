@@ -1,0 +1,26 @@
+{
+ "winrate_window": 100,
+ "stages": [
+  {
+   "name": "bb_duel",
+   "scenario": "scenarios/stage0_bb_duel.json",
+   "difficulty": 0,
+   "promote_winrate": 0.55,
+   "min_episodes": 100
+  },
+  {
+   "name": "koth_3v3",
+   "scenario": "scenarios/stage1_koth_3v3.json",
+   "difficulty": 1,
+   "promote_winrate": 0.65,
+   "min_episodes": 100
+  },
+  {
+   "name": "archipelago_3v3",
+   "scenario": "scenarios/stage2_archipelago_3v3.json",
+   "difficulty": 1,
+   "promote_winrate": 0.65,
+   "min_episodes": 150
+  }
+ ]
+}
