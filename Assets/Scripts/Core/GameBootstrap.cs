@@ -62,7 +62,7 @@ namespace Naval
             // Training runs headless: particles and synthesised audio are pure cost there, and every
             // caller already tolerates them being absent.
             if (!training) ParticleFX.Create(_root);
-            LineDrawer.Create(_root);
+            if (!training) LineDrawer.Create(_root);
             if (!training) AudioManager.Create(_root);
 
             // ---- world ------------------------------------------------------
