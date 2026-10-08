@@ -83,6 +83,24 @@ def pool(tokens: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
     return torch.cat([mean, biggest], dim=-1)
 
 
+def trim(tokens: torch.Tensor, mask: torch.Tensor):
+    """Drops the slots that are empty in every row of the batch (from the last used one on): a 1v1
+    battle does not pay for the 8 ship slots the observation has room for."""
+    used = mask.any(0).nonzero()
+    k = int(used.max()) + 1 if len(used) else 0
+    return tokens[:, :k], mask[:, :k]
+
+
+def pad_to(x: torch.Tensor, size: int, dim: int, value: float = 0.0) -> torch.Tensor:
+    """Pads dimension dim of x up to size (undoes trim for an output)."""
+    missing = size - x.shape[dim]
+    if missing <= 0:
+        return x
+    shape = list(x.shape)
+    shape[dim] = missing
+    return torch.cat([x, x.new_full(shape, value)], dim=dim)
+
+
 class EntityEncoder(nn.Module):
     """Token embedding (one small MLP per kind of thing) + `layers` transformer blocks.
 
@@ -145,30 +163,37 @@ class Captain(nn.Module):
         self.key = nn.ModuleDict({"zones": layer(d, d), "contacts": layer(d, d)})
 
     def encode(self, obs: dict, order: torch.Tensor):
-        """The per-decision part: obs tensors [B, ...] -> (vector [B, d], tokens, where groups start)."""
+        """The per-decision part: obs tensors [B, ...] -> (vector [B, d], the contact and circle tokens
+        for the pointer heads)."""
         onehot, flag = order_features(order, obs["zones"].shape[1])
         B = obs["self"].shape[0]
+        allies, ally_mask = trim(obs["allies"], obs["ally_mask"])
+        contacts, contact_mask = trim(obs["contacts"], obs["contact_mask"])
+        zones, zone_mask = trim(torch.cat([obs["zones"], flag], -1), obs["zone_mask"])
+        obstacles, obstacle_mask = trim(obs["obstacles"], obs["obstacle_mask"])
         groups = [("self", torch.cat([obs["self"], onehot], -1).unsqueeze(1), obs["self"].new_ones(B, 1)),
-                  ("ally", obs["allies"], obs["ally_mask"]),
-                  ("contact", obs["contacts"], obs["contact_mask"]),
-                  ("zone", torch.cat([obs["zones"], flag], -1), obs["zone_mask"]),
-                  ("obstacle", obs["obstacles"], obs["obstacle_mask"])]
+                  ("ally", allies, ally_mask), ("contact", contacts, contact_mask), ("zone", zones, zone_mask),
+                  ("obstacle", obstacles, obstacle_mask)]
         tokens, mask = self.encoder(groups)
         x = self.fuse(torch.cat([tokens[:, 0], pool(tokens, mask)], dim=-1))
-        c0 = 1 + obs["allies"].shape[1]
-        z0 = c0 + obs["contacts"].shape[1]
-        pointer_tokens = {"contacts": tokens[:, c0:z0], "zones": tokens[:, z0:z0 + obs["zones"].shape[1]]}
+        c0 = 1 + allies.shape[1]
+        z0 = c0 + contacts.shape[1]
+        pointer_tokens = {"contacts": (tokens[:, c0:z0], contact_mask, obs["contacts"].shape[1]),
+                          "zones": (tokens[:, z0:z0 + zones.shape[1]], zone_mask, obs["zones"].shape[1])}
         return x, pointer_tokens
 
     def heads(self, z: torch.Tensor, pointer_tokens: dict) -> torch.Tensor:
-        """Logits of every head, concatenated in the environment's order. z: memory + current view."""
+        """Logits of every head, concatenated in the environment's order. z: memory + current view.
+        A pointer option whose token is empty (no such contact / circle) can never be chosen."""
         out = []
         for (name, fixed, pointer), lin in zip(self.head_specs, self.fixed):
             out.append(lin(z))
             if pointer:                                    # one option per contact / circle token
+                tokens, mask, size = pointer_tokens[pointer]
                 q = self.query[pointer](z)                                         # [B, d]
-                k = self.key[pointer](pointer_tokens[pointer])                     # [B, K, d]
-                out.append((k @ q.unsqueeze(-1)).squeeze(-1) / math.sqrt(self.d))
+                k = self.key[pointer](tokens)                                      # [B, K, d]
+                scores = ((k @ q.unsqueeze(-1)).squeeze(-1) / math.sqrt(self.d)).masked_fill(mask < 0.5, NEG_INF)
+                out.append(pad_to(scores, size, -1, NEG_INF))
         return torch.cat(out, dim=-1)
 
     def step(self, obs: dict, order: torch.Tensor, h: torch.Tensor):
@@ -219,19 +244,21 @@ class Commander(nn.Module):
 
     def forward(self, obs: dict) -> torch.Tensor:
         """obs: fleet tensors [B, ...] -> order logits [B, N, 2 + Z] (illegal ones not masked yet)."""
-        own = obs["critic_own"]
-        B, N, _ = own.shape
-        groups = [("match", obs["fleet_match"].unsqueeze(1), own.new_ones(B, 1)),
-                  ("own", own, obs["own_mask"]),
-                  ("enemy", obs["fleet_enemy"], obs["critic_enemy_mask"]),
-                  ("zone", obs["critic_zones"], obs["critic_zone_mask"])]
+        B, N, _ = obs["critic_own"].shape
+        Z = obs["critic_zones"].shape[1]
+        own, own_mask = trim(obs["critic_own"], obs["own_mask"])
+        enemy, enemy_mask = trim(obs["fleet_enemy"], obs["critic_enemy_mask"])
+        zones, zone_mask = trim(obs["critic_zones"], obs["critic_zone_mask"])
+        n, z = own.shape[1], zones.shape[1]
+        groups = [("match", obs["fleet_match"].unsqueeze(1), own.new_ones(B, 1)), ("own", own, own_mask),
+                  ("enemy", enemy, enemy_mask), ("zone", zones, zone_mask)]
         tokens, mask = self.encoder(groups)
         fleet = self.fleet(pool(tokens, mask))                                           # [B, d]
-        ships = self.ship(torch.cat([tokens[:, 1:1 + N], fleet.unsqueeze(1).expand(B, N, -1)], -1))
-        Z = obs["critic_zones"].shape[1]
-        zones = self.key(tokens[:, 1 + 2 * N:1 + 2 * N + Z])                              # [B, Z, d]
-        circle = (self.query(ships) @ zones.transpose(1, 2)) / math.sqrt(self.d)         # [B, N, Z]
-        return torch.cat([self.fixed(ships), circle], dim=-1)
+        ships = self.ship(torch.cat([tokens[:, 1:1 + n], fleet.unsqueeze(1).expand(B, n, -1)], -1))
+        keys = self.key(tokens[:, 1 + n + enemy.shape[1]:])                                # [B, z, d]
+        circle = (self.query(ships) @ keys.transpose(1, 2)) / math.sqrt(self.d)          # [B, n, z]
+        logits = torch.cat([self.fixed(ships), pad_to(circle, Z, -1, NEG_INF)], dim=-1)
+        return pad_to(logits, N, 1)                    # empty ship slots: only "free" is allowed anyway
 
     @staticmethod
     def order_mask(obs: dict) -> torch.Tensor:
@@ -266,17 +293,19 @@ class CentralCritic(nn.Module):
 
     def forward(self, obs: dict):
         """obs: battle tensors [B, ...] -> (values [B, N, groups], commander value [B], win logit [B])."""
-        own = obs["critic_own"]
-        B, N, _ = own.shape
-        groups = [("match", obs["critic_match"].unsqueeze(1), own.new_ones(B, 1)),
-                  ("own", own, obs["own_mask"]),
-                  ("enemy", obs["critic_enemy"], obs["critic_enemy_mask"]),
-                  ("zone", obs["critic_zones"], obs["critic_zone_mask"])]
+        B, N, _ = obs["critic_own"].shape
+        own, own_mask = trim(obs["critic_own"], obs["own_mask"])
+        enemy, enemy_mask = trim(obs["critic_enemy"], obs["critic_enemy_mask"])
+        zones, zone_mask = trim(obs["critic_zones"], obs["critic_zone_mask"])
+        n = own.shape[1]
+        groups = [("match", obs["critic_match"].unsqueeze(1), own.new_ones(B, 1)), ("own", own, own_mask),
+                  ("enemy", enemy, enemy_mask), ("zone", zones, zone_mask)]
         tokens, mask = self.encoder(groups)
         battle = pool(tokens, mask)                                                       # [B, 2d]
-        ships = self.trunk(torch.cat([tokens[:, 1:1 + N], battle.unsqueeze(1).expand(B, N, -1)], -1))
+        ships = self.trunk(torch.cat([tokens[:, 1:1 + n], battle.unsqueeze(1).expand(B, n, -1)], -1))
         fleet = self.fleet(battle)
-        return self.values(ships), self.commander_value(fleet).squeeze(-1), self.win(fleet).squeeze(-1)
+        values = pad_to(self.values(ships), N, 1)                 # empty ship slots: value 0 (never used)
+        return values, self.commander_value(fleet).squeeze(-1), self.win(fleet).squeeze(-1)
 
 
 class LocalCritic(nn.Module):
@@ -294,8 +323,8 @@ class LocalCritic(nn.Module):
         B, N = obs["self"].shape[:2]
         flat = {k: obs[k].reshape(B * N, *obs[k].shape[2:]) for k in CAPTAIN_KEYS}
         groups = [("self", flat["self"].unsqueeze(1), flat["self"].new_ones(B * N, 1)),
-                  ("ally", flat["allies"], flat["ally_mask"]), ("contact", flat["contacts"], flat["contact_mask"]),
-                  ("zone", flat["zones"], flat["zone_mask"]), ("obstacle", flat["obstacles"], flat["obstacle_mask"])]
+                  ("ally", *trim(flat["allies"], flat["ally_mask"])), ("contact", *trim(flat["contacts"], flat["contact_mask"])),
+                  ("zone", *trim(flat["zones"], flat["zone_mask"])), ("obstacle", *trim(flat["obstacles"], flat["obstacle_mask"]))]
         tokens, mask = self.encoder(groups)
         x = self.trunk(torch.cat([tokens[:, 0], pool(tokens, mask)], -1))
         return self.values(x).view(B, N, -1), None, None
@@ -408,14 +437,25 @@ class FleetPolicy(nn.Module):
         out["cmd_decide"] = decide
         out["orders"] = memory.orders.clone()
 
-        # the captains: every ship, on its own view and its order
-        flat = {k: obs[k].reshape(E * N, *obs[k].shape[2:]) for k in CAPTAIN_KEYS}
-        logits, h = self.captain.step(flat, memory.orders.reshape(E * N), memory.h.reshape(E * N, -1))
-        memory.h = h.view(E, N, -1)
-        actions, logp = sample(logits, obs["action_mask"].reshape(E * N, -1), self.head_sizes, deterministic)
-        out["actions"] = actions.view(E, N, -1)
-        out["logp"] = logp.view(E, N)
-        out["logits"] = logits.view(E, N, -1)
+        # the captains: every ship that exists (empty slots of a small battle are skipped), on its own
+        # view and its order
+        H = self.head_sizes
+        real = obs["exists"].reshape(E * N) > 0.5
+        flat = {k: obs[k].reshape(E * N, *obs[k].shape[2:])[real] for k in CAPTAIN_KEYS}
+        h_all = memory.h.reshape(E * N, -1).clone()
+        logits, h = self.captain.step(flat, memory.orders.reshape(E * N)[real], h_all[real])
+        h_all[real] = h
+        memory.h = h_all.view(E, N, -1)
+        acts, logp = sample(logits, obs["action_mask"].reshape(E * N, -1)[real], H, deterministic)
+        out["actions"] = torch.zeros(E * N, len(H), dtype=torch.long, device=acts.device)
+        out["actions"][real] = acts
+        out["actions"] = out["actions"].view(E, N, -1)
+        out["logp"] = torch.zeros(E * N, device=acts.device)
+        out["logp"][real] = logp
+        out["logp"] = out["logp"].view(E, N)
+        out["logits"] = torch.zeros(E * N, sum(H), device=acts.device)
+        out["logits"][real] = logits
+        out["logits"] = out["logits"].view(E, N, -1)
         return out
 
 

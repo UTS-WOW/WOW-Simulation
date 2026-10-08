@@ -3,7 +3,7 @@ naval environment.
 
     env = Monitor(NavalEnv(...), log_dir)      # one CSV line per finished battle
     plot_results(log_dir)                      # the learning curve
-    plot_curriculum(log_dir)                   # win rate per curriculum stage
+    plot_curriculum(log_dir)                   # pass rate per curriculum stage
     evaluate(model, env, n_battles=40)         # win rate against the rule AI (model=None: random play)
     record_battle(model, env, "videos/x.mp4")  # a top-down replay of one battle (.gif without ffmpeg)
     VideoCallback(every=100_000, video_dir=...)  # a replay every so often while training
@@ -43,7 +43,7 @@ class Monitor:
         os.makedirs(log_dir, exist_ok=True)
         self.path = os.path.join(log_dir, "monitor.csv")
         self.terms = list(env.reward_weights)
-        self.columns = (["r", "l", "t", "won", "stage", "opponent", "battle_time", "survived"] + REASON_KEYS
+        self.columns = (["r", "l", "t", "won", "passed", "stage", "opponent", "battle_time", "survived"] + REASON_KEYS
                         + ["term_" + k for k in self.terms] + ["reason"])
         if not os.path.exists(self.path):
             with open(self.path, "w") as f:
@@ -69,7 +69,8 @@ class Monitor:
         # "rule" / "passive" / "latest" / "past": training battles (who flew the enemy);
         # "eval": evaluations; "eval-heldout": held-out evaluations
         kind = ("eval-heldout" if info.get("held_out") else "eval") if info.get("evaluation") else info.get("opponent", "rule")
-        values = [ep["r"], ep["l"], ep["t"], int(info["won"]), info.get("stage", 0), kind, info["battle_time"],
+        values = [ep["r"], ep["l"], ep["t"], int(info["won"]), int(info.get("passed", info["won"])),
+                  info.get("stage", 0), kind, info["battle_time"],
                   info.get("survived", "")]
         values += [stats.get(k, "") for k in REASON_KEYS]
         values += [terms.get(k, 0.0) for k in self.terms]
@@ -135,25 +136,28 @@ def plot_results(log_folder: str, title: str = "Learning Curve", window: int = 5
 
 
 def plot_curriculum(log_folder: str, window: int = 50):
-    """Win rate over training, one colour per curriculum stage (a new colour = a promotion)."""
+    """Pass rate over training (each stage's own goal - usually a win), one colour per curriculum stage
+    (a new colour = a promotion). Only qualifying battles: against the stage's own opponent."""
     import matplotlib.pyplot as plt
     df = load_results(log_folder)
     if _no_battles(df, "Curriculum"):
         return
     x = np.cumsum(df.l.values)
-    rule = df.opponent.astype(str).values == "rule" if "opponent" in df else np.ones(len(df), bool)
+    rule = df.opponent.astype(str).isin(["rule", "passive"]).values if "opponent" in df else np.ones(len(df), bool)
+    passed = df.passed.values if "passed" in df else df.won.values
     plt.figure(figsize=(10, 4))
     for st in sorted(df.stage.unique()):
-        part = (df.stage.values == st) & rule                # the win rate that counts: against the rule AI
-        y = df.won.values[part].astype(float)
+        part = (df.stage.values == st) & rule                # what counts: the stage's own opponent
+        y = passed[part].astype(float)
         if not len(y):
             continue
         w = max(1, min(window, len(y)))
         plt.plot(x[part][w - 1:], np.convolve(y, np.ones(w) / w, mode="valid"), label=f"stage {st}")
     plt.ylim(0, 1)
     plt.xlabel("Number of Timesteps")
-    plt.ylabel(f"Win rate (last {window} battles)")
-    plt.title("Curriculum: win rate per stage")
+    plt.axhline(0.7, color="gray", lw=0.8, ls="--")      # the promotion requirement
+    plt.ylabel(f"Pass rate (last {window} battles)")
+    plt.title("Curriculum: pass rate per stage")
     plt.legend()
     plt.show()
 
@@ -247,11 +251,13 @@ def _evaluate(model, env, n_battles: int, deterministic: bool) -> dict:
                 results.append(infos[e])
             done_per_env[e] += 1
     won = np.array([r["won"] for r in results], dtype=float)
+    passed = np.array([r.get("passed", r["won"]) for r in results], dtype=float)
     out = {
         "stage": env.stages[env.stage]["name"],
         "battles": len(results),
         "win_rate": float(won.mean()),
         "win_rate_stderr": float(won.std(ddof=1) / np.sqrt(len(won))) if len(won) > 1 else 0.0,
+        "pass_rate": float(passed.mean()),             # the stage's own goal (curriculum.py "pass_if")
         "mean_reward": float(np.mean([r["episode"]["r"] for r in results])),
         "mean_battle_time": float(np.mean([r["battle_time"] for r in results])),
     }

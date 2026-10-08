@@ -107,8 +107,8 @@ class SaveOnIntervalCallback(BaseCallback):
 
 
 class BestModelCallback(BaseCallback):
-    """Keeps models/model_best.pt: the checkpoint with the best rolling win rate on the current stage
-    (against its qualifying opponent). A safety net - if training later gets worse, the best
+    """Keeps models/model_best.pt: the checkpoint with the best rolling pass rate on the current stage
+    (its goal - usually a win - against its qualifying opponent). A safety net - if training later gets worse, the best
     version is still there to evaluate, hand in, or continue from.
 
     window: battles in the rolling win rate; min_battles: how many before a "best" counts at all.
@@ -126,7 +126,7 @@ class BestModelCallback(BaseCallback):
         for info in self.locals.get("infos", []):
             if info and info.get("stage") == env.stage and info.get("opponent") in ("rule", "passive") \
                     and not info.get("evaluation"):
-                self.results.append(float(info["won"]))
+                self.results.append(float(info.get("passed", info["won"])))
         if env.stage != self.best_stage:                   # a new stage: a new best to beat
             self.best_stage, self.best, self.results = env.stage, -1.0, self.results[-1:]
         self.results = self.results[-self.window:]
@@ -139,5 +139,5 @@ class BestModelCallback(BaseCallback):
                 self.best = rate
                 path = self.model.save(os.path.join(self.save_path, "model_best"))
                 if self.verbose:
-                    print(f"new best on stage {self.best_stage}: won {rate:.0%} of the last {len(self.results)} - {path}")
+                    print(f"new best on stage {self.best_stage}: passed {rate:.0%} of the last {len(self.results)} - {path}")
         return True

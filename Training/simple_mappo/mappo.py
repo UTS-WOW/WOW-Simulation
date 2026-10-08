@@ -63,7 +63,7 @@ CRITIC_KEYS = ["critic_own", "own_mask", "critic_enemy", "critic_enemy_mask", "c
                "critic_match"]
 COMMANDER_KEYS = CRITIC_KEYS[:-1] + ["fleet_enemy", "fleet_match", "alive"]
 PROGRESS_FIELDS = ["total_timesteps", "updates", "fps", "time_elapsed", "stage", "episodes", "ep_rew_mean",
-                   "ep_len_mean", "win_rate", "win_rate_self_play", "policy_loss", "value_loss", "entropy",
+                   "ep_len_mean", "win_rate", "pass_rate", "win_rate_self_play", "policy_loss", "value_loss", "entropy",
                    "approx_kl", "clip_fraction", "explained_variance", "commander_loss", "commander_entropy",
                    "orders_free", "kl_bc", "win_prob_loss", "elo"]
 
@@ -133,8 +133,8 @@ class MAPPO:
                  centralised_critic: bool = True, normalize_values: bool = True, commander: bool = True,
                  commander_period: int = 10, kl_bc_coef: float = 0.1, kl_bc_final: float = 0.01,
                  kl_bc_updates: int = 1000, actor_warmup_updates: int = 0, opponent_refresh: int = 10,
-                 snapshot_every: int = 25, pool_size: int = 20, device: str = "auto", seed: int = 0,
-                 verbose: int = 1, log_dir: str | None = None):
+                 snapshot_every: int = 25, pool_size: int = 20, device: str = "auto", torch_threads: int | None = 4,
+                 seed: int = 0, verbose: int = 1, log_dir: str | None = None):
         """
         learning_rate        the captains' (actors') step size; critic_learning_rate and
                              commander_learning_rate for the critic and the commander
@@ -169,6 +169,8 @@ class MAPPO:
         opponent_refresh     updates between refreshing the frozen copy that plays "latest" in the league
         snapshot_every       updates between adding a past copy to the league's pool (league stages only)
         pool_size            past copies kept in the pool
+        torch_threads        CPU threads for PyTorch: a few, so the network does not fight the Unity
+                             players for the cores (None: PyTorch's default, all cores)
         log_dir              where progress.csv (one row per update) is written
         """
         if commander and not centralised_critic:
@@ -191,6 +193,8 @@ class MAPPO:
         if device == "auto":
             device = "cuda" if torch.cuda.is_available() else "cpu"
         self.device = torch.device(device)
+        if torch_threads:
+            torch.set_num_threads(torch_threads)
         torch.manual_seed(seed)
         np.random.seed(seed)
 
@@ -665,10 +669,11 @@ class MAPPO:
         if eps:
             row["ep_rew_mean"] = float(np.mean([e["episode"]["r"] for e in eps]))
             row["ep_len_mean"] = float(np.mean([e["episode"]["l"] for e in eps]))
-            gate = [e["won"] for e in eps if e.get("opponent", "rule") in ("rule", "passive")]
+            gate = [e for e in eps if e.get("opponent", "rule") in ("rule", "passive")]
             selfp = [e["won"] for e in eps if e.get("opponent") in ("latest", "past")]
             if gate:
-                row["win_rate"] = float(np.mean(gate))             # against the stage's own opponent
+                row["win_rate"] = float(np.mean([e["won"] for e in gate]))       # against the stage's own opponent
+                row["pass_rate"] = float(np.mean([e.get("passed", e["won"]) for e in gate]))   # its goal
             if selfp:
                 row["win_rate_self_play"] = float(np.mean(selfp))  # against our own copies
         row.update(train_stats)

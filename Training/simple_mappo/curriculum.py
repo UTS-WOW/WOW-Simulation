@@ -6,8 +6,10 @@ asks for a 70 % win rate before moving on.
 
     Stage              Battle                         Fleet        Opponent                     Commander  tau
     0 Gunnery          gunnery (open sea)             1 BB vs CA   passive target               -          -
+                         passed: the target sunk within 150 s
     1 Capture          capture (one circle)           1 CA         passive, far away            -          -
-    2 Defend           defend (our own circle)        1 CA vs DD   Recruit                      -          -
+                         passed: the circle captured
+    2 Defend           defend (a neutral circle)      1 CA vs CA   Recruit                      -          -
     3 Duel             bb_duel (open sea)             1v1 BB       Recruit                      -          -
     4 King of the Hill koth_3v3 (one circle)          3v3 mixed    Veteran                      on         0.3
     5 Archipelago      archipelago_3v3 (3 circles)    3v3 mixed    Veteran                      on         0.5
@@ -44,8 +46,10 @@ A stage is a dict:
     team_spirit        tau in rewards.py: how much each ship's own reward is shared with the fleet
     rehearsal          share of battles replayed from earlier stages, so old skills are not forgotten
                        (they are logged under their own stage and never count for promotion)
-    promote_win_rate   move on once the win rate over the last `window` qualifying battles (against
-    window               the stage's own opponent: rule AI or passive target) reaches this
+    pass_if            what counts as passing a battle: "won" (default), "sunk" (every enemy ship sunk) or
+                       "captured" (a circle captured); within: ... in at most this many seconds of battle
+    promote_win_rate   move on once the share of passed battles over the last `window` qualifying
+    window               battles (against the stage's own opponent: rule AI or passive target) reaches this
     stop_win_rate      final stage only: stop training once the win rate over the last
     stop_window          `stop_window` held-out evaluation battles reaches this. Held-out battles
                          are played on maps whose seeds training never uses.
@@ -78,12 +82,16 @@ LEAGUE = {"rule": 0.4, "latest": 0.4, "past": 0.2}
 
 DEFAULT_CURRICULUM = [
     # ---- single skills, one ship
+    # Measured with random play / a simple script (32 battles each): gunnery - target sunk within 150 s
+    # 52 % / 76 % (close in, fire at will); capture - circle captured 0 % / 100 % (sail to it); defend -
+    # won 12 % / 0 % (sail to the circle). The passive target never scores, so a plain "won" would be
+    # passed by random play (the tiebreak goes our way): these stages are judged on their own skill.
     {"name": "0 Gunnery", "scenario": "scenarios/stage0_gunnery.json", "opponent": "passive",
-     "promote_win_rate": 0.70, "window": 50, "reward_weights": NO_CIRCLE},
+     "pass_if": "sunk", "within": 150, "promote_win_rate": 0.70, "window": 50, "reward_weights": NO_CIRCLE},
     {"name": "1 Capture", "scenario": "scenarios/stage1_capture.json", "opponent": "passive",
-     "promote_win_rate": 0.70, "window": 50},
-    {"name": "2 Defend", "scenario": "scenarios/stage2_defend.json", "opponent": "rule", "difficulty": 1,
-     "promote_win_rate": 0.70, "window": 100, "reward_weights": {"survive": 0.02}},
+     "pass_if": "captured", "promote_win_rate": 0.70, "window": 50},
+    {"name": "2 Defend", "scenario": "scenarios/stage2_defend.json", "opponent": "rule", "difficulty": 0,
+     "pass_if": "won", "promote_win_rate": 0.70, "window": 100, "reward_weights": {"survive": 0.02}},
     # The duel is about gunnery and angling. Its circle lies between the two battleships, so the circle
     # reward pulls the ship bow-on into the enemy's guns: measured, sailing to the circle wins 33% of
     # duels, broadside and fire at will 70%, and MAPPO learned the duel only with the circle terms off.
@@ -232,8 +240,9 @@ class CurriculumCallback(BaseCallback):
         with open(path) as f:
             next(f)                                        # the '#{...}' header line
             rows = [r for r in csv.DictReader(f) if int(float(r.get("stage") or 0)) == env.stage]
-        results = [float(r["won"]) for r in rows if r.get("opponent", "rule") in QUALIFYING]
-        held_out = [float(r["won"]) for r in rows if r.get("opponent") == "eval-heldout"]
+        passed = "passed" if rows and rows[0].get("passed") not in (None, "") else "won"
+        results = [float(r[passed]) for r in rows if r.get("opponent", "rule") in QUALIFYING]
+        held_out = [float(r[passed]) for r in rows if r.get("opponent") == "eval-heldout"]
         return results[-int(stage.get("window", 100)):], held_out[-int(stage.get("stop_window", 250)):]
 
     def _on_step(self) -> bool:
@@ -241,13 +250,13 @@ class CurriculumCallback(BaseCallback):
         stage = env.stages[env.stage]
         for info in self.locals.get("infos", []):
             if info and info.get("stage") == env.stage and info.get("opponent") in QUALIFYING and not info.get("evaluation"):
-                self.results.append(float(info["won"]))
+                self.results.append(float(info.get("passed", info["won"])))
         window = int(stage.get("window", 100))
         self.results = self.results[-window:]
         threshold = stage.get("promote_win_rate")
         last = env.stage == len(env.stages) - 1
         if not last and threshold is not None and len(self.results) >= window and np.mean(self.results) >= threshold:
-            msg = (f"stage '{stage['name']}' passed: won {np.mean(self.results):.0%} of the last {window} "
+            msg = (f"stage '{stage['name']}' passed: passed {np.mean(self.results):.0%} of the last {window} "
                    f"qualifying battles - moving on to '{env.stages[env.stage + 1]['name']}'")
             self.history.append({"timesteps": self.num_timesteps, "event": msg})
             if self.verbose:
@@ -270,7 +279,7 @@ class CurriculumCallback(BaseCallback):
         from .utils import evaluate
         self.last_eval = self.num_timesteps
         r = evaluate(self.model, env, n_battles=int(stage.get("eval_battles", 50)), held_out=True, keep_results=True)
-        self.held_out += [float(x["won"]) for x in r["results"]]
+        self.held_out += [float(x.get("passed", x["won"])) for x in r["results"]]
         need = int(stage.get("stop_window", 250))
         self.held_out = self.held_out[-need:]
         rate = float(np.mean(self.held_out))

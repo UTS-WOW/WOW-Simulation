@@ -14,22 +14,15 @@
       "cls": 1,
       "team": 0,
       "x": 0.0,
-      "y": -60.0,
-      "heading": 90.0
+      "y": -300.0,
+      "heading": 0.0
     },
     {
       "cls": 1,
       "team": 1,
-      "x": -300.0,
+      "x": 0.0,
       "y": 800.0,
-      "heading": 200.0
-    },
-    {
-      "cls": 0,
-      "team": 1,
-      "x": 300.0,
-      "y": 750.0,
-      "heading": 160.0
+      "heading": 180.0
     }
   ],
   "zones": [
@@ -38,9 +31,9 @@
       "x": 0.0,
       "y": 0.0,
       "radius": 150.0,
-      "owner": 0
+      "owner": 2
     }
   ],
   "islands": [],
-  "_notes": "Our cruiser starts on our own circle; a rule-AI cruiser and destroyer come to take it. Passed when the battle is won with our ship still afloat: hold the circle, angle, dodge torpedoes, use smoke and repair."
+  "_notes": "A neutral circle 3 km ahead of our cruiser; a rule-AI cruiser comes for it from 8 km beyond. Passed on a win: take the circle and hold it while staying afloat - angle, dodge torpedoes, use smoke and repair, fight back. Random play wins 12 %, sailing straight to the circle 0 %."
 }

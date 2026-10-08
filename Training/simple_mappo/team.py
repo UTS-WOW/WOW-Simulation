@@ -342,7 +342,7 @@ def training_status(model, run_dir: str) -> dict:
         out["stage_battles"] = len(rows)
         if recent:
             out.update({"recent_battles": len(recent),
-                        "win_rate_recent": round(sum(float(r["won"]) for r in recent) / len(recent), 3),
+                        "win_rate_recent": round(sum(float(r.get("passed") or r["won"]) for r in recent) / len(recent), 3),
                         "reward_recent": round(sum(float(r["r"]) for r in recent) / len(recent), 3)})
     vids = sorted(glob.glob(os.path.join(run_dir, "videos", "*.mp4")) + glob.glob(os.path.join(run_dir, "videos", "*.gif")))
     if vids:

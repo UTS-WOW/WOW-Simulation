@@ -304,6 +304,7 @@ class NavalEnv:
         self._ep_return = np.zeros((E, N), dtype=np.float64)
         self._ep_terms = [dict() for _ in range(E)]
         self._ep_len = np.zeros(E, dtype=np.int64)
+        self._ep_captures = np.zeros(E, dtype=np.float64)  # circles our fleet captured in the battle
         self._t_start = time.time()
         self.last_reward_groups = np.zeros((E, N, len(REWARD_GROUPS)), dtype=np.float32)
         self.last_expert = None
@@ -373,6 +374,7 @@ class NavalEnv:
             groups[e] = g
             self._ep_return[e] += rewards[e]
             self._ep_len[e] += 1
+            self._ep_captures[e] += team.get("zones_captured", 0.0)
             self._t[e] += 1
             for k, v in terms.items():
                 self._ep_terms[e][k] = self._ep_terms[e].get(k, 0.0) + float((v * exists).sum())
@@ -495,6 +497,7 @@ class NavalEnv:
         self._ep_return[e] = 0.0
         self._ep_terms[e] = {}
         self._ep_len[e] = 0
+        self._ep_captures[e] = 0.0
         self._t[e] = 0
         self._starts[e] = 1.0
 
@@ -531,6 +534,7 @@ class NavalEnv:
             "opponent_id": int(self._opponent_id[e]),
             "commander": bool(self._commander[e]),
             "survived": float(o.arrays["alive"][0][:n].mean()),
+            "passed": self._passed(e, o),
             "evaluation": bool(self._eval_battle[e]),
             "held_out": bool(self._held_out_battle[e]),
             "reason": o.reason,
@@ -545,6 +549,18 @@ class NavalEnv:
             elif isinstance(v, (int, float)):
                 info.setdefault("stats", {})[k] = v
         return info
+
+    def _passed(self, e: int, o) -> bool:
+        """Did the battle meet its stage's goal? ("pass_if" / "within" in curriculum.py)"""
+        stage = self.stages[self._battle_stage[e]]
+        goal = stage.get("pass_if", "won")
+        if goal == "sunk":
+            ok = int((o.stats or {}).get("player_kills", 0)) >= int(self._ships[e, 1])
+        elif goal == "captured":
+            ok = self._ep_captures[e] > 0
+        else:
+            ok = o.winner == 0
+        return bool(ok and o.battle_time <= float(stage.get("within", float("inf"))))
 
     def _observe(self, team: int = 0, envs=None) -> dict:
         """One fleet's observation for every battle (team 0, the learning fleet) - or, for league
