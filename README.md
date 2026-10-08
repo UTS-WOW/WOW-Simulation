@@ -310,6 +310,10 @@ Zone income is divided by the number of zones on the map, so holding every zone 
 - sinking the entire enemy fleet, or
 - leading on points when the **20:00** clock runs out.
 
+There are no draws. If the points are level when the clock runs out, the match goes to **overtime**
+(the timer shows `OT`): the first side to pull ahead wins. If it is still level after three overtime
+periods, the healthier fleet wins.
+
 Domination runs for 20 minutes because ships move at real speeds — a Yamato makes 27 knots, and the
 nearest cap is 7.5 km from the start line.
 

@@ -25,7 +25,8 @@ namespace Naval.RL
             "kills",                 // enemy hulls sunk, as a fraction of the enemy fleet
             "losses",
             "friendly_fire_taken",   // own HP lost to own ordnance, fraction of our starting HP
-            "win", "loss", "draw"    // terminal outcome, set on the final step only
+            "win", "loss",           // terminal outcome, set on the final step only
+            "draw"                   // always 0: a level match goes to overtime. Kept so the layout the trainer knows is unchanged
         };
 
         public static readonly string[] AgentComponents =
@@ -37,7 +38,7 @@ namespace Naval.RL
             "sunk"                   // 1 on the step this ship went down
         };
 
-        const int TScore = 0, TDealt = 1, TTaken = 2, TCap = 3, TLost = 4, TKills = 5, TLosses = 6, TFF = 7, TWin = 8, TLoss = 9, TDraw = 10;
+        const int TScore = 0, TDealt = 1, TTaken = 2, TCap = 3, TLost = 4, TKills = 5, TLosses = 6, TFF = 7, TWin = 8, TLoss = 9;
         const int ADealt = 0, ASpot = 1, AFF = 2, ATaken = 3, ASunk = 4;
 
         readonly float[][] _team = { new float[TeamComponents.Length], new float[TeamComponents.Length] };
@@ -163,7 +164,7 @@ namespace Naval.RL
         }
 
         /// <summary>Closes a decision step: score margin, zone flips and (if it ended) the result.</summary>
-        public void EndStep(bool terminal, Team winner, bool draw)
+        public void EndStep(bool terminal, Team winner)
         {
             for (int t = 0; t < 2; t++)
             {
@@ -190,8 +191,7 @@ namespace Naval.RL
             {
                 for (int t = 0; t < 2; t++)
                 {
-                    if (draw) _team[t][TDraw] = 1f;
-                    else if ((int)winner == t) _team[t][TWin] = 1f;
+                    if ((int)winner == t) _team[t][TWin] = 1f;
                     else _team[t][TLoss] = 1f;
                 }
             }

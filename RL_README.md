@@ -219,7 +219,7 @@ RL needed a few changes in the core game. These are the places:
 | **Observation** | What the ship knows: its own state, squadron mates, the team's *contact list* (last known enemy positions), capture zones, match state. It is **partial**, because of fog of war. |
 | **Action** | Six discrete choices per decision: *move, speed, target, fire / hold, torpedo, ability*. |
 | **Step** | One decision per ship per **1 s of game time** (50 physics frames of 20 ms). |
-| **Episode** | One battle, until victory, defeat or the game clock runs out (3–20 min). |
+| **Episode** | One battle, until victory or defeat (3–20 min, plus up to three overtime periods if the sides are level at the clock — there are no draws). |
 | **Reward** | Score margin change, damage, kills, zones, win/loss, plus per-ship damage and spotting credit. |
 
 Formally this is a *decentralised partially observable Markov decision process* (Dec-POMDP) with two
@@ -449,7 +449,8 @@ the trainer defaults N = `max_team` = 8, A = 7, C = 8, Z = 5, O = `max_obstacles
 | `learned` | [2] | which teams are policy-controlled |
 | `expert_actions`, `expert_valid` | [2, N, 6], [2, N] | behaviour cloning labels (recorded teams only) |
 
-The JSON header also carries `terminal`, `winner`, `draw`, `reason`, `battle_time`, `episode`,
+The JSON header also carries `terminal`, `winner`, `draw` (always false — a level match goes to
+overtime, so every episode has a winner), `reason`, `battle_time`, `episode`,
 `decision`, `ships` (hulls per team), a `diag` block (sim time per decision, of which observation
 building `obs_ms`, GC count, heap, object count), and on the final step `stats` (scores, kills, and the [RLMetrics](Assets/Scripts/RL/RLMetrics.cs) behaviour metrics).
 
@@ -675,7 +676,7 @@ flowchart LR
 | `zones_captured` / `zones_lost` | captures completed / lost this step | +0.1 / −0.1 | yes |
 | `kills` / `losses` | hulls sunk, as a fraction of the fleet | +0.3 / −0.3 | yes |
 | `friendly_fire_taken` | own HP lost to own ordnance | −0.5 | yes |
-| `win` / `loss` / `draw` | terminal outcome, final step only | **+1 / −1 / 0** | no (objective) |
+| `win` / `loss` / `draw` | terminal outcome, final step only (`draw` is never set: a level match goes to overtime) | **+1 / −1 / 0** | no (objective) |
 
 **Agent components** (per ship, credit assignment):
 
