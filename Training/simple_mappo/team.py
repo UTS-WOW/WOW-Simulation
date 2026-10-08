@@ -10,6 +10,7 @@ SageMaker training job or their own computer - and they all read and write the s
         logs/monitor.csv      one line per battle, from every session - the team's learning curve
         logs/progress.csv     one line per update
         models/model_latest.pt     the checkpoint to continue from
+        models/imitation.pt        the captain cloned from the rule AI (the StageP notebook)
         models/model_<n>.pt        kept checkpoints, models/model_final.pt
         videos/battle_<timesteps>_stage<k>.mp4   replays recorded while training
 
@@ -197,7 +198,8 @@ class TeamStorage:
         self._base_push = info.get("push_id") if info else None
         if not info:
             return None
-        for key in ("config.json", "logs/monitor.csv", "logs/progress.csv", "models/model_latest.pt"):
+        for key in ("config.json", "logs/monitor.csv", "logs/progress.csv", "models/model_latest.pt",
+                    "models/imitation.pt"):
             path = os.path.join(run_dir, key)
             if self.backend.download(key, path):
                 self._uploaded[key] = os.path.getmtime(path)          # already in the team's folder
@@ -334,7 +336,7 @@ def training_status(model, run_dir: str) -> dict:
     if os.path.exists(path):
         with open(path) as f:
             next(f)                                      # the '#{...}' header line
-            rows = [r for r in csv.DictReader(f) if r.get("opponent", "rule") == "rule"
+            rows = [r for r in csv.DictReader(f) if r.get("opponent", "rule") in ("rule", "passive")
                     and int(float(r.get("stage") or 0)) == stage]
         recent = rows[-int(out["window"] or 100):]
         out["stage_battles"] = len(rows)

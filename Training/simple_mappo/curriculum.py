@@ -1,15 +1,19 @@
-"""The curriculum: battles from a 1v1 duel up to random fleet battles on random maps.
+"""The curriculum: from shooting at a target that does not move up to random fleet battles.
 
-Learning the full game from scratch is too hard, so training starts on a small battle and moves to
-the next stage once the fleet wins often enough - like a student moving up a year.
+Learning the full game from scratch is too hard, so training starts with single skills and moves
+to the next stage once the fleet wins often enough - like a student moving up a year. Every stage
+asks for a 70 % win rate before moving on.
 
-    Stage                       Battle                       Fleet          Opponent              Move on when
-    0 Battleship Duel           bb_duel (open sea)           1v1 BB         Recruit               >= 55% of the last 100
-    1 King of the Hill          koth_3v3 (one circle)        3v3 mixed      Veteran               >= 65% of the last 100
-    2 Archipelago               archipelago_3v3 (islands)    3v3 mixed      Veteran               >= 65% of the last 150
-    3 Full Domination           random map, random weather   6v6            Elite + self-play     >= 60% of the last 200 Elite battles
-    4 Open / Generalisation     random map, density, weather 4-8 per side   Elite + self-play     stop: >= 60% of the last 250
-                                                                                                  held-out evaluation battles vs Elite
+    Stage              Battle                         Fleet        Opponent                     Commander  tau
+    0 Gunnery          gunnery (open sea)             1 BB vs CA   passive target               -          -
+    1 Capture          capture (one circle)           1 CA         passive, far away            -          -
+    2 Defend           defend (our own circle)        1 CA vs DD   Recruit                      -          -
+    3 Duel             bb_duel (open sea)             1v1 BB       Recruit                      -          -
+    4 King of the Hill koth_3v3 (one circle)          3v3 mixed    Veteran                      on         0.3
+    5 Archipelago      archipelago_3v3 (3 circles)    3v3 mixed    Veteran                      on         0.5
+    6 Domination       random map, random weather     6v6          league: Elite / self / past  on         0.8
+    7 Open             random mode, map, weather      4-8 a side   league: Elite / self / past  on         1.0
+                                                                   stop: 70 % of 250 held-out battles vs Elite
 
 A stage is a dict:
 
@@ -26,17 +30,29 @@ A stage is a dict:
                          capture_radius [smallest, largest] in game units (10 m each)
                          world_reuse    battles fought on one generated map before a new one
     difficulty         the rule-based AI: 0 Recruit, 1 Veteran, 2 Elite
-    self_play          share of battles where the enemy fleet is flown by a frozen copy of our own
-                       network instead of the rule AI (it is refreshed every few updates)
-    promote_win_rate   move on once the win rate over the last `window` battles against the rule AI
-    window               reaches this ("qualifying" battles: self-play battles do not count)
+    opponent           who flies the enemy fleet:
+                         "rule"     the game's rule-based AI at `difficulty`
+                         "passive"  a target: Python orders it to stop and hold fire
+                         "league"   a mix, given by `opponents` (OpenAI Five / AlphaStar self-play):
+                                      rule    the rule AI at `difficulty` - the anchor that keeps the
+                                              fleet honest, and the only battles that count for promotion
+                                      latest  a frozen copy of our own fleet, refreshed every few updates
+                                      past    an older copy from the league's pool, picked by
+                                              prioritised fictitious self-play (the ones we lose to most)
+    opponents          for "league": shares, e.g. {"rule": 0.4, "latest": 0.4, "past": 0.2}
+    commander          True: the fleet commander gives orders in this stage (False: every ship is free)
+    team_spirit        tau in rewards.py: how much each ship's own reward is shared with the fleet
+    rehearsal          share of battles replayed from earlier stages, so old skills are not forgotten
+                       (they are logged under their own stage and never count for promotion)
+    promote_win_rate   move on once the win rate over the last `window` qualifying battles (against
+    window               the stage's own opponent: rule AI or passive target) reaches this
     stop_win_rate      final stage only: stop training once the win rate over the last
     stop_window          `stop_window` held-out evaluation battles reaches this. Held-out battles
                          are played on maps whose seeds training never uses.
     eval_battles       held-out battles played each time the stopping rule is checked
     eval_every         timesteps between those checks
     reward_weights     optional overrides of rewards.py's weights for this stage only, e.g.
-                         {"approach_circle": 0.2} - in the 1v1 duel the circle lies between the two
+                         {"approach_circle": 0.0} - in the duel the circle lies between the two
                          battleships, so racing to it means sailing bow-on into the enemy's guns
 
 Add as many stages as you like. The last stage has no promotion, so training stays on it until its
@@ -57,30 +73,44 @@ import numpy as np
 
 from .callbacks import BaseCallback
 
+NO_CIRCLE = {"approach_circle": 0.0, "in_circle": 0.0}
+LEAGUE = {"rule": 0.4, "latest": 0.4, "past": 0.2}
+
 DEFAULT_CURRICULUM = [
+    # ---- single skills, one ship
+    {"name": "0 Gunnery", "scenario": "scenarios/stage0_gunnery.json", "opponent": "passive",
+     "promote_win_rate": 0.70, "window": 50, "reward_weights": NO_CIRCLE},
+    {"name": "1 Capture", "scenario": "scenarios/stage1_capture.json", "opponent": "passive",
+     "promote_win_rate": 0.70, "window": 50},
+    {"name": "2 Defend", "scenario": "scenarios/stage2_defend.json", "opponent": "rule", "difficulty": 1,
+     "promote_win_rate": 0.70, "window": 100, "reward_weights": {"survive": 0.02}},
     # The duel is about gunnery and angling. Its circle lies between the two battleships, so the circle
     # reward pulls the ship bow-on into the enemy's guns: measured, sailing to the circle wins 33% of
     # duels, broadside and fire at will 70%, and MAPPO learned the duel only with the circle terms off.
-    {"name": "0 Battleship Duel", "scenario": "scenarios/stage0_bb_duel.json", "difficulty": 0,
-     "promote_win_rate": 0.55, "window": 100, "reward_weights": {"approach_circle": 0.0, "in_circle": 0.0}},
-    {"name": "1 King of the Hill", "scenario": "scenarios/stage1_koth_3v3.json", "difficulty": 1,
-     "promote_win_rate": 0.65, "window": 100},
-    {"name": "2 Archipelago", "scenario": "scenarios/stage2_archipelago_3v3.json", "difficulty": 1,
-     "promote_win_rate": 0.65, "window": 150},
-    {"name": "3 Full Domination", "procedural": {"mode": 0, "preset": "random", "density": "random",
-                                                 "weather": "random", "ships": [6, 6], "time_limit": 900,
-                                                 "world_reuse": 8},
-     "difficulty": 2, "self_play": 0.5, "promote_win_rate": 0.60, "window": 200},
-    {"name": "4 Open / Generalisation", "procedural": {"mode": "random", "preset": "random", "density": "random",
-                                                       "weather": "random", "ships": [4, 8], "time_limit": 1200,
-                                                       "capture_radius": [130, 200], "world_reuse": 4},
-     "difficulty": 2, "self_play": 0.5, "stop_win_rate": 0.60, "stop_window": 250,
-     "eval_battles": 50, "eval_every": 100_000},
+    {"name": "3 Duel", "scenario": "scenarios/stage0_bb_duel.json", "opponent": "rule", "difficulty": 0,
+     "promote_win_rate": 0.70, "window": 100, "rehearsal": 0.1, "reward_weights": NO_CIRCLE},
+    # ---- fleets: the commander joins in, and the ships learn to share the reward
+    {"name": "4 King of the Hill", "scenario": "scenarios/stage1_koth_3v3.json", "opponent": "rule", "difficulty": 1,
+     "commander": True, "team_spirit": 0.3, "rehearsal": 0.15, "promote_win_rate": 0.70, "window": 100},
+    {"name": "5 Archipelago", "scenario": "scenarios/stage2_archipelago_3v3.json", "opponent": "rule", "difficulty": 1,
+     "commander": True, "team_spirit": 0.5, "rehearsal": 0.15, "promote_win_rate": 0.70, "window": 150},
+    # ---- the full game against the Elite AI and a league of our own past selves
+    {"name": "6 Domination", "procedural": {"mode": 0, "preset": "random", "density": "random",
+                                            "weather": "random", "ships": [6, 6], "time_limit": 900,
+                                            "world_reuse": 8},
+     "opponent": "league", "opponents": LEAGUE, "difficulty": 2, "commander": True, "team_spirit": 0.8,
+     "rehearsal": 0.1, "promote_win_rate": 0.70, "window": 200},
+    {"name": "7 Open", "procedural": {"mode": "random", "preset": "random", "density": "random",
+                                      "weather": "random", "ships": [4, 8], "time_limit": 1200,
+                                      "capture_radius": [130, 200], "world_reuse": 4},
+     "opponent": "league", "opponents": LEAGUE, "difficulty": 2, "commander": True, "team_spirit": 1.0,
+     "rehearsal": 0.1, "stop_win_rate": 0.70, "stop_window": 250, "eval_battles": 50, "eval_every": 100_000},
 ]
 
 RANDOM_CHOICES = {"mode": [0, 1, 2, 3], "preset": [0, 1, 2], "density": [0, 1, 2], "weather": [0, 1, 2, 3]}
 MAX_PROCEDURAL_ZONES = 5            # Capture and Control has five circles
 HELD_OUT_EVERY = 10                 # map seeds divisible by 10 are kept for held-out evaluation
+QUALIFYING = ("rule", "passive")    # battles that count for promotion: never self-play, never evaluations
 
 
 def load_curriculum(spec) -> list[dict]:
@@ -154,7 +184,8 @@ def procedural_reset(p: dict, rng: np.random.Generator, world: tuple[int, int],
 class CurriculumCallback(BaseCallback):
     """Promotes the environment to the next stage, and applies the final stage's stopping rule.
 
-    Promotion counts only battles that started on the current stage against the rule-based AI, and
+    Promotion counts only battles that started on the current stage against the stage's own
+    opponent (the rule-based AI, or the passive target of the first stages; never self-play), and
     the window starts empty on every new stage, so a promotion is always earned on the stage itself.
 
     The windows carry over between sessions: at the start of training they are rebuilt from the
@@ -201,7 +232,7 @@ class CurriculumCallback(BaseCallback):
         with open(path) as f:
             next(f)                                        # the '#{...}' header line
             rows = [r for r in csv.DictReader(f) if int(float(r.get("stage") or 0)) == env.stage]
-        results = [float(r["won"]) for r in rows if r.get("opponent", "rule") == "rule"]
+        results = [float(r["won"]) for r in rows if r.get("opponent", "rule") in QUALIFYING]
         held_out = [float(r["won"]) for r in rows if r.get("opponent") == "eval-heldout"]
         return results[-int(stage.get("window", 100)):], held_out[-int(stage.get("stop_window", 250)):]
 
@@ -209,7 +240,7 @@ class CurriculumCallback(BaseCallback):
         env = self.model.env
         stage = env.stages[env.stage]
         for info in self.locals.get("infos", []):
-            if info and info.get("stage") == env.stage and info.get("opponent") == "rule":
+            if info and info.get("stage") == env.stage and info.get("opponent") in QUALIFYING and not info.get("evaluation"):
                 self.results.append(float(info["won"]))
         window = int(stage.get("window", 100))
         self.results = self.results[-window:]
@@ -217,7 +248,7 @@ class CurriculumCallback(BaseCallback):
         last = env.stage == len(env.stages) - 1
         if not last and threshold is not None and len(self.results) >= window and np.mean(self.results) >= threshold:
             msg = (f"stage '{stage['name']}' passed: won {np.mean(self.results):.0%} of the last {window} "
-                   f"battles against the rule AI - moving on to '{env.stages[env.stage + 1]['name']}'")
+                   f"qualifying battles - moving on to '{env.stages[env.stage + 1]['name']}'")
             self.history.append({"timesteps": self.num_timesteps, "event": msg})
             if self.verbose:
                 print(f"*** {msg} (at {self.num_timesteps} timesteps) ***")

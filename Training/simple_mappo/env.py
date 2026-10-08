@@ -7,21 +7,39 @@ How it fits together:
                             numbers, "battle over?" --
 
 NavalEnv runs n_envs battles side by side - the same idea as make_atari_env(n_envs=4) in the Atari
-notebooks. Every ship of the Player fleet is an agent; the enemy fleet is flown by the game's own
-rule-based AI at the chosen difficulty, or - in self-play battles - by a frozen copy of the policy.
+notebooks. Every ship of the Player fleet is an agent. The enemy fleet is flown by the game's own
+rule-based AI, by Python as a passive target (stop, hold fire), or - in league battles - by a frozen
+copy of our own fleet (see curriculum.py, "opponent").
 
-What reset() and step() return (E = n_envs, N = ships per side):
+What reset() and step() return (E = n_envs, N = ships per side, everything padded to MAX_SHIPS etc.):
 
-    obs["local"]        [E, N, local_dim]   what each ship knows: itself, its allies, the enemy
-                                            contacts its team has spotted, the capture circles and
-                                            the nearest islands. The actor (policy) sees only this.
-    obs["state"]        [E, N, state_dim]   the critic's view: the true state of the whole battle
-                                            (both fleets, every circle) + that ship's own view + which
-                                            ship it is. Only used in training.
+  what each ship knows - the captain network reads only these:
+    obs["self"]         [E, N, ...]         the ship itself (+ the score and the kind of battle)
+    obs["allies"]       [E, N, A, ...]      its squadron mates            (+ obs["ally_mask"])
+    obs["contacts"]     [E, N, C, ...]      enemies its TEAM has spotted, last known positions
+                                                                          (+ obs["contact_mask"])
+    obs["zones"]        [E, N, Z, ...]      the capture circles           (+ obs["zone_mask"])
+    obs["obstacles"]    [E, N, O, ...]      the nearest islands and smoke (+ obs["obstacle_mask"])
     obs["action_mask"]  [E, N, sum(heads)]  1 = the option is legal right now
+
+  the true battle - the critic's view, training only:
+    obs["critic_own"]   [E, N, ...]         our ships  (+ obs["own_mask"])
+    obs["critic_enemy"] [E, N, ...]         the enemy ships, true positions included (+ obs["critic_enemy_mask"])
+    obs["critic_zones"] [E, Z, ...]         the circles (+ obs["critic_zone_mask"])
+    obs["critic_match"] [E, ...]            score, time, the kind of battle
+
+  the fleet commander's view - the same, with everything the team cannot know zeroed:
+    obs["fleet_enemy"]  [E, N, ...]         critic_enemy without the true-state columns (belief only)
+    obs["fleet_match"]  [E, ...]            critic_match without the enemy's true strength
+
+  bookkeeping:
     obs["alive"]        [E, N]              the ship is afloat
     obs["exists"]       [E, N]              the slot holds a ship in this battle
-    rewards             [E, N]              see rewards.py
+    obs["starts"]       [E]                 1 on the first observation of a battle (clear the memory)
+    obs["t"]            [E]                 decisions since the battle started
+    obs["commander_on"] [E]                 this battle's stage uses the fleet commander
+
+    rewards             [E, N]              see rewards.py (env.last_reward_groups: the same per group)
     dones               [E]                 the battle ended on this step. Like Stable-Baselines3's
                                             vector envs, the next battle has already been started:
                                             obs is its first observation and infos[e] holds the result.
@@ -35,6 +53,10 @@ Every ship picks one option from each action head:
     fire     fire at will, hold fire
     torpedo  none, launch at the target
     ability  none, one of 12 consumables (shell type, smoke, radar, repair...), dive, surface
+
+step(actions, orders) also takes the commander's orders [E, N] (rewards.py pays the circle terms for
+the ordered circle). record_expert=True turns the environment into a recorder for imitation learning:
+the rule AI flies both fleets and env.last_expert holds what it did with every ship of ours.
 """
 
 from __future__ import annotations
@@ -54,7 +76,7 @@ import numpy as np
 from naval_rl.env import init_message, make_workers, port_free
 
 from .curriculum import load_curriculum, procedural_reset, stage_sizes
-from .rewards import REWARD_WEIGHTS, compute_rewards, ship_facts
+from .rewards import REWARD_GROUPS, REWARD_WEIGHTS, compute_rewards, no_facts, ship_facts
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TRAINING_DIR = os.path.dirname(HERE)
@@ -66,11 +88,16 @@ MAX_SHIPS = 8
 MAX_ZONES = 5          # Capture and Control has five circles, the most the game makes
 MAX_OBSTACLES = 4
 
-# observation pieces, each with the mask saying which of its rows are real
-LOCAL_PARTS = [("self", None), ("allies", "ally_mask"), ("contacts", "contact_mask"),
-               ("zones", "zone_mask"), ("obstacles", "obstacle_mask")]
-STATE_PARTS = [("critic_match", None), ("critic_own", None), ("critic_enemy", "critic_enemy_mask"),
-               ("critic_zones", "critic_zone_mask")]
+# what the captain network reads (each with its mask), and the critic's true picture of the battle
+CAPTAIN_ARRAYS = ["self", "allies", "ally_mask", "contacts", "contact_mask", "zones", "zone_mask",
+                  "obstacles", "obstacle_mask"]
+CRITIC_ARRAYS = ["critic_own", "critic_enemy", "critic_enemy_mask", "critic_zones", "critic_zone_mask", "critic_match"]
+OBS_KEYS = CAPTAIN_ARRAYS + CRITIC_ARRAYS + ["action_mask", "alive", "exists", "own_mask", "fleet_enemy",
+                                            "fleet_match", "starts", "t", "commander_on"]
+# columns of critic_match that are not public knowledge: the commander does not get them
+PRIVILEGED_MATCH = ("their_fleet_strength", "their_alive_frac_true")
+# a passive target: stop (speed option 3) and hold fire (fire option 1); every other head option 0
+PASSIVE = {"speed": 3, "fire": 1}
 
 
 def find_unity_binary(path: str | None = None) -> str:
@@ -163,11 +190,12 @@ class NavalEnv:
                  decision_period: float = 1.0, sim_dt: float = 0.08, time_limit: float | None = None,
                  jitter: float = 40.0, reward_weights: dict | None = None,
                  unity_binary: str | None = None, ports: list[int] | None = None, base_port: int = 5005,
-                 seed: int = 0, mock: bool = False, unity_log_dir: str | None = None, graphics: bool = False):
+                 seed: int = 0, mock: bool = False, unity_log_dir: str | None = None, graphics: bool = False,
+                 record_expert: bool = False, expert_difficulty: int = 2):
         """
         scenario             a battle from Training/scenarios (or a list to pick one from per battle)
         opponent_difficulty  the rule AI's skill: 0 Recruit, 1 Veteran, 2 Elite
-        stages               a curriculum instead of one scenario: "default" (stages 0-4), a JSON
+        stages               a curriculum instead of one scenario: "default" (stages 0-7), a JSON
                              file, or a list of stage dicts - see curriculum.py. The observation has
                              the same size in every stage (MAX_SHIPS, MAX_ZONES), so one network and
                              one checkpoint train through all of them.
@@ -185,6 +213,8 @@ class NavalEnv:
         mock                 a fake environment with the same shapes, to test the code without Unity
         graphics             launch players that can render real game frames (record_unity_video).
                              Needs a computer with a screen; training itself never needs it
+        record_expert        imitation-learning recorder: the rule AI at expert_difficulty flies both
+                             fleets, and after every step env.last_expert holds its choices for our ships
         """
         self.rng = np.random.default_rng(seed)
         if stages is None:
@@ -196,6 +226,7 @@ class NavalEnv:
         self.jitter = jitter
         self.decision_period = decision_period
         self.reward_weights = dict(REWARD_WEIGHTS if reward_weights is None else reward_weights)
+        self.record_expert, self.expert_difficulty = record_expert, expert_difficulty
 
         # one fixed observation size for every stage (see MAX_SHIPS), so models carry over between stages
         for st in self.stages:
@@ -234,35 +265,49 @@ class NavalEnv:
         self.spec = spec
         self.n_envs = len(self.workers)
         self.n_agents = spec.max_team
-        self.head_names = [h.name for h in spec.heads]
-        self.head_sizes = spec.head_sizes
+        self.heads = [dict(h.__dict__) for h in spec.heads]       # name, fixed, pointer, size
+        self.head_names = [h["name"] for h in self.heads]
+        self.head_sizes = [h["size"] for h in self.heads]
         self.zone_features = spec.features.get("zone")          # the mock environment has no names
         self.team_components = spec.team_reward_components
         self.ship_components = spec.agent_reward_components
+        # the sizes the networks are built from; the commander's views have the critic's sizes
+        self.dims = dict(spec.dims, fleet_match=spec.dims["critic_match"])
+        # what the commander may not see: the enemy's true state and true strength
+        p0, p1 = spec.enemy_privileged
+        self._fleet_enemy_keep = np.ones(spec.dims["critic_enemy"], np.float32)
+        self._fleet_enemy_keep[p0:p1] = 0.0
+        names = spec.features.get("critic_match") or [""] * spec.dims["critic_match"]
+        self._fleet_match_keep = np.array([0.0 if n in PRIVILEGED_MATCH else 1.0 for n in names], np.float32)
 
         E, N = self.n_envs, self.n_agents
         self.stage = min(max(0, start_stage), len(self.stages) - 1)
         self._battle_stage = np.zeros(E, dtype=np.int64)   # the stage each running battle was started on
         self._weights = [self.reward_weights] * E          # that battle's reward weights (a stage may override some)
-        self._self_play = np.zeros(E, dtype=bool)          # the enemy of that battle is our frozen copy
+        self._opponent = ["rule"] * E                      # who flies its enemy: rule, passive, latest or past
+        self._opponent_id = np.full(E, -1, dtype=np.int64) # which past snapshot ("past" only)
+        self._commander = np.zeros(E, dtype=bool)          # the fleet commander gives orders in that battle
+        self._spirit = np.zeros(E, dtype=np.float32)       # its team spirit (rewards.py)
         self._eval_battle = np.zeros(E, dtype=bool)        # that battle was started for an evaluation
         self._held_out_battle = np.zeros(E, dtype=bool)
-        self.opponent_policy = None            # set by MAPPO: enemy observation -> enemy actions
-        self.evaluating = False                # evaluation: rule AI only (no self-play)
+        self._t = np.zeros(E, dtype=np.int64)              # decisions since the battle started
+        self._starts = np.ones(E, dtype=np.float32)        # the observation is a battle's first
+        self.opponent_policy = None            # set by MAPPO: (enemy obs, envs, snapshot ids) -> enemy actions
+        self.opponent_sampler = None           # set by MAPPO: () -> a past snapshot to fight (PFSP), or None
+        self.evaluating = False                # evaluation: the stage's own opponent only (no self-play)
         self.held_out = False                  # evaluation on maps training never sees
         self._world = [(0, 10**9)] * E         # generated map seed and battles fought on it, per slot
         self._raw = [None] * E                 # the last message from each battle
         self._final = [None] * E               # the last message of each battle's previous fight
-        self._facts = [None] * E               # in_circle / dist_km / alive of the learning fleet
+        self._facts = [None] * E               # where the learning fleet's ships are relative to the circles
         self._ships = np.zeros((E, 2), dtype=np.int64)
         self._ep_return = np.zeros((E, N), dtype=np.float64)
         self._ep_terms = [dict() for _ in range(E)]
         self._ep_len = np.zeros(E, dtype=np.int64)
         self._t_start = time.time()
-
-        o = self.reset()
-        self.local_dim = o["local"].shape[-1]
-        self.state_dim = o["state"].shape[-1]
+        self.last_reward_groups = np.zeros((E, N, len(REWARD_GROUPS)), dtype=np.float32)
+        self.last_expert = None
+        self.reset()
 
     # ------------------------------------------------------------------ the environment interface
 
@@ -277,40 +322,58 @@ class NavalEnv:
         """Battles started from now on use this stage; battles already running finish on theirs."""
         self.stage = min(max(0, stage), len(self.stages) - 1)
 
-    def set_opponent_policy(self, policy) -> None:
-        """policy(obs) -> actions, called with the enemy fleet's observation in self-play battles."""
-        self.opponent_policy = policy
+    def set_opponent_policy(self, policy, sampler=None) -> None:
+        """policy(enemy obs, envs, snapshot ids) -> enemy actions, for battles our own (frozen) fleet
+        flies the enemy in; sampler() -> the id of a past snapshot to fight, or None."""
+        self.opponent_policy, self.opponent_sampler = policy, sampler
 
     def set_evaluation(self, on: bool, held_out: bool = False) -> None:
-        """Evaluation battles are against the rule AI only; held_out ones on maps training never uses."""
+        """Evaluation battles are against the stage's own opponent (rule AI or passive target), never
+        self-play; held_out ones on maps training never uses."""
         self.evaluating, self.held_out = on, on and held_out
 
-    def step(self, actions: np.ndarray):
-        """actions [E, N, heads] -> (obs, rewards [E, N], dones [E], infos)."""
+    def step(self, actions: np.ndarray, orders: np.ndarray | None = None):
+        """actions [E, N, heads] (orders [E, N]: the commander's) -> (obs, rewards [E, N], dones [E], infos)."""
         E, N, H = self.n_envs, self.n_agents, len(self.head_sizes)
         actions = np.asarray(actions, dtype=np.int32).reshape(E, N, H)
-        enemy = np.zeros((E, N, H), dtype=np.int32)       # ignored where the rule AI flies the enemy
-        sp = np.flatnonzero(self._self_play)
-        if len(sp):
-            enemy[sp] = self.opponent_policy(self._observe(team=1, envs=sp))
+        orders = np.zeros((E, N), dtype=np.int64) if orders is None else np.asarray(orders).reshape(E, N)
+        enemy = np.zeros((E, N, H), dtype=np.int32)        # ignored where the rule AI flies the enemy
+        passive = [e for e in range(E) if self._opponent[e] == "passive"]
+        if passive:
+            enemy[passive] = self._passive_actions(passive)
+        ours = [e for e in range(E) if self._opponent[e] in ("latest", "past")]
+        if ours:
+            enemy[ours] = self.opponent_policy(self._observe(team=1, envs=ours), ours,
+                                               [int(self._opponent_id[e]) for e in ours])
         for e, w in enumerate(self.workers):
             w.step_async(np.stack([actions[e], enemy[e]]))
 
         rewards = np.zeros((E, N), dtype=np.float32)
+        groups = np.zeros((E, N, len(REWARD_GROUPS)), dtype=np.float32)
         dones = np.zeros(E, dtype=bool)
         infos = [{} for _ in range(E)]
+        expert = np.zeros((E, N, H), dtype=np.int64)
+        expert_valid = np.zeros((E, N), dtype=np.float32)
+        self._starts[:] = 0.0
         for e, w in enumerate(self.workers):
             o = w.recv()
+            if self.record_expert:
+                # what the rule AI did with each of our ships during this step
+                expert[e], expert_valid[e] = o.arrays["expert_actions"][0], o.arrays["expert_valid"][0]
             facts = self._ship_facts(o)
-            team = dict(zip(self.team_components, o.arrays["team_reward"][0].tolist()))
-            ship = {k: o.arrays["agent_reward"][0, :, i] for i, k in enumerate(self.ship_components)}
-            r, terms = compute_rewards(self._facts[e], facts, team, ship,
-                                       int(self._ships[e, 0]), int(self._ships[e, 1]), self._weights[e],
-                                       self.decision_period)
+            arr = o.arrays
+            team = dict(zip(self.team_components, arr["team_reward"][0].tolist()))
+            ship = {k: arr["agent_reward"][0, :, i] for i, k in enumerate(self.ship_components)}
+            their = {k: arr["agent_reward"][1, :, i] for i, k in enumerate(self.ship_components)}
+            r, g, terms = compute_rewards(self._facts[e], facts, team, ship, their,
+                                          int(self._ships[e, 0]), int(self._ships[e, 1]), self._weights[e],
+                                          self.decision_period, orders[e], float(self._spirit[e]))
             exists = self._exists(e)
             rewards[e] = r * exists
+            groups[e] = g
             self._ep_return[e] += rewards[e]
             self._ep_len[e] += 1
+            self._t[e] += 1
             for k, v in terms.items():
                 self._ep_terms[e][k] = self._ep_terms[e].get(k, 0.0) + float((v * exists).sum())
             self._facts[e] = facts
@@ -320,10 +383,12 @@ class NavalEnv:
                 infos[e] = self._result(e, o)
                 self._final[e] = o
                 w.reset_async(self._reset_message(e))
-                o = w.recv()
-                self._begin(e, o)
+                self._begin(e, w.recv())
             else:
                 self._raw[e] = o
+        self.last_reward_groups = groups
+        if self.record_expert:
+            self.last_expert = (expert, expert_valid)
         return self._observe(), rewards, dones, infos
 
     def sample_random_actions(self, obs: dict) -> np.ndarray:
@@ -360,18 +425,48 @@ class NavalEnv:
             self._scenario_cache[path] = load_scenario(path)
         return self._scenario_cache[path]
 
+    def _pick_opponent(self, stage: dict) -> tuple[str, int]:
+        """Who flies the enemy in a new battle of this stage: (rule | passive | latest | past, snapshot id)."""
+        kind = stage.get("opponent")
+        if kind is None:                                   # older stage files: a "self_play" share
+            share = float(stage.get("self_play", 0.0))
+            kind, mix = ("league", {"rule": 1.0 - share, "latest": share}) if share > 0 else ("rule", None)
+        else:
+            mix = stage.get("opponents", {"rule": 1.0})
+        if self.evaluating or self.record_expert:
+            return ("passive" if kind == "passive" else "rule"), -1
+        if kind != "league":
+            return kind, -1
+        names = list(mix)
+        p = np.array([float(mix[n]) for n in names])
+        choice = names[int(self.rng.choice(len(names), p=p / p.sum()))]
+        if choice == "rule" or self.opponent_policy is None:
+            return "rule", -1
+        if choice == "past":
+            ident = self.opponent_sampler() if self.opponent_sampler else None
+            return ("past", int(ident)) if ident is not None else ("latest", -1)
+        return "latest", -1
+
     def _reset_message(self, e: int) -> dict:
-        stage = self.stages[self.stage]
-        self._battle_stage[e] = self.stage
+        stage_index = self.stage
+        stage = self.stages[stage_index]
+        if (not self.evaluating and not self.record_expert and stage_index > 0
+                and self.rng.random() < float(stage.get("rehearsal", 0.0))):
+            stage_index = int(self.rng.integers(stage_index))     # replay an earlier stage, so its skills stay
+            stage = self.stages[stage_index]
+        self._battle_stage[e] = stage_index
         self._weights[e] = {**self.reward_weights, **stage.get("reward_weights", {})}
-        difficulty = int(stage.get("difficulty", 0))
-        msg = {"learned_teams": 1, "opponent_difficulty": difficulty,
-               "episode_seed": int(self.rng.integers(1, 2**31 - 1))}
+        self._commander[e] = bool(stage.get("commander", False))
+        self._spirit[e] = float(stage.get("team_spirit", 0.0))
+        self._opponent[e], self._opponent_id[e] = self._pick_opponent(stage)
         self._eval_battle[e], self._held_out_battle[e] = self.evaluating, self.held_out
-        self._self_play[e] = (not self.evaluating and self.opponent_policy is not None
-                              and self.rng.random() < float(stage.get("self_play", 0.0)))
-        if self._self_play[e]:
-            msg["learned_teams"] = 3                       # both fleets take their orders from Python
+        difficulty = int(stage.get("difficulty", 0))
+        # learned_teams is a bitmask: 1 = Python flies our fleet, 2 = Python flies the enemy fleet too
+        msg = {"learned_teams": 1 if self._opponent[e] == "rule" else 3, "opponent_difficulty": difficulty,
+               "episode_seed": int(self.rng.integers(1, 2**31 - 1))}
+        if self.record_expert:
+            difficulty = self.expert_difficulty
+            msg.update({"learned_teams": 0, "record_teams": 1, "opponent_difficulty": difficulty})
         if "procedural" in stage:
             if self.held_out:
                 battle, _ = procedural_reset(stage["procedural"], self.rng, self._world[e], held_out=True)
@@ -400,16 +495,30 @@ class NavalEnv:
         self._ep_return[e] = 0.0
         self._ep_terms[e] = {}
         self._ep_len[e] = 0
+        self._t[e] = 0
+        self._starts[e] = 1.0
 
-    def _exists(self, e: int) -> np.ndarray:
-        return (np.arange(self.n_agents) < self._ships[e, 0]).astype(np.float32)
+    def _exists(self, e: int, team: int = 0) -> np.ndarray:
+        return (np.arange(self.n_agents) < self._ships[e, team]).astype(np.float32)
 
     def _ship_facts(self, o) -> dict:
         a = o.arrays
         if self.zone_features is None:
-            z = np.zeros(self.n_agents, dtype=np.float32)
-            return {"in_circle": z, "dist_km": z, "alive": a["alive"][0].astype(np.float32)}
+            return no_facts(a["alive"][0], MAX_ZONES)
         return ship_facts(a["zones"][0], a["zone_mask"][0], a["alive"][0], self.zone_features)
+
+    def _passive_actions(self, envs: list[int]) -> np.ndarray:
+        """A target that does nothing: stop and hold fire (every other head takes option 0)."""
+        out = np.zeros((len(envs), self.n_agents, len(self.head_sizes)), dtype=np.int32)
+        for i, e in enumerate(envs):
+            mask = self._legal(self._raw[e].arrays["action_mask"][1])
+            off = 0
+            for h, (name, size) in enumerate(zip(self.head_names, self.head_sizes)):
+                want = PASSIVE.get(name, 0)
+                legal = mask[:, off:off + size] > 0.5
+                out[i, :, h] = np.where(legal[:, want], want, legal.argmax(1))
+                off += size
+        return out
 
     def _result(self, e: int, o) -> dict:
         n = max(1, int(self._ships[e, 0]))
@@ -418,7 +527,10 @@ class NavalEnv:
                         "t": round(time.time() - self._t_start, 2)},
             "won": o.winner == 0,
             "stage": int(self._battle_stage[e]),
-            "opponent": "self" if self._self_play[e] else "rule",
+            "opponent": self._opponent[e],
+            "opponent_id": int(self._opponent_id[e]),
+            "commander": bool(self._commander[e]),
+            "survived": float(o.arrays["alive"][0][:n].mean()),
             "evaluation": bool(self._eval_battle[e]),
             "held_out": bool(self._held_out_battle[e]),
             "reason": o.reason,
@@ -435,29 +547,25 @@ class NavalEnv:
         return info
 
     def _observe(self, team: int = 0, envs=None) -> dict:
-        """The learning fleet's observation (team 0) for every battle, or - for self-play - the enemy
-        fleet's actor inputs (team 1) for the battles listed in envs."""
+        """One fleet's observation for every battle (team 0, the learning fleet) - or, for league
+        battles, the enemy fleet's (team 1) for the battles listed in envs. See the top of this file."""
         envs = range(self.n_envs) if envs is None else envs
-        N = self.n_agents
-        local, state, mask, alive, exists = [], [], [], [], []
+        out = {k: [] for k in OBS_KEYS}
         for e in envs:
             a = self._raw[e].arrays
-            loc = np.concatenate([np.concatenate([a[k][team].reshape(N, -1)] + ([a[m][team].reshape(N, -1)] if m else []), axis=1)
-                                  for k, m in LOCAL_PARTS], axis=1)
-            local.append(loc)
-            mask.append(self._legal(a["action_mask"][team]))
-            if team == 0:
-                glob = np.concatenate([np.concatenate([a[k][0].ravel()] + ([a[m][0].ravel()] if m else []))
-                                       for k, m in STATE_PARTS])
-                # MAPPO's "agent-specific global state": the whole battle, plus this ship's own view and id
-                state.append(np.concatenate([np.repeat(glob[None], N, axis=0), loc, np.eye(N, dtype=np.float32)], axis=1))
-                alive.append(a["alive"][0])
-                exists.append(self._exists(e))
-        out = {"local": np.stack(local).astype(np.float32), "action_mask": np.stack(mask).astype(np.float32)}
-        if team == 0:
-            out.update({"state": np.stack(state).astype(np.float32), "alive": np.stack(alive).astype(np.float32),
-                        "exists": np.stack(exists)})
-        return out
+            for key in CAPTAIN_ARRAYS + CRITIC_ARRAYS:
+                out[key].append(a[key][team])
+            out["action_mask"].append(self._legal(a["action_mask"][team]))
+            out["alive"].append(a["alive"][team])
+            exists = self._exists(e, team)
+            out["exists"].append(exists)
+            out["own_mask"].append(exists)
+            out["fleet_enemy"].append(a["critic_enemy"][team] * self._fleet_enemy_keep)
+            out["fleet_match"].append(a["critic_match"][team] * self._fleet_match_keep)
+            out["starts"].append(self._starts[e])
+            out["t"].append(self._t[e])
+            out["commander_on"].append(float(self._commander[e]))
+        return {k: np.asarray(np.stack(v), dtype=np.float32) for k, v in out.items()}
 
     def _legal(self, mask: np.ndarray) -> np.ndarray:
         """Every head needs at least one legal option; sunk ships and empty slots get option 0."""

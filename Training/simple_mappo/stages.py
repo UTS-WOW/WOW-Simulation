@@ -1,12 +1,14 @@
 """Training one curriculum stage at a time - what the Stage<k> notebooks use.
 
-The five stage notebooks train ONE model, one stage after another. Each notebook continues the run's
+The stage notebooks train ONE model, one stage after another (StageP, imitation, comes first and
+only prepares the captain the model starts from). Each notebook continues the run's
 latest checkpoint, which carries everything the training has learned so far:
 
     actor and critic weights      what the fleet knows
     optimiser state (Adam)        its momentum, so learning carries on smoothly
     value normaliser              the critic's scale for returns
     timesteps, updates, stage     where the run is
+    the league                    past copies of the fleet and everyone's Elo rating
     logs/monitor.csv              every battle so far - also how the promotion window carries over
 
 When a stage's promotion requirement is met, its notebook stops and saves; the model then carries
@@ -21,13 +23,15 @@ from .mappo import MAPPO
 
 
 def continue_training(env, stage: int, run_dir: str, log_dir: str, storage=None, force: bool = False,
-                      **hyperparameters) -> MAPPO:
+                      imitation: bool = True, **hyperparameters) -> MAPPO:
     """The model a stage notebook trains on `stage`.
 
     It is the run's latest checkpoint - from the team folder (storage) if there is one, else from
     run_dir on this machine - with all its training memory. Only stage 0 may start a new model.
     If the run is on another stage, this says which notebook to use; force=True trains this stage
     with the model anyway (to jump ahead, or to go back and train an earlier stage more).
+    A new model starts from the run's imitation checkpoint (models/imitation.pt, from the StageP
+    notebook) when there is one and imitation=True.
     """
     latest = storage.pull(run_dir) if storage else None
     local = os.path.join(run_dir, "models", "model_latest.pt")
@@ -41,7 +45,14 @@ def continue_training(env, stage: int, run_dir: str, log_dir: str, storage=None,
                                f"(the Stage0 notebook), or set FORCE_STAGE = True to start a new model on '{name}'")
         env.set_stage(stage)
         print(f"no checkpoint yet - starting a new model on '{name}'")
-        return MAPPO(env, log_dir=log_dir, **hyperparameters)
+        model = MAPPO(env, log_dir=log_dir, **hyperparameters)
+        cloned = os.path.join(run_dir, "models", "imitation.pt")
+        if imitation and os.path.exists(cloned):
+            model.init_from_imitation(cloned)
+        elif imitation:
+            print("no imitation checkpoint (run the StageP notebook first to start from the rule AI's skills) - "
+                  "the captains start from scratch")
+        return model
 
     # everything the previous sessions learned; the hyperparameters are the run's own (same method)
     model = MAPPO.load(latest, env=env, log_dir=log_dir, verbose=1)

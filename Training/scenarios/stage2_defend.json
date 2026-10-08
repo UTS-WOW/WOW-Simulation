@@ -1,0 +1,46 @@
+{
+  "scenarioName": "RL Stage 2 - Defend",
+  "seed": 1021,
+  "preset": 1,
+  "weather": 0,
+  "density": 0,
+  "timeLimit": 240.0,
+  "scoreToWin": 1000.0,
+  "aiDifficulty": 0,
+  "fogOfWar": true,
+  "useCustomIslands": false,
+  "ships": [
+    {
+      "cls": 1,
+      "team": 0,
+      "x": 0.0,
+      "y": -60.0,
+      "heading": 90.0
+    },
+    {
+      "cls": 1,
+      "team": 1,
+      "x": -300.0,
+      "y": 800.0,
+      "heading": 200.0
+    },
+    {
+      "cls": 0,
+      "team": 1,
+      "x": 300.0,
+      "y": 750.0,
+      "heading": 160.0
+    }
+  ],
+  "zones": [
+    {
+      "name": "A",
+      "x": 0.0,
+      "y": 0.0,
+      "radius": 150.0,
+      "owner": 0
+    }
+  ],
+  "islands": [],
+  "_notes": "Our cruiser starts on our own circle; a rule-AI cruiser and destroyer come to take it. Passed when the battle is won with our ship still afloat: hold the circle, angle, dodge torpedoes, use smoke and repair."
+}

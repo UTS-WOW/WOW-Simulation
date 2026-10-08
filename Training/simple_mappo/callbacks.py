@@ -104,3 +104,40 @@ class SaveOnIntervalCallback(BaseCallback):
         path = self.model.save(os.path.join(self.save_path, f"model_{self.num_timesteps}"))
         if self.verbose > 0:
             print(f"Saving model to {path}")
+
+
+class BestModelCallback(BaseCallback):
+    """Keeps models/model_best.pt: the checkpoint with the best rolling win rate on the current stage
+    (against its qualifying opponent). A safety net - if training later gets worse, the best
+    version is still there to evaluate, hand in, or continue from.
+
+    window: battles in the rolling win rate; min_battles: how many before a "best" counts at all.
+    """
+
+    def __init__(self, save_path: str, window: int = 100, min_battles: int = 50, verbose: int = 1):
+        super().__init__(verbose)
+        self.save_path, self.window, self.min_battles = save_path, window, min_battles
+        self.results: list[float] = []
+        self.best = -1.0
+        self.best_stage = -1
+
+    def _on_step(self) -> bool:
+        env = self.model.env
+        for info in self.locals.get("infos", []):
+            if info and info.get("stage") == env.stage and info.get("opponent") in ("rule", "passive") \
+                    and not info.get("evaluation"):
+                self.results.append(float(info["won"]))
+        if env.stage != self.best_stage:                   # a new stage: a new best to beat
+            self.best_stage, self.best, self.results = env.stage, -1.0, self.results[-1:]
+        self.results = self.results[-self.window:]
+        return True
+
+    def _on_rollout_end(self) -> bool:
+        if len(self.results) >= self.min_battles:
+            rate = float(sum(self.results) / len(self.results))
+            if rate > self.best:
+                self.best = rate
+                path = self.model.save(os.path.join(self.save_path, "model_best"))
+                if self.verbose:
+                    print(f"new best on stage {self.best_stage}: won {rate:.0%} of the last {len(self.results)} - {path}")
+        return True

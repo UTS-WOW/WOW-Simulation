@@ -43,7 +43,7 @@ class Monitor:
         os.makedirs(log_dir, exist_ok=True)
         self.path = os.path.join(log_dir, "monitor.csv")
         self.terms = list(env.reward_weights)
-        self.columns = (["r", "l", "t", "won", "stage", "opponent", "battle_time"] + REASON_KEYS
+        self.columns = (["r", "l", "t", "won", "stage", "opponent", "battle_time", "survived"] + REASON_KEYS
                         + ["term_" + k for k in self.terms] + ["reason"])
         if not os.path.exists(self.path):
             with open(self.path, "w") as f:
@@ -56,8 +56,8 @@ class Monitor:
     def reset(self):
         return self.env.reset()
 
-    def step(self, actions):
-        obs, rewards, dones, infos = self.env.step(actions)
+    def step(self, actions, orders=None):
+        obs, rewards, dones, infos = self.env.step(actions, orders)
         rows = [self._row(i) for i in infos if i]
         if rows:
             with open(self.path, "a") as f:
@@ -66,9 +66,11 @@ class Monitor:
 
     def _row(self, info: dict) -> str:
         ep, stats, terms = info["episode"], info.get("stats", {}), info.get("reward_terms", {})
-        # "rule" / "self": training battles; "eval": evaluations; "eval-heldout": held-out evaluations
+        # "rule" / "passive" / "latest" / "past": training battles (who flew the enemy);
+        # "eval": evaluations; "eval-heldout": held-out evaluations
         kind = ("eval-heldout" if info.get("held_out") else "eval") if info.get("evaluation") else info.get("opponent", "rule")
-        values = [ep["r"], ep["l"], ep["t"], int(info["won"]), info.get("stage", 0), kind, info["battle_time"]]
+        values = [ep["r"], ep["l"], ep["t"], int(info["won"]), info.get("stage", 0), kind, info["battle_time"],
+                  info.get("survived", "")]
         values += [stats.get(k, "") for k in REASON_KEYS]
         values += [terms.get(k, 0.0) for k in self.terms]
         values += ['"' + str(info.get("reason", "")).replace('"', "'") + '"']
