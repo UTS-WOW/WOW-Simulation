@@ -32,7 +32,7 @@ import time
 from collections import OrderedDict
 
 from simple_mappo import (MAPPO, CurriculumCallback, Monitor, NavalEnv, REWARD_WEIGHTS, SaveOnIntervalCallback,
-                          TeamStorage, TeamSyncCallback, evaluate)
+                          TeamStorage, TeamSyncCallback, VideoCallback, evaluate, training_status)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ON_SAGEMAKER = "SM_MODEL_DIR" in os.environ
@@ -72,6 +72,10 @@ def parse_args():
     # bookkeeping
     p.add_argument("--run-name", default="curriculum")
     p.add_argument("--save-interval", type=int, default=50_000)
+    p.add_argument("--video-every", type=int, default=None,
+                   help="record a replay video every N timesteps (default: every save-interval; 0: never)")
+    p.add_argument("--status-every", type=int, default=10_000,
+                   help="with --team-storage: push a status update (no checkpoint) every N timesteps")
     p.add_argument("--eval-battles", type=int, default=40, help="battles for the final evaluation (0: skip)")
     p.add_argument("--resume", help="a saved model to continue training")
     p.add_argument("--team-storage", help="shared folder for the team's runs, e.g. s3://<bucket>/wow-mappo")
@@ -124,13 +128,16 @@ def main():
         t0 = time.time()
         print("stages:", " -> ".join(s["name"] for s in env.stages), f"(starting at stage {env.stage})")
         callbacks = [SaveOnIntervalCallback(a.save_interval, models_dir), CurriculumCallback()]
-        if storage:
-            callbacks.append(TeamSyncCallback(storage, run_dir, push_every=a.save_interval))
+        video_every = a.save_interval if a.video_every is None else a.video_every
+        if video_every and not a.mock:                        # the mock environment cannot be drawn
+            callbacks.append(VideoCallback(video_every, os.path.join(run_dir, "videos")))
+        if storage:                                           # last: it also pushes the newest video
+            callbacks.append(TeamSyncCallback(storage, run_dir, push_every=a.save_interval, status_every=a.status_every))
         model.learn(total_timesteps=a.total_timesteps, callback=callbacks)
         model.save(os.path.join(models_dir, "model_final"))
         model.save(os.path.join(models_dir, "model_latest"))
         if storage and callbacks[-1].conflict is None:
-            storage.push(run_dir, model)                 # model_final as well
+            storage.push(run_dir, model, status=training_status(model, run_dir))     # model_final as well
         print(f"trained {model.num_timesteps} timesteps in {(time.time() - t0) / 60:.1f} min")
 
         if a.eval_battles > 0:
@@ -150,6 +157,8 @@ def main():
         out = os.environ["SM_MODEL_DIR"]
         shutil.copy(os.path.join(models_dir, "model_final.pt"), out)
         shutil.copytree(log_dir, os.path.join(out, "logs"), dirs_exist_ok=True)
+        if os.path.isdir(os.path.join(run_dir, "videos")):
+            shutil.copytree(os.path.join(run_dir, "videos"), os.path.join(out, "videos"), dirs_exist_ok=True)
         for f in ("config.json", "eval.json"):
             if os.path.exists(os.path.join(run_dir, f)):
                 shutil.copy(os.path.join(run_dir, f), out)

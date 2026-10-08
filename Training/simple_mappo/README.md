@@ -32,10 +32,15 @@ is the game's own:
 | [`curriculum.py`](curriculum.py) | **The stages** (`DEFAULT_CURRICULUM`), random battle generation, and `CurriculumCallback` (promotion, stopping rule) | ~210 |
 | [`env.py`](env.py) | `NavalEnv`: runs `n_envs` Unity battles in parallel behind `reset()` / `step()`; self-play | ~375 |
 | [`mappo.py`](mappo.py) | The actor, the centralised critic, GAE and the PPO update; `learn` / `save` / `load` / `predict` | ~370 |
-| [`team.py`](team.py) | `TeamStorage`: the shared S3 folder per run, with a lock; `TeamSyncCallback` | ~270 |
+| [`team.py`](team.py) | `TeamStorage`: the shared S3 folder per run, with a lock and live status; `TeamSyncCallback` | ~390 |
+| [`aws.py`](aws.py) | SageMaker with boto3 only (any SDK version): the account's bucket, launching and watching training jobs | ~240 |
+| [`stages.py`](stages.py) | `continue_training`: the model a stage notebook trains (the run's latest checkpoint, all its training memory) | ~60 |
 | [`callbacks.py`](callbacks.py) | `BaseCallback`, `SaveOnIntervalCallback` (as in Stable-Baselines3) | ~110 |
 | [`utils.py`](utils.py) | `Monitor`, plots, `evaluate`, battle replays | ~410 |
 | [`../train_simple.py`](../train_simple.py) | Command-line training; also the SageMaker training-job entry point | ~170 |
+| [`../watch_simple.py`](../watch_simple.py) | A trained model in the real game's graphics: a Unity-rendered video, or live in the editor | ~80 |
+| `../Stage0-Battleship-Duel.ipynb` … `../Stage4-Open-Generalisation.ipynb` | One notebook per curriculum stage, all training the same model in turn (see below) | |
+| [`../make_stage_notebooks.py`](../make_stage_notebooks.py) | Writes the five stage notebooks; edit it, not the notebooks | |
 | [`../package_sagemaker.sh`](../package_sagemaker.sh) | Zips the code, scenarios and headless player for SageMaker | |
 
 ## How one update works
@@ -154,6 +159,33 @@ farm it by sailing back and forth — only real progress pays.
 - A saved model remembers its stage, so `MAPPO.load` (and the team checkpoints) carry on where the
   curriculum was.
 
+### One notebook per stage
+
+`Stage0-Battleship-Duel.ipynb`, `Stage1-King-of-the-Hill.ipynb`, `Stage2-Archipelago.ipynb`,
+`Stage3-Full-Domination.ipynb` and `Stage4-Open-Generalisation.ipynb` split the curriculum into one
+notebook per stage. They are the same method end to end: the same network, the same MAPPO
+settings, the same reward (stage 0's circle switch aside) and the same run folder
+(`RUN_NAME = "curriculum"`). There is only ever **one model**, and each notebook continues it:
+
+1. Start with `Stage0`. With no checkpoint yet it creates the model; after that, every run of a
+   stage notebook continues the run's latest checkpoint — from the team folder, or from
+   `runs_simple/curriculum` on your computer.
+2. A session trains for `n_timesteps`, saves, and pushes. If the stage is not passed yet, run the
+   notebook again (you or a teammate): the promotion window carries on where it stopped.
+3. When the stage's requirement is met, training stops right away, saves the model (now marked
+   with the next stage), and tells you which notebook to open next.
+4. The next notebook loads that checkpoint with **all its training memory**: actor and critic
+   weights, the Adam optimiser state, the value normaliser, the timestep and update counters, the
+   stage, and every battle so far in `logs/monitor.csv`.
+
+Each notebook checks the run is on its stage. Opening the wrong one stops with a message naming
+the right notebook; set `FORCE_STAGE = True` to jump ahead, or to go back and train an earlier stage
+more with the same model. `Stage4` also runs the held-out evaluation and stops at the final
+stopping rule. To change the notebooks, edit `make_stage_notebooks.py` and run it.
+
+Replays (and every evaluation) play against the rule AI and are logged as `eval`, so only real
+training battles count toward a promotion.
+
 ## Team checkpoints
 
 Everyone trains the same line of training in turns, from a notebook, a SageMaker training job or
@@ -167,6 +199,34 @@ s3://<bucket>/wow-mappo/runs/<run-name>/
     logs/monitor.csv           every battle from every session: the team's learning curve
     logs/progress.csv
     models/model_latest.pt     the checkpoint to continue from (+ model_<n>.pt, model_final.pt)
+    videos/battle_<timesteps>_stage<k>.mp4     replays recorded while training
+```
+
+**Status while training.** Every 10,000 timesteps the trainer pushes a quick status update (logs,
+new videos, and live figures in `run.json`: stage, progress, speed, time left, recent win rate), and
+every `save_interval` a checkpoint too. Anyone can watch, also a training job:
+
+```python
+storage = TeamStorage("s3://<bucket>/wow-mappo", "curriculum", user="me")
+storage.show_status()                     # state, stage, progress / ETA, win rate, newest video
+storage.pull_view("team_view")            # logs + newest videos, to plot and play in the notebook
+```
+
+**Videos.** `VideoCallback` records one battle as a top-down replay every so often while training
+(MP4 where ffmpeg is installed, GIF otherwise); `record_battle` and `view` do it on demand.
+
+## It is the real game — and how to see it
+
+Training runs the real Unity game: `Builds/NavalTrainer` is a build of this project, with the same
+ships, gunnery, detection, PhysX physics and rule-based AI, and Python only sends each ship's orders
+each second. It runs **without graphics** (`-batchmode -nographics`, and SDL's dummy video driver,
+because the Unity 6 player otherwise crashes on machines with no window system), so the training
+replays are a 2D map drawn from the game's data. To see a trained model in the game's own graphics,
+on a computer with a screen:
+
+```bash
+python watch_simple.py --model model_final.pt            # a video rendered by Unity (fog lifted)
+python watch_simple.py --model model_final.pt --live     # play it in the editor (tick GameBootstrap > Rl Training Server, press Play)
 ```
 
 - **Start**: pull `model_latest.pt` and the logs, continue from them (stage and timesteps included).
@@ -204,22 +264,30 @@ Needs Python 3.10+, PyTorch, NumPy, pandas, matplotlib, Pillow, and the headless
 
 1. Locally: `Training/build_player.sh`, then `Training/package_sagemaker.sh` → `wow_sagemaker.zip`
    (≈40 MB: code, scenarios, the Linux player).
-2. Upload the zip to SageMaker Studio, open `Training/WOW-MAPPO-Simple.ipynb` from it, run the
+2. Upload the zip to SageMaker Studio, open `Training/WOW-MAPPO-Simple.ipynb` (the whole
+   walkthrough) or `Training/Stage0-Battleship-Duel.ipynb` (one stage at a time) from it, run the
    first cell (it unzips to `~/wow`), and fill in the "Team checkpoints" cell.
 3. Use a JupyterLab space with many CPUs and memory (e.g. `ml.c5.4xlarge`: 16 vCPU, 32 GB). No GPU
    is needed. The default `ml.t3.medium` (2 vCPU, 4 GB) can only run one battle and is too small for
    the 8-ship stages.
-4. The whole curriculum takes millions of timesteps: use the notebook's last section, which starts
-   a **SageMaker training job** (`train_simple.py` as the entry point, the player as the `unity`
-   input channel) that trains the same team run — it pulls the latest checkpoint, pushes every
-   `save-interval` timesteps, and a teammate can continue it from a notebook afterwards.
+4. The whole curriculum takes millions of timesteps. Train it in the notebook in sessions, taking
+   turns through the team folder. If your account allows SageMaker training jobs (course accounts
+   often do not - an "explicit deny" error), the notebook's last section starts
+   a **SageMaker training job** (`aws.launch_training_job`: `train_simple.py` in AWS's PyTorch CPU
+   container, the player as its `unity` input) that trains the same team run — it pulls the latest
+   checkpoint and pushes status, videos and checkpoints while it runs. `job_status(job)` shows the
+   job's state and newest log lines; its console page charts the win rate and reward.
+
+All of this uses boto3 only. SageMaker Distribution 4.x ships the SageMaker Python SDK v3, where
+`sagemaker.Session`, `sagemaker.get_execution_role` and the `PyTorch` estimator no longer exist as
+before; nothing here depends on them.
 
 **Requirements the code checks for you:**
 
-- **glibc 2.35+ (Ubuntu 22.04 or newer).** The Unity 6 player needs it. For training jobs use a
-  PyTorch image **2.4 or newer** (`framework_version="2.5"`, `py_version="py311"`, as in the
-  notebook); the 2.3 and older images are Ubuntu 20.04 and the player cannot start there. The code
-  stops with this explanation if the system is too old.
+- **glibc 2.35+ (Ubuntu 22.04 or newer).** The Unity 6 player needs it. Training jobs use AWS's
+  `pytorch-training:2.9.0-cpu-py312-ubuntu22.04-sagemaker` image; images older than PyTorch 2.4 are
+  Ubuntu 20.04 and the player cannot start there. The code stops with this explanation if the system
+  is too old.
 - **S3 access.** The SageMaker execution role needs `s3:GetObject`, `s3:PutObject` and
   `s3:ListBucket` on the team bucket. The default `sagemaker-<region>-<account>` bucket already has
   them; for your own bucket, name it with "sagemaker" in it or add the permissions.

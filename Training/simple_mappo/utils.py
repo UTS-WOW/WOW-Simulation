@@ -5,7 +5,8 @@ naval environment.
     plot_results(log_dir)                      # the learning curve
     plot_curriculum(log_dir)                   # win rate per curriculum stage
     evaluate(model, env, n_battles=40)         # win rate against the rule AI (model=None: random play)
-    record_battle(model, env, "videos/x.gif")  # a top-down replay of one battle
+    record_battle(model, env, "videos/x.mp4")  # a top-down replay of one battle (.gif without ffmpeg)
+    VideoCallback(every=100_000, video_dir=...)  # a replay every so often while training
 """
 
 from __future__ import annotations
@@ -14,10 +15,15 @@ import base64
 import json
 import math
 import os
+import shutil
+import subprocess
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 import numpy as np
+
+from .callbacks import BaseCallback
 
 REASON_KEYS = ["player_score", "enemy_score", "player_kills", "enemy_kills", "damage_dealt_hulls",
                "enemy_damage_dealt_hulls", "first_capture_time"]
@@ -60,7 +66,8 @@ class Monitor:
 
     def _row(self, info: dict) -> str:
         ep, stats, terms = info["episode"], info.get("stats", {}), info.get("reward_terms", {})
-        kind = "eval" if info.get("evaluation") else info.get("opponent", "rule")
+        # "rule" / "self": training battles; "eval": evaluations; "eval-heldout": held-out evaluations
+        kind = ("eval-heldout" if info.get("held_out") else "eval") if info.get("evaluation") else info.get("opponent", "rule")
         values = [ep["r"], ep["l"], ep["t"], int(info["won"]), info.get("stage", 0), kind, info["battle_time"]]
         values += [stats.get(k, "") for k in REASON_KEYS]
         values += [terms.get(k, 0.0) for k in self.terms]
@@ -68,14 +75,17 @@ class Monitor:
         return ",".join(f"{v:.4g}" if isinstance(v, float) else str(v) for v in values) + "\n"
 
 
-def load_results(log_dir: str, training_only: bool = True):
-    """monitor.csv as a DataFrame. opponent is "rule" (the rule AI), "self" (self-play) or "eval"
-    (an evaluation battle); training_only drops the evaluation battles."""
+def load_results(log_dir: str, training_only: bool = True, stage: int | None = None):
+    """monitor.csv as a DataFrame. opponent is "rule" (the rule AI), "self" (self-play), "eval" or
+    "eval-heldout" (evaluation battles); training_only drops the evaluation battles, stage keeps one
+    curriculum stage."""
     import pandas as pd
     df = pd.read_csv(os.path.join(log_dir, "monitor.csv"), skiprows=1)
     if training_only and "opponent" in df:
-        df = df[df.opponent != "eval"].reset_index(drop=True)
-    return df
+        df = df[~df.opponent.astype(str).str.startswith("eval")]
+    if stage is not None and "stage" in df:
+        df = df[df.stage == stage]
+    return df.reset_index(drop=True)
 
 
 def ts2xy(df, x_axis: str = "timesteps"):
@@ -91,15 +101,27 @@ def ts2xy(df, x_axis: str = "timesteps"):
 
 # ---------------------------------------------------------------------------------------------- plots
 
+def _no_battles(df, what: str) -> bool:
+    """True (and says so) when there is nothing to plot yet - e.g. a session too short to finish a battle."""
+    if len(df):
+        return False
+    print(f"{what}: no finished battles to plot yet")
+    return True
+
+
 def _smooth(y: np.ndarray, window: int) -> np.ndarray:
     window = max(1, min(window, len(y)))
     return np.convolve(y, np.ones(window) / window, mode="valid")
 
 
-def plot_results(log_folder: str, title: str = "Learning Curve", window: int = 50):
-    """The notebooks' learning curve: reward per battle against timesteps, smoothed."""
+def plot_results(log_folder: str, title: str = "Learning Curve", window: int = 50, stage: int | None = None):
+    """The notebooks' learning curve: reward per battle against timesteps, smoothed (one stage's
+    battles only, if stage is given)."""
     import matplotlib.pyplot as plt
-    x, y = ts2xy(load_results(log_folder), "timesteps")
+    df = load_results(log_folder, stage=stage)
+    if _no_battles(df, title):
+        return
+    x, y = ts2xy(df, "timesteps")
     y = _smooth(y, window)
     x = x[len(x) - len(y):]
     plt.figure(figsize=(10, 5))
@@ -114,11 +136,16 @@ def plot_curriculum(log_folder: str, window: int = 50):
     """Win rate over training, one colour per curriculum stage (a new colour = a promotion)."""
     import matplotlib.pyplot as plt
     df = load_results(log_folder)
+    if _no_battles(df, "Curriculum"):
+        return
     x = np.cumsum(df.l.values)
+    rule = df.opponent.astype(str).values == "rule" if "opponent" in df else np.ones(len(df), bool)
     plt.figure(figsize=(10, 4))
     for st in sorted(df.stage.unique()):
-        part = df.stage.values == st
+        part = (df.stage.values == st) & rule                # the win rate that counts: against the rule AI
         y = df.won.values[part].astype(float)
+        if not len(y):
+            continue
         w = max(1, min(window, len(y)))
         plt.plot(x[part][w - 1:], np.convolve(y, np.ones(w) / w, mode="valid"), label=f"stage {st}")
     plt.ylim(0, 1)
@@ -129,10 +156,12 @@ def plot_curriculum(log_folder: str, window: int = 50):
     plt.show()
 
 
-def plot_reward_terms(log_folder: str, window: int = 50):
+def plot_reward_terms(log_folder: str, window: int = 50, stage: int | None = None):
     """What the fleet is actually being paid for: each reward term per battle, smoothed."""
     import matplotlib.pyplot as plt
-    df = load_results(log_folder)
+    df = load_results(log_folder, stage=stage)
+    if _no_battles(df, "Reward terms"):
+        return
     x = np.cumsum(df.l.values)
     plt.figure(figsize=(10, 5))
     for col in [c for c in df.columns if c.startswith("term_")]:
@@ -150,7 +179,11 @@ def plot_progress(log_folder: str):
     """The PPO diagnostics from progress.csv, one row per update."""
     import matplotlib.pyplot as plt
     import pandas as pd
-    df = pd.read_csv(os.path.join(log_folder, "progress.csv"))
+    path = os.path.join(log_folder, "progress.csv")
+    if not os.path.exists(path):
+        print("PPO diagnostics: no updates logged yet")
+        return
+    df = pd.read_csv(path)
     cols = ["policy_loss", "value_loss", "entropy", "approx_kl", "clip_fraction", "explained_variance"]
     fig, axes = plt.subplots(2, 3, figsize=(14, 6))
     for ax, c in zip(axes.ravel(), cols):
@@ -176,15 +209,26 @@ def evaluate(model, env, n_battles: int = 40, deterministic: bool = False, stage
     previous = env.stage
     if stage is not None:
         env.set_stage(stage)
-    env.set_evaluation(True, held_out)
     try:
-        out = _evaluate(model, env, n_battles, deterministic)
+        with as_evaluation(env, held_out):
+            out = _evaluate(model, env, n_battles, deterministic)
     finally:
         env.set_stage(previous)
-        env.set_evaluation(False)
     if not keep_results:
         out.pop("results")
     return out
+
+
+@contextmanager
+def as_evaluation(env, held_out: bool = False):
+    """Battles played inside are evaluations: against the rule AI (never self-play), and logged as
+    "eval" in monitor.csv, so they never count towards a promotion. Replays use it too."""
+    was = env.evaluating, env.held_out
+    env.set_evaluation(True, held_out)
+    try:
+        yield
+    finally:
+        env.set_evaluation(*was)
 
 
 def _evaluate(model, env, n_battles: int, deterministic: bool) -> dict:
@@ -307,67 +351,170 @@ class _Trail(list):
         self.color = color
 
 
+def ffmpeg_path() -> str | None:
+    """ffmpeg for .mp4 videos: on the PATH, or the copy that comes with the imageio-ffmpeg package."""
+    found = shutil.which("ffmpeg")
+    if found:
+        return found
+    try:
+        import imageio_ffmpeg
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        return None
+
+
+def video_ext() -> str:
+    """".mp4" where ffmpeg is available, otherwise ".gif" (Pillow writes those anywhere)."""
+    return ".mp4" if ffmpeg_path() else ".gif"
+
+
+def save_video(frames: list, path: str, fps: int = 10) -> str:
+    """Writes PIL frames to path (.mp4 through ffmpeg, or .gif). Without ffmpeg an .mp4 request is
+    written as .gif instead. Returns the path actually written."""
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    ffmpeg = ffmpeg_path()
+    if path.endswith(".mp4") and ffmpeg:
+        w, h = frames[0].size
+        w, h = w - w % 2, h - h % 2                    # H.264 needs even sizes
+        proc = subprocess.Popen([ffmpeg, "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24",
+                                 "-s", f"{w}x{h}", "-r", str(fps), "-i", "-", "-c:v", "libx264",
+                                 "-pix_fmt", "yuv420p", path], stdin=subprocess.PIPE)
+        for f in frames:
+            proc.stdin.write(f.crop((0, 0, w, h)).tobytes())
+        proc.stdin.close()
+        if proc.wait() == 0:
+            return path
+        path = path[:-4] + ".gif"                      # this ffmpeg has no H.264: fall back
+    if path.endswith(".mp4"):
+        path = path[:-4] + ".gif"
+    frames[0].save(path, save_all=True, append_images=frames[1:], duration=int(1000 / fps), loop=0)
+    return path
+
+
 def record_battle(model, env, path: str, every: int = 2, deterministic: bool = False, dpi: int = 80) -> str:
-    """Plays one battle (in the env's first battle slot) and writes a top-down replay to path (.gif).
+    """Plays one battle against the rule AI (in the env's first battle slot) and writes a top-down
+    replay to path (.mp4, or .gif where ffmpeg is missing). Returns the file written.
 
     model=None plays random legal actions. every: draw a frame every N decisions (seconds).
+    The environment's battles are restarted for it; call model.reset_battles() before training on.
     """
-    import matplotlib
-    import matplotlib.pyplot as plt
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.figure import Figure
     from PIL import Image
 
-    matplotlib.use("Agg", force=False)
     own_c, enemy_c = _cols(env, "critic_own"), _cols(env, "critic_enemy")
-    obs = env.reset()
-    fig, ax = plt.subplots(figsize=(6, 6), dpi=dpi)
-    frames, t, total = [], 0, 0.0
-    trails = {}
-    result = None
-    while True:
-        arrays = env.raw_arrays(0) if result is None else env.final_arrays(0)
-        for i in range(env.n_agents):
-            if arrays["critic_own"][0, i, own_c["alive"]] > 0.5:
-                trails.setdefault(("o", i), _Trail("#35d0e0")).append((arrays["critic_own"][0, i, own_c["x"]], arrays["critic_own"][0, i, own_c["y"]]))
-            if arrays["critic_enemy_mask"][0, i] > 0.5 and arrays["critic_enemy"][0, i, enemy_c["alive"]] > 0.5:
-                trails.setdefault(("e", i), _Trail("#e04848")).append((arrays["critic_enemy"][0, i, enemy_c["true_x"]], arrays["critic_enemy"][0, i, enemy_c["true_y"]]))
-        if t % every == 0 or result is not None:
-            m = {n: k for k, n in enumerate(env.spec.features["critic_match"])}
-            score = arrays["critic_match"][0]
-            title = (f"t = {t} s   points {score[m['my_score']] * 1000:.0f} vs {score[m['their_score']] * 1000:.0f}"
-                     f"   reward/ship {total:+.2f}")
+    with as_evaluation(env):                           # logged as "eval": replays never count for promotion
+        obs = env.reset()
+        fig = Figure(figsize=(6, 6), dpi=dpi)          # off-screen, so the notebook's own plots still show
+        FigureCanvasAgg(fig)
+        ax = fig.add_subplot()
+        frames, t, total = [], 0, 0.0
+        trails = {}
+        result = None
+        while True:
+            arrays = env.raw_arrays(0) if result is None else env.final_arrays(0)
+            for i in range(env.n_agents):
+                if arrays["critic_own"][0, i, own_c["alive"]] > 0.5:
+                    trails.setdefault(("o", i), _Trail("#35d0e0")).append((arrays["critic_own"][0, i, own_c["x"]], arrays["critic_own"][0, i, own_c["y"]]))
+                if arrays["critic_enemy_mask"][0, i] > 0.5 and arrays["critic_enemy"][0, i, enemy_c["alive"]] > 0.5:
+                    trails.setdefault(("e", i), _Trail("#e04848")).append((arrays["critic_enemy"][0, i, enemy_c["true_x"]], arrays["critic_enemy"][0, i, enemy_c["true_y"]]))
+            if t % every == 0 or result is not None:
+                m = {n: k for k, n in enumerate(env.spec.features["critic_match"])}
+                score = arrays["critic_match"][0]
+                title = (f"t = {t} s   points {score[m['my_score']] * 1000:.0f} vs {score[m['their_score']] * 1000:.0f}"
+                         f"   reward/ship {total:+.2f}")
+                if result is not None:
+                    title = ("WON" if result["won"] else "LOST") + f" - {result['reason']}\n" + title
+                draw_battle(env, arrays, ax, title, list(trails.values()))
+                fig.canvas.draw()
+                frames.append(Image.fromarray(np.asarray(fig.canvas.buffer_rgba())[..., :3].copy()))
             if result is not None:
-                title = ("WON" if result["won"] else "LOST") + f" - {result['reason']}\n" + title
-            draw_battle(env, arrays, ax, title, list(trails.values()))
-            fig.canvas.draw()
-            frames.append(Image.fromarray(np.asarray(fig.canvas.buffer_rgba())[..., :3].copy()))
-        if result is not None:
-            break
-        actions = env.sample_random_actions(obs) if model is None else model.predict(obs, deterministic)
-        obs, rewards, dones, infos = env.step(actions)
-        n = max(1.0, float(obs["exists"][0].sum()))
-        total += float(rewards[0].sum()) / n
-        t += 1
-        if dones[0]:
-            result = infos[0]                          # draw the final picture next time round
-    plt.close(fig)
-    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+                break
+            actions = env.sample_random_actions(obs) if model is None else model.predict(obs, deterministic)
+            obs, rewards, dones, infos = env.step(actions)
+            n = max(1.0, float(obs["exists"][0].sum()))
+            total += float(rewards[0].sum()) / n
+            t += 1
+            if dones[0]:
+                result = infos[0]                          # draw the final picture next time round
     frames += [frames[-1]] * 15                        # hold the result for a moment
-    frames[0].save(path, save_all=True, append_images=frames[1:], duration=100, loop=0)
+    path = save_video(frames, path)
     print(f"{'won' if result['won'] else 'lost'} ({result['reason']}) after {result['battle_time']:.0f} s - wrote {path}")
     return path
 
 
-def show_videos(video_path: str = "", prefix: str = ""):
-    """Shows the replays in the notebook (the notebooks' show_videos, for .gif and .mp4)."""
+def record_unity_video(model, env, path: str, every: int = 2, width: int = 1280, height: int = 720,
+                       fps: int = 10, deterministic: bool = False) -> str:
+    """Plays one battle and records frames rendered by Unity itself - the real game's graphics,
+    with the fog of war lifted so both fleets show. env must be a NavalEnv(..., graphics=True, n_envs=1),
+    which needs a computer with a screen (not a SageMaker space). Returns the video written."""
+    import tempfile
+    from PIL import Image, ImageDraw
+    worker = env.workers[0]
+    with as_evaluation(env):
+        obs = env.reset()
+        frames, t, result = [], 0, None
+        with tempfile.TemporaryDirectory() as tmp:
+            while result is None:
+                if t % every == 0:
+                    png = os.path.join(tmp, f"{len(frames):05d}.png")
+                    worker.render(png, width=width, height=height)
+                    img = Image.open(png).convert("RGB")
+                    ImageDraw.Draw(img).text((12, 10), f"t = {t * env.decision_period:.0f} s   {env.stages[env.stage]['name']}",
+                                             fill=(255, 255, 255))
+                    frames.append(img)
+                actions = env.sample_random_actions(obs) if model is None else model.predict(obs, deterministic)
+                obs, _, dones, infos = env.step(actions)
+                t += 1
+                if dones[0]:
+                    result = infos[0]
+    caption = ("WON" if result["won"] else "LOST") + f" - {result['reason']}"
+    last = frames[-1].copy()
+    ImageDraw.Draw(last).text((12, 30), caption, fill=(255, 230, 120))
+    frames += [last] * (2 * fps)                       # hold the result for two seconds
+    path = save_video(frames, path, fps=fps)
+    print(f"{caption.lower()} after {result['battle_time']:.0f} s - wrote {path}")
+    return path
+
+
+class VideoCallback(BaseCallback):
+    """Records a replay of one battle every `every` timesteps while training, on the stage being
+    trained: videos/battle_<timesteps>_stage<k>.mp4. With TeamSyncCallback they go to the team folder too."""
+
+    def __init__(self, every: int, video_dir: str, verbose: int = 1):
+        super().__init__(verbose)
+        self.every, self.video_dir = every, video_dir
+        self._last = 0
+        self.videos: list[str] = []
+
+    def _on_training_start(self) -> None:
+        self._last = self.num_timesteps
+
+    def _on_rollout_end(self) -> bool:
+        if self.num_timesteps - self._last >= self.every:
+            self._last = self.num_timesteps
+            env = self.model.env
+            name = f"battle_{self.num_timesteps:09d}_stage{env.stage}{video_ext()}"
+            self.videos.append(record_battle(self.model, env, os.path.join(self.video_dir, name)))
+            self.model.reset_battles()                 # the recording used the training battles
+        return True
+
+
+def show_videos(video_path: str = "", prefix: str = "", contains: str | None = None, newest: int | None = None):
+    """Shows the replays in the notebook (the notebooks' show_videos, for .gif and .mp4).
+    contains: only files whose name includes it (e.g. "_stage1"); newest: only the last n."""
     from IPython import display as ipythondisplay
     html = []
-    for f in sorted(Path(video_path).glob(f"{prefix}*")):
+    files = [f for f in sorted(Path(video_path).glob(f"{prefix}*")) if f.suffix in (".gif", ".mp4")
+             and (contains is None or contains in f.name)]
+    for f in files[-newest:] if newest else files:
         b64 = base64.b64encode(f.read_bytes()).decode("ascii")
         if f.suffix == ".gif":
             html.append(f'<figure style="display:inline-block"><img src="data:image/gif;base64,{b64}" style="height: 400px;"/>'
                         f"<figcaption>{f.name}</figcaption></figure>")
         elif f.suffix == ".mp4":
-            html.append(f'<video autoplay loop controls style="height: 400px;"><source src="data:video/mp4;base64,{b64}" type="video/mp4"/></video>')
+            html.append(f'<figure style="display:inline-block"><video autoplay loop muted controls style="height: 400px;">'
+                        f'<source src="data:video/mp4;base64,{b64}" type="video/mp4"/></video><figcaption>{f.name}</figcaption></figure>')
     ipythondisplay.display(ipythondisplay.HTML(data="<br>".join(html)))
 
 
@@ -390,6 +537,6 @@ def view(models_dir: str, env, video_folder: str = "videos", every: int = 2):
     for stage, ident in zip(["beginning", "middle", "end"], [earliest, middle, final]):
         print(f"loading model_{ident}")
         model = MAPPO.load(os.path.join(models_dir, f"model_{ident}"), env=env)
-        record_battle(model, env, os.path.join(video_folder, f"mappo-naval-{stage}.gif"), every=every)
+        record_battle(model, env, os.path.join(video_folder, f"mappo-naval-{stage}{video_ext()}"), every=every)
     for stage in ["beginning", "middle", "end"]:
         show_videos(video_folder, prefix=f"mappo-naval-{stage}")

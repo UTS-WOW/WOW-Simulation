@@ -11,6 +11,10 @@ SageMaker training job or their own computer - and they all read and write the s
         logs/progress.csv     one line per update
         models/model_latest.pt     the checkpoint to continue from
         models/model_<n>.pt        kept checkpoints, models/model_final.pt
+        videos/battle_<timesteps>_stage<k>.mp4   replays recorded while training
+
+    storage.show_status()                    # how the run is doing: stage, progress, win rate, ETA
+    storage.pull_view("team_view")           # its logs and videos, to plot and watch
 
     storage = TeamStorage("s3://my-bucket/wow-mappo", "curriculum", user="Lukita")
     latest = storage.pull("runs_simple/curriculum")      # None if the run is new
@@ -28,6 +32,7 @@ A plain folder path (a shared drive, or any local folder for testing) works in p
 
 from __future__ import annotations
 
+import csv
 import datetime
 import getpass
 import glob
@@ -35,6 +40,7 @@ import json
 import os
 import shutil
 import socket
+import time
 import uuid
 
 from .callbacks import BaseCallback
@@ -77,6 +83,10 @@ class _Local:
         dst = os.path.join(self.root, key)
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         shutil.copyfile(path, dst)
+
+    def list(self, folder: str) -> list[str]:
+        return sorted(f"{folder}/{n}" for n in os.listdir(os.path.join(self.root, folder))) \
+            if os.path.isdir(os.path.join(self.root, folder)) else []
 
 
 class _S3:
@@ -131,6 +141,12 @@ class _S3:
 
     def upload(self, path: str, key: str) -> None:
         self.s3.upload_file(path, self.bucket, self._key(key))
+
+    def list(self, folder: str) -> list[str]:
+        keys, cut = [], len(self.prefix) + 1 if self.prefix else 0
+        for page in self.s3.get_paginator("list_objects_v2").paginate(Bucket=self.bucket, Prefix=self._key(folder) + "/"):
+            keys += [o["Key"][cut:] for o in page.get("Contents", [])]
+        return sorted(keys)
 
 
 class TeamStorage:
@@ -210,8 +226,9 @@ class TeamStorage:
         self.backend.write("LOCK.json", json.dumps({"user": self.user, "session": self.session,
                                                     "heartbeat": _now().isoformat(), "released": released}).encode())
 
-    def push(self, run_dir: str, model=None) -> None:
-        """Uploads new and changed files (checkpoints, logs, config) and records the run's status."""
+    def push(self, run_dir: str, model=None, status: dict | None = None, models: bool = True) -> None:
+        """Uploads new and changed files (checkpoints, logs, videos, config) and records the run's
+        status in run.json. models=False sends everything but the checkpoints (a quick status update)."""
         info = self.info()
         remote_push = info.get("push_id") if info else None
         if remote_push not in (None, self._base_push):
@@ -219,7 +236,9 @@ class TeamStorage:
                                   f"UTC, after you pulled ({info['num_timesteps']:,} timesteps). Your progress since "
                                   f"then cannot be merged: pull again and continue from theirs, or use another run_name.")
         files = [os.path.join(run_dir, "config.json")] + sorted(glob.glob(os.path.join(run_dir, "logs", "*.csv"))) \
-            + sorted(glob.glob(os.path.join(run_dir, "models", "*.pt")))
+            + sorted(glob.glob(os.path.join(run_dir, "videos", "*.mp4")) + glob.glob(os.path.join(run_dir, "videos", "*.gif")))
+        if models:
+            files += sorted(glob.glob(os.path.join(run_dir, "models", "*.pt")))
         sent = 0
         for path in files:
             if not os.path.exists(path):
@@ -231,49 +250,141 @@ class TeamStorage:
             self._uploaded[rel] = os.path.getmtime(path)
             sent += 1
         push_id = uuid.uuid4().hex
-        status = {"run_name": self.run_name, "user": self.user, "session": self.session, "push_id": push_id,
+        record = {"run_name": self.run_name, "user": self.user, "session": self.session, "push_id": push_id,
                   "updated": _now().isoformat()}
         if model is not None:
             stage = getattr(model.env, "stage", 0)
             stages = getattr(model.env, "stages", [{"name": ""}])
-            status.update({"num_timesteps": model.num_timesteps, "updates": model.n_updates, "stage": stage,
+            record.update({"num_timesteps": model.num_timesteps, "updates": model.n_updates, "stage": stage,
                            "stage_name": stages[stage]["name"]})
         elif info:
-            status.update({k: info[k] for k in ("num_timesteps", "updates", "stage", "stage_name") if k in info})
-        status.setdefault("num_timesteps", 0)
-        self.backend.write("run.json", json.dumps(status, indent=2).encode())
+            record.update({k: info[k] for k in ("num_timesteps", "updates", "stage", "stage_name") if k in info})
+        record.setdefault("num_timesteps", 0)
+        # the timesteps of the checkpoint a teammate would continue from
+        record["checkpoint_timesteps"] = record["num_timesteps"] if models else (info or {}).get("checkpoint_timesteps", 0)
+        record.update(status or {})
+        self.backend.write("run.json", json.dumps(record, indent=2).encode())
         self._base_push = push_id
         self._write_lock(released=False)                 # heartbeat
-        print(f"pushed {sent} file(s) to {self.location} at {status['num_timesteps']:,} timesteps")
+        what = "checkpoint" if models else "status"
+        print(f"pushed {what} ({sent} file(s)) to {self.location} at {record['num_timesteps']:,} timesteps")
+
+    # ------------------------------------------------------------------ watching a run
+
+    def show_status(self) -> dict | None:
+        """Prints how the run is doing - from anywhere, while a teammate or a training job trains it."""
+        info = self.info()
+        if not info:
+            print(f"{self.location}: no training pushed yet")
+            return None
+        lock = self._lock()
+        age_min = (_now() - datetime.datetime.fromisoformat(info["updated"])).total_seconds() / 60
+        training = bool(lock and not lock.get("released")
+                        and (_now() - datetime.datetime.fromisoformat(lock["heartbeat"])).total_seconds() < self.lock_minutes * 60)
+        lines = [f"run           {self.location}",
+                 f"state         {'TRAINING now by ' + lock['user'] if training else 'idle - free to continue'}",
+                 f"last update   {info['updated'][:16].replace('T', ' ')} UTC by {info['user']} ({age_min:.0f} min ago)",
+                 f"stage         {info.get('stage_name', info.get('stage', '?'))}"]
+        if info.get("promote_win_rate") is not None:
+            lines[-1] += (f"  (stops at {info['promote_win_rate']:.0%} over {info.get('window', 250)} held-out battles)"
+                          if info.get("final") else
+                          f"  (moves on at {info['promote_win_rate']:.0%} over {info.get('window', 100)} battles)")
+        total = info.get("total_timesteps")
+        prog = f"{info['num_timesteps']:,}" + (f" / {total:,} timesteps ({info['num_timesteps'] / total:.0%})" if total else " timesteps")
+        if info.get("fps"):
+            prog += f", {info['fps']:.0f} timesteps/s"
+        if total and info["num_timesteps"] >= total:
+            prog += ", finished"
+        elif info.get("eta_min") is not None:
+            prog += f", about {info['eta_min'] / 60:.1f} h left" if info["eta_min"] >= 90 else f", about {info['eta_min']:.0f} min left"
+        lines.append(f"progress      {prog}")
+        lines.append(f"checkpoint    model_latest.pt at {info.get('checkpoint_timesteps', info['num_timesteps']):,} timesteps")
+        if info.get("win_rate_recent") is not None:
+            lines.append(f"win rate      {info['win_rate_recent']:.2f} over the last {info['recent_battles']} battles against the "
+                         f"rule AI on this stage ({info['stage_battles']} played on it); reward/ship {info['reward_recent']:+.2f}")
+        if info.get("latest_video"):
+            lines.append(f"latest video  videos/{info['latest_video']}  ({info.get('videos', 1)} so far)")
+        print("\n".join(lines))
+        return info
+
+    def pull_view(self, local_dir: str, videos: int = 3) -> str:
+        """Downloads the run's logs and its newest `videos` replays into local_dir (to plot and watch
+        without disturbing whoever is training it). Returns local_dir."""
+        for key in ("logs/monitor.csv", "logs/progress.csv"):
+            self.backend.download(key, os.path.join(local_dir, key))
+        for key in [k for k in self.backend.list("videos") if k.endswith((".mp4", ".gif"))][-videos:] if videos else []:
+            self.backend.download(key, os.path.join(local_dir, key))
+        return local_dir
+
+
+def training_status(model, run_dir: str) -> dict:
+    """What run.json reports about a run in progress: speed, time left, recent results, videos."""
+    env = model.env
+    stage = getattr(env, "stage", 0)
+    st = getattr(env, "stages", [{}])[stage]
+    elapsed = max(1e-6, time.time() - (model._t0 or time.time()))
+    fps = (model.num_timesteps - model._start_timesteps) / elapsed
+    total = model._total_timesteps
+    out = {"total_timesteps": total, "fps": round(fps, 1), "elapsed_min": round(elapsed / 60, 1),
+           "eta_min": round(max(0, total - model.num_timesteps) / fps / 60, 1) if total and fps > 0 else None,
+           "promote_win_rate": st.get("promote_win_rate", st.get("stop_win_rate")),
+           "window": st.get("window", st.get("stop_window")),
+           "final": "promote_win_rate" not in st and "stop_win_rate" in st}
+    path = os.path.join(run_dir, "logs", "monitor.csv")
+    if os.path.exists(path):
+        with open(path) as f:
+            next(f)                                      # the '#{...}' header line
+            rows = [r for r in csv.DictReader(f) if r.get("opponent", "rule") == "rule"
+                    and int(float(r.get("stage") or 0)) == stage]
+        recent = rows[-int(out["window"] or 100):]
+        out["stage_battles"] = len(rows)
+        if recent:
+            out.update({"recent_battles": len(recent),
+                        "win_rate_recent": round(sum(float(r["won"]) for r in recent) / len(recent), 3),
+                        "reward_recent": round(sum(float(r["r"]) for r in recent) / len(recent), 3)})
+    vids = sorted(glob.glob(os.path.join(run_dir, "videos", "*.mp4")) + glob.glob(os.path.join(run_dir, "videos", "*.gif")))
+    if vids:
+        out.update({"videos": len(vids), "latest_video": os.path.basename(vids[-1])})
+    return out
 
 
 class TeamSyncCallback(BaseCallback):
-    """Pushes the run to the team's storage every push_every timesteps and when training ends.
-    It saves models/model_latest.pt first, so the team always has an up-to-date checkpoint."""
+    """Keeps the team's copy of the run up to date while training:
 
-    def __init__(self, storage: TeamStorage, run_dir: str, push_every: int = 50_000, verbose: int = 1):
+    * every status_every timesteps a quick status update - logs, new videos and run.json's live
+      figures (stage, progress, speed, time left, recent win rate), no checkpoint;
+    * every push_every timesteps and at the end, the same plus models/model_latest.pt (and any
+      other new checkpoints), so the team always has a recent checkpoint to continue from.
+    """
+
+    def __init__(self, storage: TeamStorage, run_dir: str, push_every: int = 50_000, status_every: int = 10_000,
+                 verbose: int = 1):
         super().__init__(verbose)
-        self.storage, self.run_dir, self.push_every = storage, run_dir, push_every
-        self._last = 0
+        self.storage, self.run_dir, self.push_every, self.status_every = storage, run_dir, push_every, status_every
+        self._last = self._last_status = 0
         self.conflict = None
 
     def _on_training_start(self) -> None:
-        self._last = self.num_timesteps
+        self._last = self._last_status = self.num_timesteps
 
     def _on_rollout_end(self) -> bool:
         if self.num_timesteps - self._last >= self.push_every:
-            return self._push()
+            return self._push(models=True)
+        if self.status_every and self.num_timesteps - self._last_status >= self.status_every:
+            return self._push(models=False)
         return True
 
     def _on_training_end(self) -> None:
         if self.conflict is None:
-            self._push()
+            self._push(models=True)
 
-    def _push(self) -> bool:
-        self._last = self.num_timesteps
-        self.model.save(os.path.join(self.run_dir, "models", "model_latest"))
+    def _push(self, models: bool) -> bool:
+        self._last_status = self.num_timesteps
+        if models:
+            self._last = self.num_timesteps
+            self.model.save(os.path.join(self.run_dir, "models", "model_latest"))
         try:
-            self.storage.push(self.run_dir, self.model)
+            self.storage.push(self.run_dir, self.model, status=training_status(self.model, self.run_dir), models=models)
             return True
         except TeamStorageBusy as e:
             # a teammate pushed this run while we trained: stop rather than build on a stale line

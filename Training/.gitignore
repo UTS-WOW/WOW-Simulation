@@ -4,3 +4,4 @@ __pycache__/
 tests/parity/bin/
 tests/parity/obj/
 runs_simple/
+BUNDLE_VERSION

@@ -49,6 +49,7 @@ with zeros and a mask. Promotion just changes the battles; training carries on w
 
 from __future__ import annotations
 
+import csv
 import json
 import os
 
@@ -155,18 +156,54 @@ class CurriculumCallback(BaseCallback):
 
     Promotion counts only battles that started on the current stage against the rule-based AI, and
     the window starts empty on every new stage, so a promotion is always earned on the stage itself.
+
+    The windows carry over between sessions: at the start of training they are rebuilt from the
+    run's monitor.csv, so a session that stops after 60 of the 100 battles a stage needs is continued
+    by the next session (yours or a teammate's) instead of starting the count again.
+
+    stop_on_promotion=True ends training right after a promotion (the per-stage notebooks use it: the
+    saved model then carries the new stage, and the next stage's notebook continues from it).
     """
 
-    def __init__(self, verbose: int = 1):
+    def __init__(self, verbose: int = 1, stop_on_promotion: bool = False):
         super().__init__(verbose)
+        self.stop_on_promotion = stop_on_promotion
         self.results: list[float] = []          # current stage, rule-AI battles
         self.held_out: list[float] = []         # final stage, held-out evaluation battles
         self.last_eval = 0
         self.history: list[dict] = []           # promotions and evaluations, for the notebook
+        self.promoted = False
+        self.finished = False                   # the final stage's stopping rule is met
 
     def _on_training_start(self) -> None:
-        self.results = []
         self.last_eval = self.num_timesteps
+        self.promoted = self.finished = False
+        self.results, self.held_out = self._from_log()
+        env = self.model.env
+        stage = env.stages[env.stage]
+        if self.results and self.verbose:
+            window = int(stage.get("window", 100))
+            print(f"continuing the promotion window of '{stage['name']}': {len(self.results)} of {window} battles so far, "
+                  f"won {np.mean(self.results):.0%} (needs {stage.get('promote_win_rate', 0):.0%})")
+        if self.held_out and self.verbose:
+            need = int(stage.get("stop_window", 250))
+            print(f"continuing the held-out window: {len(self.held_out)} of {need} battles, won {np.mean(self.held_out):.0%}"
+                  + (" - the stopping rule is already met; training on tries to do better"
+                     if len(self.held_out) >= need and np.mean(self.held_out) >= stage.get("stop_win_rate", 1.0) else ""))
+
+    def _from_log(self) -> tuple[list[float], list[float]]:
+        """The current stage's rule-AI battles and held-out battles, from the run's monitor.csv."""
+        env = self.model.env
+        path = getattr(env, "path", None)                  # the Monitor wrapper's file
+        if not path or not os.path.exists(path):
+            return [], []
+        stage = env.stages[env.stage]
+        with open(path) as f:
+            next(f)                                        # the '#{...}' header line
+            rows = [r for r in csv.DictReader(f) if int(float(r.get("stage") or 0)) == env.stage]
+        results = [float(r["won"]) for r in rows if r.get("opponent", "rule") == "rule"]
+        held_out = [float(r["won"]) for r in rows if r.get("opponent") == "eval-heldout"]
+        return results[-int(stage.get("window", 100)):], held_out[-int(stage.get("stop_window", 250)):]
 
     def _on_step(self) -> bool:
         env = self.model.env
@@ -186,6 +223,9 @@ class CurriculumCallback(BaseCallback):
                 print(f"*** {msg} (at {self.num_timesteps} timesteps) ***")
             env.set_stage(env.stage + 1)
             self.results = []
+            self.promoted = True
+            if self.stop_on_promotion:
+                return False
         return True
 
     def _on_rollout_end(self) -> bool:
@@ -212,5 +252,6 @@ class CurriculumCallback(BaseCallback):
         if len(self.held_out) >= need and rate >= stage["stop_win_rate"]:
             if self.verbose:
                 print(f"*** stopping rule met: {rate:.0%} >= {stage['stop_win_rate']:.0%} over {need} held-out battles ***")
+            self.finished = True
             return False
         return True

@@ -39,15 +39,19 @@ Every ship picks one option from each action head:
 
 from __future__ import annotations
 
+import atexit
 import copy
+import hashlib
 import json
 import os
+import shutil
 import stat
+import tempfile
 import time
 
 import numpy as np
 
-from naval_rl.env import init_message, make_workers
+from naval_rl.env import init_message, make_workers, port_free
 
 from .curriculum import load_curriculum, procedural_reset, stage_sizes
 from .rewards import REWARD_WEIGHTS, compute_rewards, ship_facts
@@ -86,9 +90,46 @@ def find_unity_binary(path: str | None = None) -> str:
             if not mode & stat.S_IXUSR:
                 os.chmod(c, mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
             check_glibc()
-            return os.path.abspath(c)
+            return _runnable(os.path.abspath(c))
     raise FileNotFoundError("no headless training player found - build it with Training/build_player.sh, "
                             "or pass unity_binary=... / set NAVAL_UNITY_BINARY")
+
+
+def _runnable(binary: str) -> str:
+    """Some machines mount the home folder 'noexec': programs stored there cannot run (the player
+    would die loading UnityPlayer.so). Then the player folder is copied to the temp folder, once."""
+    folder = os.path.dirname(binary)
+    if not os.statvfs(folder).f_flag & getattr(os, "ST_NOEXEC", 8):
+        return binary
+    key = hashlib.md5(json.dumps(sorted((n, os.path.getsize(os.path.join(folder, n))) for n in os.listdir(folder)
+                                        if os.path.isfile(os.path.join(folder, n)))).encode()).hexdigest()[:10]
+    target = os.path.join(tempfile.gettempdir(), f"naval_trainer_{key}")
+    if not os.path.isdir(target):
+        print(f"{folder} does not allow running programs - copying the player to {target}")
+        shutil.copytree(folder, target + ".tmp", ignore=shutil.ignore_patterns("*DoNotShip*", "runs"))
+        os.rename(target + ".tmp", target)
+    copied = os.path.join(target, os.path.basename(binary))
+    os.chmod(copied, os.stat(copied).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    return copied
+
+
+def _free_ports(start: int, n: int, tries: int = 100) -> int:
+    """The first block of n free ports from `start` on. Players left over from an earlier session
+    (a restarted notebook kernel does not stop them) would otherwise block the default ports."""
+    port = start
+    for _ in range(tries):
+        if all(port_free(port + i) for i in range(n)):
+            return port
+        port += n
+    raise RuntimeError(f"no {n} free ports between {start} and {port} - stop old players with: pkill -f NavalTrainer.x86_64")
+
+
+def _log_tail(path: str | None, lines: int = 25) -> str:
+    if not path or not os.path.exists(path):
+        return f"    ({path or 'no log'} was not written)"
+    with open(path, errors="replace") as f:
+        tail = f.read().splitlines()[-lines:]
+    return "\n".join("    " + line for line in tail) if tail else f"    ({path} is empty)"
 
 
 # The Unity 6 player links against glibc 2.35 (Ubuntu 22.04 and newer)
@@ -122,7 +163,7 @@ class NavalEnv:
                  decision_period: float = 1.0, sim_dt: float = 0.08, time_limit: float | None = None,
                  jitter: float = 40.0, reward_weights: dict | None = None,
                  unity_binary: str | None = None, ports: list[int] | None = None, base_port: int = 5005,
-                 seed: int = 0, mock: bool = False, unity_log_dir: str | None = None):
+                 seed: int = 0, mock: bool = False, unity_log_dir: str | None = None, graphics: bool = False):
         """
         scenario             a battle from Training/scenarios (or a list to pick one from per battle)
         opponent_difficulty  the rule AI's skill: 0 Recruit, 1 Veteran, 2 Elite
@@ -142,6 +183,8 @@ class NavalEnv:
                              in Play mode with GameBootstrap.rlTrainingServer ticked) instead of
                              launching headless players
         mock                 a fake environment with the same shapes, to test the code without Unity
+        graphics             launch players that can render real game frames (record_unity_video).
+                             Needs a computer with a screen; training itself never needs it
         """
         self.rng = np.random.default_rng(seed)
         if stages is None:
@@ -165,9 +208,28 @@ class NavalEnv:
                             action_mode="intent", decision_period=decision_period, sim_dt=sim_dt, reflexes=True,
                             max_obstacles=MAX_OBSTACLES)
         binary = None if (mock or ports) else find_unity_binary(unity_binary)
-        self.workers = make_workers(len(ports) if ports else n_envs, init, binary, base_port, ports,
-                                    log_dir=unity_log_dir, mock=mock,
-                                    mock_kwargs={"episode_length": 60} if mock else None)
+        if binary:
+            free = _free_ports(base_port, n_envs)
+            if free != base_port:
+                print(f"ports {base_port}-{base_port + n_envs - 1} are in use (players from an earlier run?) - "
+                      f"using {free}-{free + n_envs - 1}. To stop old players: pkill -f NavalTrainer.x86_64")
+                base_port = free
+        try:
+            self.workers = make_workers(len(ports) if ports else n_envs, init, binary, base_port, ports,
+                                        log_dir=unity_log_dir, mock=mock,
+                                        mock_kwargs={"episode_length": 60} if mock else None, graphics=graphics)
+        except ConnectionError as e:
+            if not unity_log_dir:
+                raise
+            # show why the player stopped, instead of only where its log is
+            port = base_port
+            raise RuntimeError(
+                f"{e}\n\nThe player's own output (unity_{port}.out):\n"
+                f"{_log_tail(os.path.join(unity_log_dir, f'unity_{port}.out'))}\n\n"
+                f"The end of Unity's log (unity_{port}.log):\n{_log_tail(os.path.join(unity_log_dir, f'unity_{port}.log'))}"
+            ) from e
+        self._closed = False
+        atexit.register(self.close)          # a kernel restart or the end of a script stops the players
         spec = self.workers[0].spec
         self.spec = spec
         self.n_envs = len(self.workers)
@@ -285,6 +347,9 @@ class NavalEnv:
         return self._final[e].arrays
 
     def close(self) -> None:
+        if getattr(self, "_closed", True):
+            return
+        self._closed = True
         for w in self.workers:
             w.close()
 

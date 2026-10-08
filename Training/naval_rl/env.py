@@ -122,6 +122,8 @@ def launch_player(binary: str, port: int, log_dir: str | None, graphics: bool = 
     """A headless player. graphics=True keeps a GPU device (still no window) so it can render frames."""
     args = [binary, "-batchmode"] + ([] if graphics else ["-nographics"]) + ["-rlTrain", "-rlPort", str(port)]
     if log_dir:
+        # absolute: the player resolves a relative -logFile from its own folder, not from ours
+        log_dir = os.path.abspath(log_dir)
         os.makedirs(log_dir, exist_ok=True)
         args += ["-logFile", os.path.join(log_dir, f"unity_{port}.log")]
     env = os.environ.copy()
@@ -130,15 +132,25 @@ def launch_player(binary: str, port: int, log_dir: str | None, graphics: bool = 
         # display server and dies with it (logout, screen lock restart) - cut that tie
         for var in ("DISPLAY", "WAYLAND_DISPLAY"):
             env.pop(var, None)
-    proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env,
-                            start_new_session=True)
+        # ...and with no window system at all (a server, a SageMaker container) the Unity 6 player
+        # crashes on its first frame even in -batchmode -nographics. SDL's dummy video driver gives
+        # it a window backend that needs none.
+        env.setdefault("SDL_VIDEODRIVER", "dummy")
+    # the process's own output: where the system reports a player that cannot even start (missing
+    # library, a filesystem that does not allow programs) - Unity's log is never written then
+    out = open(os.path.join(log_dir, f"unity_{port}.out"), "wb") if log_dir else subprocess.DEVNULL
+    proc = subprocess.Popen(args, stdout=out, stderr=subprocess.STDOUT, env=env, start_new_session=True)
+    if log_dir:
+        out.close()                                        # the child keeps its own handle
     proc.log_path = os.path.join(log_dir, f"unity_{port}.log") if log_dir else None
     return proc
 
 
 def make_workers(n: int, init: dict, binary: str | None, base_port: int, ports: list[int] | None = None,
-                 log_dir: str | None = None, mock: bool = False, mock_kwargs: dict | None = None):
-    """n launched players on consecutive ports, explicit ports to connect to, or mock workers."""
+                 log_dir: str | None = None, mock: bool = False, mock_kwargs: dict | None = None,
+                 graphics: bool = False):
+    """n launched players on consecutive ports, explicit ports to connect to, or mock workers.
+    graphics=True launches players that can render frames (needs a screen / GPU)."""
     if mock:
         from .mock_env import MockWorker
         return [MockWorker(init, seed=i, **(mock_kwargs or {})) for i in range(n)]
@@ -152,7 +164,7 @@ def make_workers(n: int, init: dict, binary: str | None, base_port: int, ports: 
             raise RuntimeError(f"port {base_port + i} is already in use - an earlier training player may still be "
                                f"shutting down; wait a moment or pass --set base_port=<another port>")
     # start every player first so they boot in parallel, then connect
-    procs = [launch_player(binary, base_port + i, log_dir) for i in range(n)]
+    procs = [launch_player(binary, base_port + i, log_dir, graphics=graphics) for i in range(n)]
     try:
         return [UnityWorker(base_port + i, init, process=procs[i]) for i in range(n)]
     except Exception:

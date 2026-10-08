@@ -202,6 +202,7 @@ class MAPPO:
         self._last_obs = None
         self._episodes = []             # results of battles finished since the last log line
         self._t0 = None
+        self._start_timesteps, self._total_timesteps = 0, None
 
     # ------------------------------------------------------------------ acting
 
@@ -241,7 +242,8 @@ class MAPPO:
             self.env.set_opponent_policy(self.opponent_predict)   # another loaded model may have taken it over
         self._last_obs = self.env.reset()           # fresh battles (an evaluation may have run in between)
         self._t0 = time.time()
-        start = self.num_timesteps
+        start = self._start_timesteps = self.num_timesteps
+        self._total_timesteps = total_timesteps     # for status reports (speed, time left)
         while self.num_timesteps < total_timesteps:
             if not self.collect_rollouts(callback):
                 break
