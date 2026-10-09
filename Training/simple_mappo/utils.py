@@ -487,11 +487,15 @@ def record_unity_video(model, env, path: str, every: int = 2, width: int = 1280,
 
 class VideoCallback(BaseCallback):
     """Records a replay of one battle every `every` timesteps while training, on the stage being
-    trained: videos/battle_<timesteps>_stage<k>.mp4. With TeamSyncCallback they go to the team folder too."""
+    trained: videos/battle_<timesteps>_stage<k>.mp4 (.gif where ffmpeg is missing, e.g. on SageMaker).
+    With TeamSyncCallback they go to the team folder too.
 
-    def __init__(self, every: int, video_dir: str, verbose: int = 1):
+    show=True also shows each replay in the notebook right away, under the training table - so you
+    can watch the fleet while the training cell is still running."""
+
+    def __init__(self, every: int, video_dir: str, show: bool = False, verbose: int = 1):
         super().__init__(verbose)
-        self.every, self.video_dir = every, video_dir
+        self.every, self.video_dir, self.show = every, video_dir, show
         self._last = 0
         self.videos: list[str] = []
 
@@ -503,27 +507,50 @@ class VideoCallback(BaseCallback):
             self._last = self.num_timesteps
             env = self.model.env
             name = f"battle_{self.num_timesteps:09d}_stage{env.stage}{video_ext()}"
-            self.videos.append(record_battle(self.model, env, os.path.join(self.video_dir, name)))
+            path = record_battle(self.model, env, os.path.join(self.video_dir, name))
+            self.videos.append(path)
+            if self.show:
+                _display_html(_video_html(Path(path)))
             self.model.reset_battles()                 # the recording used the training battles
         return True
 
 
+def _video_html(f: Path, height: int = 400) -> str:
+    """One replay as HTML: a .gif as an image (plays anywhere), an .mp4 as an HTML5 video."""
+    b64 = base64.b64encode(f.read_bytes()).decode("ascii")
+    if f.suffix == ".gif":
+        return (f'<figure style="display:inline-block"><img src="data:image/gif;base64,{b64}" style="height: {height}px;"/>'
+                f"<figcaption>{f.name}</figcaption></figure>")
+    return (f'<figure style="display:inline-block"><video autoplay loop muted controls style="height: {height}px;">'
+            f'<source src="data:video/mp4;base64,{b64}" type="video/mp4"/></video><figcaption>{f.name}</figcaption></figure>')
+
+
+def _display_html(html: str) -> None:
+    """Shows HTML in a notebook; in a plain script it does nothing (the files are written anyway)."""
+    try:
+        from IPython import get_ipython
+        from IPython.display import HTML, display
+    except ImportError:
+        return
+    if get_ipython() is not None:
+        display(HTML(data=html))
+
+
 def show_videos(video_path: str = "", prefix: str = "", contains: str | None = None, newest: int | None = None):
     """Shows the replays in the notebook (the notebooks' show_videos, for .gif and .mp4).
-    contains: only files whose name includes it (e.g. "_stage1"); newest: only the last n."""
-    from IPython import display as ipythondisplay
-    html = []
-    files = [f for f in sorted(Path(video_path).glob(f"{prefix}*")) if f.suffix in (".gif", ".mp4")
+    contains: only files whose name includes it (e.g. "_stage1"); newest: only the last n.
+    Says so when there is nothing to show, instead of showing nothing."""
+    folder = Path(video_path)
+    files = [f for f in sorted(folder.glob(f"{prefix}*")) if f.suffix in (".gif", ".mp4")
              and (contains is None or contains in f.name)]
-    for f in files[-newest:] if newest else files:
-        b64 = base64.b64encode(f.read_bytes()).decode("ascii")
-        if f.suffix == ".gif":
-            html.append(f'<figure style="display:inline-block"><img src="data:image/gif;base64,{b64}" style="height: 400px;"/>'
-                        f"<figcaption>{f.name}</figcaption></figure>")
-        elif f.suffix == ".mp4":
-            html.append(f'<figure style="display:inline-block"><video autoplay loop muted controls style="height: 400px;">'
-                        f'<source src="data:video/mp4;base64,{b64}" type="video/mp4"/></video><figcaption>{f.name}</figcaption></figure>')
-    ipythondisplay.display(ipythondisplay.HTML(data="<br>".join(html)))
+    if not files:
+        others = sorted(f.name for f in folder.glob("*") if f.suffix in (".gif", ".mp4")) if folder.is_dir() else []
+        print(f"no replays{' matching ' + repr(contains or prefix) if (contains or prefix) else ''} in "
+              f"{folder.resolve()} yet" + (f" (it has {len(others)} others, e.g. {others[-1]})" if others else "") +
+              ". Replays are recorded by VideoCallback while training (every `every` timesteps), or with "
+              "record_battle(model, env, path).")
+        return
+    _display_html("<br>".join(_video_html(f) for f in (files[-newest:] if newest else files)))
 
 
 # ---------------------------------------------------------------------------------------------- beginning / middle / end

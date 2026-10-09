@@ -80,12 +80,16 @@ class SaveOnIntervalCallback(BaseCallback):
 
     num_timesteps grows by n_envs per step, so it rarely lands exactly on a multiple of
     save_interval; this saves whenever it crosses one instead.
+
+    latest=True also refreshes models/model_latest.pt each time - the checkpoint the next session
+    continues from - so a crash or a closed laptop loses at most save_interval timesteps.
     """
 
-    def __init__(self, save_interval: int, save_path: str, verbose: int = 1):
+    def __init__(self, save_interval: int, save_path: str, verbose: int = 1, latest: bool = True):
         super().__init__(verbose)
         self.save_interval = save_interval
         self.save_path = save_path
+        self.latest = latest
         self._saved = 0
 
     def _on_training_start(self) -> None:
@@ -102,6 +106,8 @@ class SaveOnIntervalCallback(BaseCallback):
 
     def _save(self) -> None:
         path = self.model.save(os.path.join(self.save_path, f"model_{self.num_timesteps}"))
+        if self.latest and self.num_timesteps > 0:
+            self.model.save(os.path.join(self.save_path, "model_latest"))
         if self.verbose > 0:
             print(f"Saving model to {path}")
 

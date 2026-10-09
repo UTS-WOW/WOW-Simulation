@@ -15,6 +15,10 @@ namespace Naval.RL
     /// spread over the next few frames so a big fleet does not cost one long frame. Orders go through
     /// RLActions, the same path as training.
     ///
+    /// A policy exported by Training/simple_mappo (file version 2) can carry a fleet commander: in a
+    /// fleet of two or more ships it gives every ship an order (free / engage / hold circle k) every
+    /// CommanderPeriod decisions, and each ship's captain decides with its order - as in training.
+    ///
     /// Inactive while the training environment is running: there the trainer drives Learned ships.
     /// </summary>
     public class RLPolicyDriver : MonoBehaviour
@@ -44,6 +48,8 @@ namespace Naval.RL
             public int zones;
             public int obstacles;
             public int[] actions = new int[RLLayout.HeadCount];
+            /// <summary>The commander's order this ship acted on: 0 free, 1 engage, 2 + k hold circle k.</summary>
+            public int order;
         }
 
         sealed class Side
@@ -56,6 +62,8 @@ namespace Naval.RL
             public float timer;
             public int cursor;
             public readonly Dictionary<Ship, float[]> hidden = new Dictionary<Ship, float[]>();
+            public int rounds;                 // decision rounds since the battle started (the commander's clock)
+            public int[] orders;               // the commander's current order for every slot
         }
 
         readonly Side[] _sides = { new Side { team = Team.Player }, new Side { team = Team.Enemy } };
@@ -64,6 +72,7 @@ namespace Naval.RL
 
         // scratch rows for one forward pass
         float[] _self, _allies, _contacts, _zones, _obstacles, _logits;
+        float[] _cmdEnemy, _cmdLogits, _cmdMask;
 
         public static RLPolicyDriver Create(Transform parent)
         {
@@ -92,7 +101,8 @@ namespace Naval.RL
                     throw new FormatException("policy has " + Policy.ActionHeads.Count + " action heads, the game has " + RLLayout.HeadCount);
                 if (!SameLayout(Policy))
                     throw new FormatException("policy was trained on a different observation or action layout - retrain it");
-                Status = "trained policy loaded (" + Policy.ActionMode + ", " + File.GetLastWriteTime(path).ToString("yyyy-MM-dd HH:mm") + ")";
+                Status = "trained policy loaded (" + (Policy.Version >= 2 ? "commander MAPPO" + (Policy.HasCommander ? " with fleet commander" : "") + ", " : "")
+                         + Policy.ActionMode + ", " + File.GetLastWriteTime(path).ToString("yyyy-MM-dd HH:mm") + ")";
                 return true;
             }
             catch (Exception e)
@@ -110,8 +120,9 @@ namespace Naval.RL
             bool Dim(string key, int want) => p.Dims.TryGetValue(key, out int got) && got == want;
             if (!Dim("self", RLLayout.SelfDim) || !Dim("ally", RLLayout.AllyDim) || !Dim("contact", RLLayout.ContactDim) ||
                 !Dim("zone", RLLayout.ZoneDim) || !Dim("obstacle", RLLayout.ObstacleDim)) return false;
-            if (p.HasCritic && (!Dim("critic_own", RLLayout.CriticOwnDim) || !Dim("critic_enemy", RLLayout.CriticEnemyDim) ||
-                                !Dim("critic_zone", RLLayout.CriticZoneDim) || !Dim("critic_match", RLLayout.CriticMatchDim))) return false;
+            if ((p.HasCritic || p.HasCommander) &&
+                (!Dim("critic_own", RLLayout.CriticOwnDim) || !Dim("critic_enemy", RLLayout.CriticEnemyDim) ||
+                 !Dim("critic_zone", RLLayout.CriticZoneDim) || !Dim("critic_match", RLLayout.CriticMatchDim))) return false;
             var mode = p.ActionMode == "lowlevel" ? ActionMode.LowLevel : ActionMode.Intent;
             var L = new RLLayout { actionMode = mode };
             for (int h = 0; h < RLLayout.HeadCount; h++)
@@ -124,28 +135,59 @@ namespace Naval.RL
 
         void Update()
         {
-            if (RLEnvironment.I != null || Policy == null) return;
+            if (RLEnvironment.I != null) return;
             var gm = GameManager.I;
             if (gm == null || gm.Phase != GamePhase.Battle) return;
+            // a training stage with a passive target (RLStages): the enemy only has to be held still
+            bool passiveEnemy = RLStages.EnemyIsPassive(gm);
+            if (Policy == null && !passiveEnemy) return;
 
             // a new battle: the clock went backwards
             if (gm.BattleTime < _lastBattleTime) StartBattle();
             _lastBattleTime = gm.BattleTime;
 
-            for (int i = 0; i < _sides.Length; i++) Tick(_sides[i]);
+            for (int i = 0; i < _sides.Length; i++)
+            {
+                if (passiveEnemy && _sides[i].team == Team.Enemy) HoldStill(_sides[i]);
+                else if (Policy != null) Tick(_sides[i]);
+            }
+        }
+
+        /// <summary>A passive target, as in training (simple_mappo "passive"): stop and hold fire.</summary>
+        void HoldStill(Side side)
+        {
+            side.timer -= Time.deltaTime;
+            if (side.timer > 0f) return;
+            side.timer = 1f;
+            for (int i = 0; i < side.slots.Count; i++)
+            {
+                var s = side.slots[i];
+                if (s == null || s.IsDead || s.Controller != ShipController.Learned) continue;
+                s.Weapons.HoldFire = true;
+                s.Navigation.OrderStop();
+            }
         }
 
         void StartBattle()
         {
             LastDecision.Clear();
-            int learned = 0;
-            foreach (var s in ShipRegistry.All) if (s != null && s.Controller == ShipController.Learned) learned++;
+            int learned = 0, passive = 0;
+            bool passiveEnemy = RLStages.EnemyIsPassive(GameManager.I);
+            foreach (var s in ShipRegistry.All)
+            {
+                if (s == null || s.Controller != ShipController.Learned) continue;
+                if (passiveEnemy && s.team == Team.Enemy) passive++;
+                else learned++;
+            }
             if (learned > 0) Debug.Log("[RL] trained policy is flying " + learned + " ships (" + Status + ")");
+            if (passive > 0) Debug.Log("[RL] holding " + passive + " passive target ship(s) still, guns silent (training stage)");
             foreach (var side in _sides)
             {
                 side.slots.Clear();
                 side.enemies.Clear();
                 side.hidden.Clear();
+                side.rounds = 0;
+                side.orders = null;
                 side.timer = 0f;
                 side.cursor = int.MaxValue;
                 foreach (var s in ShipRegistry.OfTeam(side.team)) if (s != null) side.slots.Add(s);
@@ -194,6 +236,8 @@ namespace Naval.RL
             int zones = WorldMap.I != null ? WorldMap.I.Zones.Count : 1;
             var L = side.layout;
             int maxTeam = Mathf.Max(1, side.slots.Count);
+            // the commander reads the enemy fleet from rows sized by maxTeam: make room for all of it
+            if (Policy.HasCommander) maxTeam = Mathf.Max(maxTeam, side.enemies.Count);
             int maxAllies = Mathf.Max(0, side.slots.Count - 1);
             int maxContacts = Mathf.Max(1, side.enemies.Count);
             int maxZones = Mathf.Clamp(zones, 1, 8);
@@ -210,6 +254,40 @@ namespace Naval.RL
                 side.obs = new TeamObs(side.layout);
             }
             RLObservation.Build(side.team, side.slots, side.enemies, side.obs);
+
+            // the fleet commander: every CommanderPeriod rounds, in fleets of two or more (as in training)
+            if (side.orders == null || side.orders.Length != side.slots.Count) side.orders = new int[side.slots.Count];
+            if (Policy.HasCommander && side.slots.Count > 1 && side.rounds % Policy.CommanderPeriod == 0) Command(side);
+            side.rounds++;
+        }
+
+        /// <summary>The commander gives every ship of the side an order (simple_mappo policies).</summary>
+        void Command(Side side)
+        {
+            var o = side.obs;
+            var L = side.layout;
+            int nOwn = side.slots.Count;
+            int nz = 0;
+            for (int z = 0; z < L.maxZones; z++) if (o.criticZoneMask[z] > 0.5f) nz++;
+            int nEnemy = 0;
+            Ensure(ref _cmdEnemy, Mathf.Max(1, L.maxTeam) * RLLayout.CriticEnemyDim);
+            for (int j = 0; j < L.maxTeam; j++)
+            {
+                if (o.criticEnemyMask[j] < 0.5f) continue;
+                Array.Copy(o.criticEnemy, j * RLLayout.CriticEnemyDim, _cmdEnemy, nEnemy * RLLayout.CriticEnemyDim, RLLayout.CriticEnemyDim);
+                nEnemy++;
+            }
+            int width = 2 + nz;
+            Ensure(ref _cmdLogits, nOwn * width);
+            Ensure(ref _cmdMask, width);
+            for (int k = 0; k < width; k++) _cmdMask[k] = 1f;
+            Policy.Command(o.criticMatch, o.criticOwn, nOwn, _cmdEnemy, nEnemy, o.criticZones, nz, _cmdLogits);
+            for (int i = 0; i < nOwn; i++)
+            {
+                var s = side.slots[i];
+                bool live = s != null && !s.IsDead && !s.IsSinking && o.alive[i] > 0.5f;
+                side.orders[i] = live ? Choose(_cmdLogits, i * width, width, _cmdMask, 0) : RLPolicy.OrderFree;
+            }
         }
 
         /// <summary>Returns true when a forward pass was spent on this slot.</summary>
@@ -240,7 +318,9 @@ namespace Naval.RL
 
             if (!side.hidden.TryGetValue(s, out var h)) { h = new float[Policy.Hidden]; side.hidden[s] = h; }
             var attention = new float[1 + na + nc + nz + no];
-            Policy.Act(_self, _allies, na, _contacts, nc, _zones, nz, _obstacles, no, h, _logits, attention);
+            int order = side.orders != null && i < side.orders.Length ? side.orders[i] : RLPolicy.OrderFree;
+            if (order >= RLPolicy.OrderCircle + nz) order = RLPolicy.OrderFree;      // that circle is not in this ship's view
+            Policy.Act(_self, _allies, na, _contacts, nc, _zones, nz, _obstacles, no, h, _logits, attention, order);
 
             // one choice per head; option j of a head means the same thing in the compact logits and in the mask
             int k = 0;
@@ -261,6 +341,7 @@ namespace Naval.RL
             rec.contacts = Slice(o.contactSlots[i], nc);
             rec.zones = nz;
             rec.obstacles = no;
+            rec.order = order;
             Array.Copy(_actions, rec.actions, _actions.Length);
             return true;
         }

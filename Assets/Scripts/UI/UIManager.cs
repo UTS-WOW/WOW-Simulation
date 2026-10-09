@@ -103,6 +103,9 @@ namespace Naval
         Text _aiDebugText;
         Text _mapSummaryText;
         Text _policyStatusText;
+        GameObject _stagesPanel;           // TRAINING STAGES: the curriculum, to watch and play
+        bool _showStages;
+        Text _stagesStatusText;
 
         public bool HelpVisible { get; private set; }
 
@@ -147,6 +150,7 @@ namespace Naval
             BuildEndPanel();
             BuildHelpPanel();
             BuildFleetMenu();
+            BuildStagesMenu();
 
             GameEvents.OnMessage += OnMessage;
         }
@@ -790,11 +794,77 @@ namespace Naval
                 new Vector2(-210f, 18f), new Vector2(-30f, 52f),
                 () => GameManager.I.EnterEditor(), null, null, new Color(0.18f, 0.26f, 0.40f, 0.95f));
 
+            // the training curriculum's stages: watch the trained fleet on them, or play them yourself
+            Button("TRAINING STAGES", p, new Vector2(1f, 0f), new Vector2(1f, 0f),
+                new Vector2(-250f, 60f), new Vector2(-30f, 90f),
+                () => { _showStages = true; }, null, null, new Color(0.18f, 0.30f, 0.24f, 0.95f));
+
             Button("LAUNCH BATTLE", p, new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(-130f, 18f), new Vector2(130f, 52f),
-                () => GameManager.I.StartFromMenu(_menuSetup, 0, _menuMap),
+                () => { RL.RLStages.Clear(); GameManager.I.StartFromMenu(_menuSetup, 0, _menuMap); },
                 MenuIsValid, null, new Color(0.15f, 0.42f, 0.3f, 0.95f));
 
             _menuPanel.SetActive(false);
+        }
+
+        /// <summary>Opens (or closes) the TRAINING STAGES screen while the game is in the menu.</summary>
+        public void ShowStages(bool show) => _showStages = show;
+
+        /// <summary>
+        /// TRAINING STAGES: one row per curriculum stage (StreamingAssets/RL/stages.json, written by
+        /// Training/export_simple.py), each startable three ways - the trained fleet against the stage's
+        /// own opponent, you against the trained fleet, or you against the stage's opponent.
+        /// </summary>
+        void BuildStagesMenu()
+        {
+            var p = Panel("StagesMenu", _canvas.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f),
+                new Vector2(-560f, -400f), new Vector2(560f, 400f), new Color(0.04f, 0.08f, 0.13f, 0.97f));
+            _stagesPanel = p.gameObject;
+
+            Label("StagesTitle", p, "TRAINING STAGES", 28, TextAnchor.UpperCenter, Accent,
+                new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(0f, -50f), new Vector2(0f, -12f), FontStyle.Bold);
+            Label("StagesHelp", p, "The curriculum the fleet trained on.   WATCH AI: the trained fleet vs the stage's opponent" +
+                  "   ·   FIGHT AI: you vs the trained fleet   ·   PLAY IT: you vs the stage's opponent",
+                12, TextAnchor.UpperCenter, TextDim, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(0f, -74f), new Vector2(0f, -54f));
+
+            var stages = RL.RLStages.All;
+            if (stages.Count == 0)
+                Label("NoStages", p, RL.RLStages.Status, 14, TextAnchor.MiddleCenter, TextMain,
+                    new Vector2(0f, 0.5f), new Vector2(1f, 0.5f), new Vector2(0f, -20f), new Vector2(0f, 20f));
+            const float rowH = 76f;
+            for (int i = 0; i < stages.Count; i++)
+            {
+                var st = stages[i];
+                float y = -88f - i * rowH;
+                var row = Panel("Stage" + i, p, new Vector2(0f, 1f), new Vector2(1f, 1f),
+                    new Vector2(20f, y - rowH + 6f), new Vector2(-20f, y), new Color(0.07f, 0.12f, 0.18f, 0.9f), false);
+                Label("Name", row, "<b>" + st.name.ToUpperInvariant() + "</b>    " + st.battle + (st.commander ? "    · fleet commander" : ""),
+                    15, TextAnchor.MiddleLeft, TextMain, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(12f, -24f), new Vector2(-340f, -4f));
+                Label("Desc", row, st.description, 12, TextAnchor.MiddleLeft, TextDim,
+                    new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(12f, -44f), new Vector2(-340f, -26f));
+                Label("Rule", row, "vs " + st.opponentText + "    ·    " + st.passText, 12, TextAnchor.MiddleLeft, Accent,
+                    new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(12f, -64f), new Vector2(-340f, -46f));
+
+                var stage = st;
+                Button("WATCH AI", row, new Vector2(1f, 0.5f), new Vector2(1f, 0.5f), new Vector2(-326f, -16f), new Vector2(-224f, 16f),
+                    () => LaunchStage(stage, RL.RLStages.Who.WatchAI), PolicyAvailable, null, new Color(0.15f, 0.42f, 0.3f, 0.95f));
+                Button("FIGHT AI", row, new Vector2(1f, 0.5f), new Vector2(1f, 0.5f), new Vector2(-218f, -16f), new Vector2(-116f, 16f),
+                    () => LaunchStage(stage, RL.RLStages.Who.FightAI), PolicyAvailable);
+                Button("PLAY IT", row, new Vector2(1f, 0.5f), new Vector2(1f, 0.5f), new Vector2(-110f, -16f), new Vector2(-8f, 16f),
+                    () => LaunchStage(stage, RL.RLStages.Who.PlayStage));
+            }
+
+            _stagesStatusText = Label("StagesStatus", p, "", 12, TextAnchor.MiddleCenter, TextDim,
+                new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(200f, 18f), new Vector2(-200f, 52f));
+            Button("BACK", p, new Vector2(0f, 0f), new Vector2(0f, 0f), new Vector2(30f, 18f), new Vector2(170f, 52f),
+                () => { _showStages = false; });
+
+            _stagesPanel.SetActive(false);
+        }
+
+        void LaunchStage(RL.RLStages.Stage stage, RL.RLStages.Who who)
+        {
+            _showStages = false;
+            RL.RLStages.Launch(stage, who);
         }
 
         static bool PolicyAvailable() => RL.RLPolicyDriver.I != null && RL.RLPolicyDriver.I.Available;
@@ -1548,8 +1618,13 @@ namespace Naval
             if (gm == null) return;
 
             bool menu = gm.Phase == GamePhase.Menu;
-            if (_menuPanel.activeSelf != menu) _menuPanel.SetActive(menu);
-            if (menu) RefreshMenu();
+            bool stages = menu && _showStages;
+            if (_menuPanel.activeSelf != (menu && !stages)) _menuPanel.SetActive(menu && !stages);
+            if (_stagesPanel.activeSelf != stages) _stagesPanel.SetActive(stages);
+            if (menu && !stages) RefreshMenu();
+            if (stages && _stagesStatusText != null)
+                _stagesStatusText.text = (RL.RLPolicyDriver.I != null ? RL.RLPolicyDriver.I.Status : "no trained policy") +
+                                         "    ·    " + RL.RLStages.Status;
 
             bool editing = gm.Phase == GamePhase.Editor;
             if (_editorPanel.activeSelf != editing) _editorPanel.SetActive(editing);

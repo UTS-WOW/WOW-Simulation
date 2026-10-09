@@ -245,6 +245,12 @@ namespace Naval
         /// <summary>The scenario currently being played, if the match came from the editor.</summary>
         public Scenario ActiveScenario { get; private set; }
 
+        /// <summary>
+        /// Who flies each fleet in the next scenario (BeginScenario applies Setup's controllers). The
+        /// training-stage screen uses it: a stage's scenario picks its own ships, the stage picks the pilots.
+        /// </summary>
+        public void UseSetup(FleetSetup setup) => Setup = setup != null ? setup.Clone() : FleetSetup.Default();
+
         /// <summary>Opens the scenario editor on top of a freshly generated world to draw on.</summary>
         public void EnterEditor()
         {

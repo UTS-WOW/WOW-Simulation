@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# Packs everything SageMaker (or another computer) needs into one zip: the commander MAPPO code, the
-# scenarios, the notebooks, the headless Linux player (no Unity install is needed) and - when there is
-# one - the run "fleet"'s imitation checkpoint, so Stage 0 can start without running StageP first.
+# Packs everything into one zip: the Unity project (Assets, Packages, ProjectSettings - open the
+# unzipped folder in Unity Hub; Unity rebuilds its Library the first time), the commander MAPPO code,
+# scenarios and notebooks, the Linux player (headless training and the playable game, no Unity
+# install needed) and - when there is one - the run "fleet"'s imitation checkpoint, so Stage 0 can
+# start without running StageP first.
 #
 #   Training/build_player.sh            # once, after any change to the game's C# code
 #   Training/package_sagemaker.sh       # writes wow_sagemaker.zip in the repository root
@@ -31,9 +33,11 @@ fi
 rm -f "$OUT"
 zip -qr "$OUT" \
   Training/simple_mappo Training/naval_rl Training/scenarios \
-  Training/train_simple.py Training/watch_simple.py Training/WOW-MAPPO-Simple.ipynb Training/Stage*.ipynb \
+  Training/train_simple.py Training/watch_simple.py Training/export_simple.py Training/WOW-MAPPO-Simple.ipynb Training/Stage*.ipynb \
   Training/make_stage_notebooks.py Training/requirements.txt Training/BUNDLE_VERSION Training/tests \
   "${EXTRA[@]}" \
   Builds/NavalTrainer \
-  -x '*/__pycache__/*' 'Builds/NavalTrainer/*_BurstDebugInformation_DoNotShip/*' 'Builds/NavalTrainer/runs/*'
+  Assets Packages ProjectSettings \
+  -x '*/__pycache__/*' 'Builds/NavalTrainer/*_BurstDebugInformation_DoNotShip/*' 'Builds/NavalTrainer/runs/*' \
+     'Assets/Screenshots/*' 'Assets/Screenshots.meta' 'Assets/StreamingAssets/RL/*.bak' '*.tmp'
 echo "wrote $OUT ($(du -h "$OUT" | cut -f1)), version $VERSION"

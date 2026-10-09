@@ -83,7 +83,8 @@ Sequence Modeling Problem* (MAT, NeurIPS 2022); Mahjoub et al., *Sable* (ICML 20
 | [`aws.py`](aws.py) | SageMaker with boto3 only: the account's bucket, launching and watching training jobs |
 | [`stages.py`](stages.py) | `continue_training`: the model a stage notebook trains (and its imitation start) |
 | [`../train_simple.py`](../train_simple.py) | Command-line training (imitation first for a new run); the SageMaker training-job entry point |
-| [`../watch_simple.py`](../watch_simple.py) | A trained model in the real game's graphics |
+| [`../watch_simple.py`](../watch_simple.py) | A trained model in the real game's graphics, driven from Python |
+| [`export.py`](export.py), [`../export_simple.py`](../export_simple.py) | Exports a trained fleet to the Unity game (`naval_policy.bin` v2), which runs it in C# |
 | `../StageP-Imitation.ipynb`, `../Stage0-Gunnery.ipynb` … `../Stage7-Open.ipynb` | One notebook per step, all training the same model in turn |
 | [`../make_stage_notebooks.py`](../make_stage_notebooks.py) | Writes those notebooks; edit it, not the notebooks |
 | [`../tests/test_simple_mappo.py`](../tests/test_simple_mappo.py) | Tests on the mock environment (no Unity): `python -m pytest tests` |
@@ -210,6 +211,70 @@ end and share one run folder (`RUN_NAME = "fleet"`). There is only ever **one mo
 Opening the wrong notebook stops with a message naming the right one; `FORCE_STAGE = True` jumps
 ahead or goes back. To change the notebooks, edit `make_stage_notebooks.py` and run it.
 
+## Run the trained fleet in your Unity game
+
+The game runs a trained fleet itself, in plain C# (`Assets/Scripts/RL/RLPolicy.cs`, driven by
+`RLPolicyDriver.cs`) - no Python while it plays. Export a checkpoint into the game's policy file:
+
+```bash
+cd Training
+python export_simple.py                                   # runs_simple/fleet: model_best.pt, else model_latest.pt
+python export_simple.py --model runs_simple/fleet/models/model_latest.pt
+python export_simple.py --team-storage s3://<bucket>/wow-mappo --run-name fleet   # a run trained on SageMaker
+```
+
+It writes `Assets/StreamingAssets/RL/naval_policy.bin` (the previous one is kept as
+`naval_policy.bin.bak`). In Unity press **Play**, and on the setup screen set **ENEMY AI: LEARNED**
+(fight against it) or **YOUR FLEET: LEARNED** (watch it fight); the line under those buttons says
+"commander MAPPO with fleet commander" when the new policy is loaded. The file is read when the game
+starts, so press Play again after exporting. Every stage notebook (and the walkthrough) has the same
+export as its last training cell; on SageMaker it writes `runs_simple/<run>/naval_policy.bin` to download.
+
+What runs in the game is exactly what trained: every learned ship runs the captain on its own view
+with its GRU memory, and in fleets of two or more the commander gives orders every 10 decisions.
+The file format is version 2 of `naval_policy.bin` (`simple_mappo/export.py`); version-1 files from
+`naval_rl` still load. `tests/test_policy_parity.py` checks the C# forward pass against PyTorch
+(captain logits, GRU memory over two decisions, commander orders: max error ~1e-6 on the real
+trained models), and a headless check flew a 6v6 with the exported fleet on both sides:
+
+```bash
+Builds/NavalTrainer/NavalTrainer.x86_64 -batchmode -nographics -rlDemo both -rlDemoSeconds 120 -logFile demo.log
+# [RL] trained policy is flying 12 ships (trained policy loaded (commander MAPPO with fleet commander, ...))
+```
+
+(The headless player reads `Builds/NavalTrainer/NavalTrainer_Data/StreamingAssets/RL/naval_policy.bin`;
+export there with `--out` for this check.)
+
+### Watch (and play) the training stages in the game
+
+The game's **BATTLE SETUP** screen has a **TRAINING STAGES** button. It lists the curriculum - the same
+eight stages the fleet trains on, from `Assets/StreamingAssets/RL/stages.json` - and starts any of them
+exactly as training does (the same scenario or generated-map settings, the same opponent: rule AI at
+the stage's difficulty, or the passive target of stages 0-1):
+
+| Button | Your fleet | Enemy fleet |
+|---|---|---|
+| **WATCH AI** | the trained fleet (captains + commander) | the stage's opponent |
+| **FIGHT AI** | you | the trained fleet |
+| **PLAY IT** | you | the stage's opponent |
+
+`stages.json` is written by `python export_simple.py` (every export) or `python export_simple.py
+--stages-only`, from `simple_mappo/curriculum.py` - edit the curriculum, export, and the game shows the
+new stages. From the command line (also works with the built player in `Builds/NavalTrainer/`):
+
+```bash
+NavalTrainer.x86_64 -rlStages                                  # open on the TRAINING STAGES screen
+NavalTrainer.x86_64 -rlDemo player -rlStage 4                  # straight into stage 4, the trained fleet playing
+NavalTrainer.x86_64 -rlStages -rlScreenshot stages.png         # a picture of the screen (for the report), then quit
+```
+
+### The Unity project in the zip
+
+`wow_sagemaker.zip` holds the whole Unity project (`Assets/`, `Packages/`, `ProjectSettings/`; the
+screenshots are left out) next to `Training/` and `Builds/`. Unzip it and open the folder in Unity Hub
+(Unity 6000.5.1f1); the first open rebuilds Unity's `Library/` folder, which takes a few minutes. To
+build a new Linux player after changing the game: `Training/build_player.sh`.
+
 ## Team checkpoints
 
 Everyone trains the same line of training in turns, from a notebook, a SageMaker training job or
@@ -289,8 +354,16 @@ python -m pytest tests -q                                # checks the code on th
 - The notebooks and `train_simple.py` use the run folder `runs_simple/fleet/` (`RUN_NAME` /
   `--run-name`). If `runs_simple/fleet/models/imitation.pt` is already there (the zip ships one),
   Stage 0 starts from it and StageP can be skipped; running StageP again replaces it.
-- Every session continues the run's latest checkpoint, so you can stop (Kernel > Interrupt, then run
-  the "Save and hand over" cell) and continue another day. Use a new `RUN_NAME` for a fresh run.
+- **Training is continuous.** Every session - notebook or `train_simple.py` - continues the run's
+  `models/model_latest.pt`, which is refreshed every `save_interval` (and on Ctrl+C in the script),
+  so a crash loses little. Stop whenever you like (in a notebook: Kernel > Interrupt, then run the
+  "Save and hand over" cell) and continue another day. `train_simple.py` and the walkthrough go
+  through the stages by themselves; a stage notebook stops at its promotion unless `KEEP_GOING = True`.
+  Use a new `RUN_NAME` for a fresh run.
+- **Replays** are recorded while training (`VideoCallback`) into `runs_simple/<run>/videos/` - `.mp4`
+  where ffmpeg exists, `.gif` otherwise (SageMaker) - and in the notebooks they are shown right under
+  the training table as they are recorded. A one-off replay: `record_battle(model, env, "x.mp4")`; the
+  real game's graphics: `python watch_simple.py --model <checkpoint>` on a computer with a screen.
 - `n_envs` defaults to half the CPU cores; each battle is one Unity process.
 - Linux needs nothing else. The headless player is a Linux build: on Windows / macOS build your own
   with `Training/build_player.sh` (or use WSL / SageMaker).

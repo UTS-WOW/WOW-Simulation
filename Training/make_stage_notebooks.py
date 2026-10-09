@@ -198,7 +198,7 @@ def notebook(k: int) -> nbf.NotebookNode:
 
 All stage notebooks train the **same model with the same method**. This notebook continues the run's latest checkpoint, which carries everything learned so far - the networks, the optimisers, the value normalisers, the league, the timestep count and the stage - and the run's battle log, from which the promotion window continues where the last session stopped.
 
-* Not passed yet? **Run this notebook again** - each session continues the last one (yours or a teammate's).
+* **Training is continuous.** Not passed yet? **Run this notebook again** - each session continues the last one (yours or a teammate's), from `models/model_latest.pt`, which is refreshed every `save_interval` (so even a crashed session loses little). `KEEP_GOING = True` (configuration cell) carries on into the next stages in the same session instead of stopping at the promotion.
 * {'This is the final stage: training ends when the held-out stopping rule is met.' if last else f"Passed? Training stops and saves, and the model moves to stage {k + 1}: open [Stage {k + 1}]({STAGES[k + 1]['file']})."}
 {'* No model yet? It starts from the imitation checkpoint of the [Imitation notebook](' + IMITATION_FILE + ') - run that one first.' if k == 0 else ''}
 """ + METHOD_MD)
@@ -230,6 +230,8 @@ The method's settings are **identical in every notebook**. They only shape a bra
     code(f"""
 STAGE = {k}
 FORCE_STAGE = False                  # True: train this stage even if the run is on another one
+KEEP_GOING = False                   # True: when this stage is passed, carry on into the next stages
+                                     # in this same session instead of stopping (continuous training)
 
 config = OrderedDict([
     ('n_envs', max(1, min(16, os.cpu_count() // 2))),     # battles in parallel, one Unity process each
@@ -281,16 +283,18 @@ if RUN_BASELINES:
     md(f"""
 ## Train
 
-{'Training stops by itself when the held-out stopping rule is met' if last else 'Training stops by itself as soon as the promotion requirement is met'}, or after `n_timesteps`. `models/model_best.pt` always holds the checkpoint with the best rolling pass rate. A replay video is recorded now and then, and the team folder gets a status update every 10,000 timesteps and a checkpoint every `save_interval`.
+{'Training stops by itself when the held-out stopping rule is met' if last else 'Training stops by itself as soon as the promotion requirement is met (unless `KEEP_GOING`)'}, or after `n_timesteps`. `models/model_best.pt` always holds the checkpoint with the best rolling pass rate. The team folder gets a status update every 10,000 timesteps and a checkpoint every `save_interval`.
+
+**Replays**: five times a session a battle is recorded and **shown right here, under the training table**, while training goes on. The files are in `runs_simple/<RUN_NAME>/videos/` (`.gif` on SageMaker, which has no ffmpeg - double-click one in the file browser; `.mp4` where ffmpeg exists), and in the team folder.
 
 In the table: `win_rate` / `pass_rate` against the stage's own opponent{', `win_rate_self_play` against our own copies, `elo` the fleet''s rating' if league else ''}{', `orders_free` the share of the commander''s orders that leave the ship free' if k >= 4 else ''}.
 """)
     code(r"""
-curriculum = CurriculumCallback(stop_on_promotion=True)
-callbacks = [SaveOnIntervalCallback(save_interval, models_dir),
+curriculum = CurriculumCallback(stop_on_promotion=not KEEP_GOING)
+callbacks = [SaveOnIntervalCallback(save_interval, models_dir),     # also refreshes model_latest.pt
              curriculum,
              BestModelCallback(models_dir),
-             VideoCallback(every=config['n_timesteps'] // 5, video_dir=video_dir)]
+             VideoCallback(every=config['n_timesteps'] // 5, video_dir=video_dir, show=True)]   # replays appear below
 if storage:
     callbacks.append(TeamSyncCallback(storage, run_dir, push_every=save_interval, status_every=10_000))
 
@@ -358,6 +362,21 @@ if os.path.exists(best_path):
     env.set_stage(stage_now)
 """ + (r"""results["MAPPO, held-out maps"] = evaluate(model, env, n_battles=40, stage=STAGE, held_out=True)
 """ if last else "") + r"""pd.DataFrame(results).T[["battles", "win_rate", "pass_rate", "win_rate_stderr", "mean_reward", "enemy_ships_sunk", "own_ships_lost"]]
+""")
+
+    md("""
+## Put the fleet into your Unity game
+
+Exports the best checkpoint (captains + fleet commander) as the game's policy file. The game runs it in plain C# (`Assets/Scripts/RL/RLPolicy.cs`), no Python needed. From the repository it goes straight into `Assets/StreamingAssets/RL/naval_policy.bin` (the old file is kept as `.bak`); elsewhere (SageMaker) it goes into the run folder - download it (right-click > Download) and copy it there.
+
+Then in Unity: **Play**, and on the setup screen set **ENEMY AI: LEARNED** (fight against it) or **YOUR FLEET: LEARNED** (watch it fight). The game reads the file when it starts, so press Play again after exporting. From a computer later: `python export_simple.py` (or `--team-storage s3://... --run-name fleet` to fetch a teammate's run first).
+""")
+    code(r"""
+from simple_mappo.export import export_policy
+checkpoint = os.path.join(models_dir, "model_best.pt" if os.path.exists(os.path.join(models_dir, "model_best.pt")) else "model_latest.pt")
+in_repo = os.path.isdir(os.path.join("..", "Assets", "StreamingAssets"))
+target = os.path.join("..", "Assets", "StreamingAssets", "RL", "naval_policy.bin") if in_repo else os.path.join(run_dir, "naval_policy.bin")
+print("exported", checkpoint, "->", os.path.abspath(export_policy(checkpoint, target)))
 """)
 
     md("""

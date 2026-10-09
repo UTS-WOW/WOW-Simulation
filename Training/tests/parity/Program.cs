@@ -16,13 +16,31 @@ static class Program
         var hidden = MiniJson.Floats(c["hidden_in"]);
         var logits = new float[policy.LogitCount(nc, nz)];
         var attn = new float[1 + na + nc + nz + no];
-        policy.Act(MiniJson.Floats(c["self"]), MiniJson.Floats(c["allies"]), na, MiniJson.Floats(c["contacts"]), nc,
-                   MiniJson.Floats(c["zones"]), nz, MiniJson.Floats(c["obstacles"]), no, hidden, logits, attn);
+        int order = c.ContainsKey("order") ? MiniJson.Int(c["order"]) : 0;      // v2: the commander's order
+        float[] self = MiniJson.Floats(c["self"]), allies = MiniJson.Floats(c["allies"]), contacts = MiniJson.Floats(c["contacts"]);
+        float[] zones = MiniJson.Floats(c["zones"]), obstacles = MiniJson.Floats(c["obstacles"]);
+        policy.Act(self, allies, na, contacts, nc, zones, nz, obstacles, no, hidden, logits, attn, order);
 
         double worst = 0;
         worst = Math.Max(worst, Report("logits", logits, MiniJson.Floats(c["logits"])));
         worst = Math.Max(worst, Report("hidden", hidden, MiniJson.Floats(c["hidden_out"])));
-        worst = Math.Max(worst, Report("attention", attn, MiniJson.Floats(c["attention_self"])));
+        if (c.ContainsKey("attention_self"))
+            worst = Math.Max(worst, Report("attention", attn, MiniJson.Floats(c["attention_self"])));
+        if (c.ContainsKey("logits_step2"))
+        {
+            // a second decision from the new memory: the GRU state carries over correctly
+            policy.Act(self, allies, na, contacts, nc, zones, nz, obstacles, no, hidden, logits, attn, order);
+            worst = Math.Max(worst, Report("logits step 2", logits, MiniJson.Floats(c["logits_step2"])));
+            worst = Math.Max(worst, Report("hidden step 2", hidden, MiniJson.Floats(c["hidden_out_step2"])));
+        }
+        if (c.ContainsKey("order_logits"))
+        {
+            int nOwn = MiniJson.Int(c["n_own"]), nEnemy = MiniJson.Int(c["n_enemy"]);
+            var orders = new float[nOwn * (2 + nz)];
+            policy.Command(MiniJson.Floats(c["critic_match"]), MiniJson.Floats(c["critic_own"]), nOwn,
+                           MiniJson.Floats(c["critic_enemy"]), nEnemy, MiniJson.Floats(c["critic_zones"]), nz, orders);
+            worst = Math.Max(worst, Report("commander orders", orders, MiniJson.Floats(c["order_logits"])));
+        }
 
         if (c.ContainsKey("value"))
         {

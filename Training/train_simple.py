@@ -5,6 +5,10 @@
     python train_simple.py --curriculum my_stages.json               # your own stages (any number)
     python train_simple.py --scenario scenarios/stage0_bb_duel.json --run-name duel   # one battle only
     python train_simple.py --resume runs_simple/koth/models/model_final.pt --total-timesteps 1000000
+
+Training is continuous: running the same command again continues the run (runs_simple/<run-name>/
+models/model_latest.pt, refreshed every --save-interval and on Ctrl+C) until --total-timesteps -
+raise it to train on. The curriculum promotes from stage to stage by itself.
     python train_simple.py --mock --total-timesteps 20000          # no Unity: checks the code only
     python train_simple.py --no-commander --no-memory --attn-layers 0 --run-name ablation_flat   # an ablation
 
@@ -125,7 +129,8 @@ def main():
     with open(os.path.join(run_dir, "config.json"), "w") as f:
         json.dump({**vars(a), "reward_weights": weights}, f, indent=2)
 
-    resume = a.resume or pulled
+    local_latest = os.path.join(models_dir, "model_latest.pt")
+    resume = a.resume or pulled or (local_latest if os.path.exists(local_latest) else None)
     cloned = os.path.join(models_dir, "imitation.pt")
     if not resume and not a.no_imitation and not os.path.exists(cloned) and a.imitation_battles > 0 and not a.mock:
         imitate(a, run_dir, cloned, storage)          # before the training battles start: one set of players at a time
@@ -161,14 +166,21 @@ def main():
             callbacks.append(VideoCallback(video_every, os.path.join(run_dir, "videos")))
         if storage:                                           # last: it also pushes the newest video
             callbacks.append(TeamSyncCallback(storage, run_dir, push_every=a.save_interval, status_every=a.status_every))
-        model.learn(total_timesteps=a.total_timesteps, callback=callbacks)
+        if model.num_timesteps >= a.total_timesteps:
+            print(f"the run is already at {model.num_timesteps:,} timesteps - raise --total-timesteps to train on")
+        interrupted = False
+        try:
+            model.learn(total_timesteps=a.total_timesteps, callback=callbacks)
+        except KeyboardInterrupt:
+            interrupted = True
+            print("\ninterrupted - saving, so the next run continues from here")
         model.save(os.path.join(models_dir, "model_final"))
         model.save(os.path.join(models_dir, "model_latest"))
         if storage and callbacks[-1].conflict is None:
             storage.push(run_dir, model, status=training_status(model, run_dir))     # model_final as well
         print(f"trained {model.num_timesteps} timesteps in {(time.time() - t0) / 60:.1f} min")
 
-        if a.eval_battles > 0:
+        if a.eval_battles > 0 and not interrupted:
             # on the stage training reached
             result = {"trained": evaluate(model, env, a.eval_battles),
                       "random": evaluate(None, env, a.eval_battles)}

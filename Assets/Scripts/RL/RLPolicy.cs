@@ -6,14 +6,20 @@ using System.Text;
 namespace Naval.RL
 {
     /// <summary>
-    /// A trained policy exported by Training/naval_rl/export.py, run in plain C#.
+    /// A trained policy, run in plain C#. Two file versions:
     ///
-    /// This mirrors Training/naval_rl/model.py operation for operation: MLP token embeddings, pre-norm
-    /// transformer blocks with masked multi-head attention, masked-mean pooling, a GRU cell, linear
-    /// heads and pointer heads (dot products against the contact and zone tokens). Tokens are ordered
-    /// [self, allies, contacts, zones, obstacles]. There is no padding here - the game feeds exactly
-    /// the ships, contacts, zones and obstacles that exist - and attention over real tokens gives the
-    /// same numbers as the padded training batches.
+    ///   1  Training/naval_rl/export.py - mirrors Training/naval_rl/model.py operation for operation:
+    ///      MLP token embeddings, pre-norm transformer blocks with masked multi-head attention,
+    ///      masked-mean pooling, a GRU cell, linear heads and pointer heads (dot products against the
+    ///      contact and zone tokens).
+    ///   2  Training/simple_mappo/export.py - the captain of simple_mappo/networks.py: the same blocks,
+    ///      with mean + max pooling, heads that read the memory AND the current view, and the
+    ///      commander's order as an input (a one-hot on the self token, a flag on the ordered circle).
+    ///      Optionally the fleet commander too (Command): the fleet's view -> an order per ship.
+    ///
+    /// Tokens are ordered [self, allies, contacts, zones, obstacles]. There is no padding here - the
+    /// game feeds exactly the ships, contacts, zones and obstacles that exist - and attention over
+    /// real tokens gives the same numbers as the padded training batches.
     ///
     /// Deliberately free of UnityEngine so the numerics can be checked against PyTorch outside the
     /// editor (Training/tests/parity/).
@@ -27,6 +33,7 @@ namespace Naval.RL
             public string pointer;       // "", "zones" or "contacts"
         }
 
+        public int Version { get; private set; } = 1;
         public int D { get; private set; }
         public int Heads { get; private set; }
         public int Layers { get; private set; }
@@ -39,6 +46,20 @@ namespace Naval.RL
         public readonly Dictionary<string, int> Dims = new Dictionary<string, int>();
         public readonly List<HeadInfo> ActionHeads = new List<HeadInfo>();
 
+        // ---- version 2 (simple_mappo)
+        /// <summary>Pooling over the tokens: mean and max (v2) instead of mean only (v1).</summary>
+        public bool MeanMaxPool { get; private set; }
+        /// <summary>The action heads read the GRU memory and the current view (v2) instead of the memory only.</summary>
+        public bool HeadsSeeView { get; private set; }
+        /// <summary>Order types the captain takes as input (v2: 3 - free, engage, hold a circle); 0 = none.</summary>
+        public int OrderFeatures { get; private set; }
+        /// <summary>The file holds the fleet commander (v2): call Command every CommanderPeriod decisions.</summary>
+        public bool HasCommander { get; private set; }
+        public int CommanderPeriod { get; private set; } = 10;
+        public const int OrderFree = 0, OrderEngage = 1, OrderCircle = 2;     // order 2 + k = hold circle k
+        int _enemyHiddenStart, _enemyHiddenEnd;     // critic_enemy columns the commander may not see (true state)
+        bool[] _matchHidden;                        // critic_match columns it may not see (true enemy strength)
+
         readonly Dictionary<string, float[]> _t = new Dictionary<string, float[]>();
         readonly Dictionary<string, int[]> _shape = new Dictionary<string, int[]>();
 
@@ -49,13 +70,14 @@ namespace Naval.RL
             if (data == null || data.Length < 12 || data[0] != 'N' || data[1] != 'A' || data[2] != 'V' || data[3] != 'P')
                 throw new FormatException("not a naval policy file (missing NAVP header)");
             int version = BitConverter.ToInt32(data, 4);
-            if (version != 1) throw new FormatException("unsupported policy version " + version);
+            if (version != 1 && version != 2) throw new FormatException("unsupported policy version " + version);
             int headerLen = BitConverter.ToInt32(data, 8);
             var header = (Dictionary<string, object>)MiniJson.Parse(Encoding.UTF8.GetString(data, 12, headerLen));
             int blob = 12 + headerLen;
 
             var p = new RLPolicy
             {
+                Version = version,
                 D = MiniJson.Int(header["d"]),
                 Heads = MiniJson.Int(header["heads"]),
                 Layers = MiniJson.Int(header["layers"]),
@@ -65,6 +87,23 @@ namespace Naval.RL
                 HasCritic = (bool)header["has_critic"],
             };
             if (header.TryGetValue("max_obstacles", out var mo)) p.MaxObstacles = MiniJson.Int(mo);
+            if (header.TryGetValue("pool", out var pool)) p.MeanMaxPool = (string)pool == "mean_max";
+            if (header.TryGetValue("head_input", out var hi)) p.HeadsSeeView = (string)hi == "memory_and_view";
+            if (header.TryGetValue("order_features", out var of)) p.OrderFeatures = MiniJson.Int(of);
+            if (header.TryGetValue("has_commander", out var hc)) p.HasCommander = (bool)hc;
+            if (header.TryGetValue("commander_period", out var cp)) p.CommanderPeriod = Math.Max(1, MiniJson.Int(cp));
+            if (header.TryGetValue("enemy_privileged", out var ep))
+            {
+                var l = (List<object>)ep;
+                p._enemyHiddenStart = MiniJson.Int(l[0]);
+                p._enemyHiddenEnd = MiniJson.Int(l[1]);
+            }
+            if (header.TryGetValue("match_hidden", out var mh))
+            {
+                var l = (List<object>)mh;
+                p._matchHidden = new bool[l.Count];
+                for (int i = 0; i < l.Count; i++) p._matchHidden[i] = MiniJson.Num(l[i]) > 0.5;
+            }
             foreach (var kv in (Dictionary<string, object>)header["dims"]) p.Dims[kv.Key] = MiniJson.Int(kv.Value);
             foreach (var o in (List<object>)header["action_heads"])
             {
@@ -228,6 +267,33 @@ namespace Naval.RL
             return x;
         }
 
+        /// <summary>v2: relu(fuse([first token, mean of all tokens, max of all tokens])).</summary>
+        float[] FuseFirstMeanMax(string prefix, float[] tokens, int T, int firstToken)
+        {
+            int d = D;
+            var cat = new float[3 * d];
+            Array.Copy(tokens, firstToken * d, cat, 0, d);
+            MeanMax(tokens, T, cat, d);
+            var x = new float[d];
+            Linear(prefix + ".fuse", cat, 0, 3 * d, x, 0);
+            Relu(x, 0, d);
+            return x;
+        }
+
+        /// <summary>Writes the mean over the T tokens to y[off..off+D) and their max to y[off+D..off+2D).</summary>
+        void MeanMax(float[] tokens, int T, float[] y, int off)
+        {
+            int d = D;
+            for (int i = 0; i < d; i++) { y[off + i] = 0f; y[off + d + i] = float.NegativeInfinity; }
+            for (int t = 0; t < T; t++)
+                for (int i = 0; i < d; i++)
+                {
+                    float v = tokens[t * d + i];
+                    y[off + i] += v / T;
+                    if (v > y[off + d + i]) y[off + d + i] = v;
+                }
+        }
+
         // ------------------------------------------------------------------ actor
 
         /// <summary>Total logits for a battle with these counts: fixed options plus one per pointed entity.</summary>
@@ -243,26 +309,58 @@ namespace Naval.RL
         /// One decision for one ship. Inputs are packed rows: allies [nAllies, allyDim] and so on.
         /// hidden is read and overwritten with the new GRU state. logits must hold LogitCount();
         /// attention (optional) receives 1 + nAllies + nContacts + nZones + nObstacles weights.
+        /// order (v2): the commander's order for this ship - OrderFree, OrderEngage or OrderCircle + k.
         /// </summary>
         public void Act(float[] self, float[] allies, int nAllies, float[] contacts, int nContacts,
                         float[] zones, int nZones, float[] obstacles, int nObstacles,
-                        float[] hidden, float[] logits, float[] attention = null)
+                        float[] hidden, float[] logits, float[] attention = null, int order = OrderFree)
         {
             int d = D;
             int T = 1 + nAllies + nContacts + nZones + nObstacles;
             var x = new float[T * d];
-            Embed("actor.encoder.embeds.0", self, 0, Dims["self"], x, 0);
+            int selfDim = Dims["self"], zoneDim = Dims["zone"];
+            if (OrderFeatures > 0)
+            {
+                // the order as an input, exactly as simple_mappo/networks.py order_features() builds it
+                var selfIn = new float[selfDim + OrderFeatures];
+                Array.Copy(self, selfIn, selfDim);
+                selfIn[selfDim + Math.Min(Math.Max(order, 0), OrderCircle)] = 1f;
+                Embed("actor.encoder.embeds.0", selfIn, 0, selfDim + OrderFeatures, x, 0);
+            }
+            else Embed("actor.encoder.embeds.0", self, 0, selfDim, x, 0);
             for (int i = 0; i < nAllies; i++) Embed("actor.encoder.embeds.1", allies, i * Dims["ally"], Dims["ally"], x, (1 + i) * d);
             int c0 = 1 + nAllies;
             for (int i = 0; i < nContacts; i++) Embed("actor.encoder.embeds.2", contacts, i * Dims["contact"], Dims["contact"], x, (c0 + i) * d);
             int z0 = c0 + nContacts;
-            for (int i = 0; i < nZones; i++) Embed("actor.encoder.embeds.3", zones, i * Dims["zone"], Dims["zone"], x, (z0 + i) * d);
+            if (OrderFeatures > 0)
+            {
+                var zoneIn = new float[zoneDim + 1];
+                for (int i = 0; i < nZones; i++)
+                {
+                    Array.Copy(zones, i * zoneDim, zoneIn, 0, zoneDim);
+                    zoneIn[zoneDim] = order - OrderCircle == i ? 1f : 0f;           // "this is my circle"
+                    Embed("actor.encoder.embeds.3", zoneIn, 0, zoneDim + 1, x, (z0 + i) * d);
+                }
+            }
+            else
+                for (int i = 0; i < nZones; i++) Embed("actor.encoder.embeds.3", zones, i * zoneDim, zoneDim, x, (z0 + i) * d);
             int o0 = z0 + nZones;
             for (int i = 0; i < nObstacles; i++) Embed("actor.encoder.embeds.4", obstacles, i * Dims["obstacle"], Dims["obstacle"], x, (o0 + i) * d);
 
             var tokens = Encode("actor.encoder", x, T, attention);
-            var fused = FuseFirstAndMean("actor", tokens, T, 0);
+            var fused = MeanMaxPool ? FuseFirstMeanMax("actor", tokens, T, 0) : FuseFirstAndMean("actor", tokens, T, 0);
             Gru(fused, hidden);
+
+            // what the heads read: the memory (v1), or the memory and the current view (v2)
+            float[] z = hidden;
+            int zDim = Hidden;
+            if (HeadsSeeView)
+            {
+                z = new float[Hidden + d];
+                Array.Copy(hidden, z, Hidden);
+                Array.Copy(fused, 0, z, Hidden, d);
+                zDim = Hidden + d;
+            }
 
             int k = 0;
             float ptrScale = 1f / (float)Math.Sqrt(d);
@@ -271,12 +369,12 @@ namespace Naval.RL
             for (int hIdx = 0; hIdx < ActionHeads.Count; hIdx++)
             {
                 var head = ActionHeads[hIdx];
-                Linear("actor.fixed." + hIdx, hidden, 0, Hidden, logits, k);
+                Linear("actor.fixed." + hIdx, z, 0, zDim, logits, k);
                 k += head.fixedCount;
                 if (string.IsNullOrEmpty(head.pointer)) continue;
                 int start = head.pointer == "zones" ? z0 : c0;
                 int count = head.pointer == "zones" ? nZones : nContacts;
-                Linear("actor.ptr_q." + head.pointer, hidden, 0, Hidden, q, 0);
+                Linear("actor.ptr_q." + head.pointer, z, 0, zDim, q, 0);
                 for (int j = 0; j < count; j++)
                 {
                     Linear("actor.ptr_k." + head.pointer, tokens, (start + j) * d, d, key, 0);
@@ -315,6 +413,71 @@ namespace Naval.RL
                 int row = o * inDim;
                 for (int i = 0; i < inDim; i++) s += w[row + i] * x[i];
                 y[o] = (float)s;
+            }
+        }
+
+        // ------------------------------------------------------------------ commander (v2)
+
+        /// <summary>
+        /// The fleet commander: the team's view of the battle -> order logits for every own ship,
+        /// orderLogits [nOwn, 2 + nZones]: free, engage, then hold circle k. Inputs are the critic
+        /// rows the game builds anyway (match, own [nOwn], enemy [nEnemy] and zones [nZones]); what
+        /// the team cannot know - the enemy's true state and strength - is zeroed here, exactly as in
+        /// training (simple_mappo/env.py fleet_enemy / fleet_match).
+        /// </summary>
+        public void Command(float[] match, float[] own, int nOwn, float[] enemy, int nEnemy, float[] zones, int nZones,
+                            float[] orderLogits)
+        {
+            if (!HasCommander) throw new InvalidOperationException("this policy was exported without a commander");
+            int d = D;
+            int matchDim = Dims["critic_match"], ownDim = Dims["critic_own"], enemyDim = Dims["critic_enemy"], zoneDim = Dims["critic_zone"];
+            int T = 1 + nOwn + nEnemy + nZones;
+            var x = new float[T * d];
+
+            var row = new float[matchDim];
+            Array.Copy(match, row, matchDim);
+            if (_matchHidden != null) for (int i = 0; i < matchDim && i < _matchHidden.Length; i++) if (_matchHidden[i]) row[i] = 0f;
+            Embed("commander.encoder.embeds.0", row, 0, matchDim, x, 0);
+            for (int i = 0; i < nOwn; i++) Embed("commander.encoder.embeds.1", own, i * ownDim, ownDim, x, (1 + i) * d);
+            int e0 = 1 + nOwn;
+            var erow = new float[enemyDim];
+            for (int i = 0; i < nEnemy; i++)
+            {
+                Array.Copy(enemy, i * enemyDim, erow, 0, enemyDim);
+                for (int c = _enemyHiddenStart; c < _enemyHiddenEnd && c < enemyDim; c++) erow[c] = 0f;
+                Embed("commander.encoder.embeds.2", erow, 0, enemyDim, x, (e0 + i) * d);
+            }
+            int z0 = e0 + nEnemy;
+            for (int i = 0; i < nZones; i++) Embed("commander.encoder.embeds.3", zones, i * zoneDim, zoneDim, x, (z0 + i) * d);
+
+            var tokens = Encode("commander.encoder", x, T, null);
+            var pooled = new float[2 * d];
+            MeanMax(tokens, T, pooled, 0);
+            var fleet = new float[d];
+            Linear("commander.fleet", pooled, 0, 2 * d, fleet, 0);
+            Relu(fleet, 0, d);
+
+            int width = 2 + nZones;
+            var shipIn = new float[2 * d];
+            var ship = new float[d];
+            var q = new float[d];
+            var key = new float[d];
+            float scale = 1f / (float)Math.Sqrt(d);
+            for (int i = 0; i < nOwn; i++)
+            {
+                Array.Copy(tokens, (1 + i) * d, shipIn, 0, d);
+                Array.Copy(fleet, 0, shipIn, d, d);
+                Linear("commander.ship", shipIn, 0, 2 * d, ship, 0);
+                Relu(ship, 0, d);
+                Linear("commander.fixed", ship, 0, d, orderLogits, i * width);
+                Linear("commander.query", ship, 0, d, q, 0);
+                for (int k = 0; k < nZones; k++)
+                {
+                    Linear("commander.key", tokens, (z0 + k) * d, d, key, 0);
+                    double dot = 0;
+                    for (int j = 0; j < d; j++) dot += key[j] * q[j];
+                    orderLogits[i * width + 2 + k] = (float)dot * scale;
+                }
             }
         }
 

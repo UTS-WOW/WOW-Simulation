@@ -10,6 +10,8 @@ namespace Naval.RL
     ///   NavalTrainer.x86_64 -rlDemo enemy       you command, the policy is the enemy
     ///   NavalTrainer.x86_64 -rlDemo player      the policy flies your fleet against the rule AI
     ///   -rlDemoShips 6   fleet size       -rlDemoSeconds 60   quit after this long (for checks)
+    ///   -rlStage 4       a training stage instead (RLStages): "player" / "both" watch the trained fleet
+    ///                    against the stage's opponent, "enemy" fights the trained fleet
     /// </summary>
     public class RLDemo : MonoBehaviour
     {
@@ -17,6 +19,7 @@ namespace Naval.RL
         int _ships = 6;
         float _quitAfter;
         int _frames;
+        bool _reported;
 
         public static bool Requested => RLCommandLine.Has("-rlDemo");
 
@@ -39,6 +42,12 @@ namespace Naval.RL
                 Debug.LogWarning("[RL] demo: " + (driver != null ? driver.Status : "no policy driver") + " - the rule AI will fly both fleets");
             }
             bool learned = driver != null && driver.Available;
+            int stage = RLCommandLine.Int("-rlStage", -1);
+            if (stage >= 0 && stage < RLStages.All.Count)
+            {
+                RLStages.Launch(RLStages.All[stage], _who == "enemy" ? RLStages.Who.FightAI : RLStages.Who.WatchAI);
+                return;
+            }
             var setup = FleetSetup.Default();
             setup.playerShipCount = setup.enemyShipCount = _ships;
             setup.playerController = learned && (_who == "both" || _who == "player") ? ShipController.Learned : ShipController.Human;
@@ -54,6 +63,20 @@ namespace Naval.RL
             _frames++;
             var gm = GameManager.I;
             if (_frames == 2 && gm.Phase == GamePhase.Deployment) gm.StartBattle();
+            if (gm.Phase == GamePhase.Victory || gm.Phase == GamePhase.Defeat)
+            {
+                // the battle ended before the clock: report how, and stop (for checks)
+                if (!_reported)
+                {
+                    _reported = true;
+                    Debug.Log("[RL] demo result: " + (gm.Phase == GamePhase.Victory ? "won" : "lost") + " - " + gm.EndReason +
+                              " after " + Mathf.RoundToInt(gm.BattleTime) + " s, enemy ships sunk " + gm.PlayerKills +
+                              ", own ships lost " + gm.EnemyKills + ", score " + Mathf.RoundToInt(gm.PlayerScore) + " - " +
+                              Mathf.RoundToInt(gm.EnemyScore));
+                    if (_quitAfter > 0f) Application.Quit();
+                }
+                return;
+            }
             if (_quitAfter > 0f && gm.Phase == GamePhase.Battle && gm.BattleTime >= _quitAfter)
             {
                 var d = RLPolicyDriver.I;

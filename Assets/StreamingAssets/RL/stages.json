@@ -1,0 +1,139 @@
+{
+ "version": 1,
+ "stages": [
+  {
+   "index": 0,
+   "name": "0 Gunnery",
+   "battle": "1 battleship vs a passive cruiser, 7 km, open sea",
+   "description": "Destroy a ship: pick the target, keep the guns firing, close in, use torpedoes.",
+   "opponent": "passive",
+   "difficulty": 0,
+   "opponent_text": "a passive target",
+   "pass_text": "passed: every enemy ship sunk within 150 s in 70% of the last 50",
+   "commander": false,
+   "time_limit": 0.0,
+   "scenario_json": "{\"scenarioName\": \"RL Stage 0 - Gunnery\", \"seed\": 1001, \"preset\": 1, \"weather\": 0, \"density\": 0, \"timeLimit\": 240.0, \"scoreToWin\": 1000.0, \"aiDifficulty\": 0, \"fogOfWar\": true, \"useCustomIslands\": false, \"ships\": [{\"cls\": 2, \"team\": 0, \"x\": 0.0, \"y\": -350.0, \"heading\": 0.0}, {\"cls\": 1, \"team\": 1, \"x\": 0.0, \"y\": 350.0, \"heading\": 90.0}], \"zones\": [{\"name\": \"A\", \"x\": 0.0, \"y\": 0.0, \"radius\": 150.0, \"owner\": 2}], \"islands\": [], \"_notes\": \"Open sea, 7 km apart: the cruiser is spotted from the first second and inside gun range. It is a passive target - Python flies it with stop + hold fire, so it neither moves nor shoots. Passed when it is sunk: learns to pick the target, keep the guns firing and use torpedoes.\"}"
+  },
+  {
+   "index": 1,
+   "name": "1 Capture",
+   "battle": "1 cruiser, one neutral circle, the enemy far away",
+   "description": "Sail into the capture circle and stay inside until it is captured.",
+   "opponent": "passive",
+   "difficulty": 0,
+   "opponent_text": "a passive target",
+   "pass_text": "passed: a circle captured in 70% of the last 50",
+   "commander": false,
+   "time_limit": 0.0,
+   "scenario_json": "{\"scenarioName\": \"RL Stage 1 - Capture\", \"seed\": 1011, \"preset\": 1, \"weather\": 0, \"density\": 0, \"timeLimit\": 240.0, \"scoreToWin\": 1000.0, \"aiDifficulty\": 0, \"fogOfWar\": true, \"useCustomIslands\": false, \"ships\": [{\"cls\": 1, \"team\": 0, \"x\": 0.0, \"y\": -450.0, \"heading\": 0.0}, {\"cls\": 0, \"team\": 1, \"x\": 0.0, \"y\": 1600.0, \"heading\": 0.0}], \"zones\": [{\"name\": \"A\", \"x\": 0.0, \"y\": 0.0, \"radius\": 150.0, \"owner\": 2}], \"islands\": [], \"_notes\": \"One cruiser, one neutral circle 4.5 km ahead. The enemy destroyer is passive and 16 km beyond the circle, out of sight. Points come only from holding the circle: learns to reach it and stay inside.\"}"
+  },
+  {
+   "index": 2,
+   "name": "2 Defend",
+   "battle": "1 cruiser vs 1 cruiser over a neutral circle",
+   "description": "Take the circle and hold it while staying afloat: angle, dodge, smoke, repair, fight back.",
+   "opponent": "rule",
+   "difficulty": 0,
+   "opponent_text": "rule AI (Recruit)",
+   "pass_text": "passed: won in 70% of the last 100",
+   "commander": false,
+   "time_limit": 0.0,
+   "scenario_json": "{\"scenarioName\": \"RL Stage 2 - Defend\", \"seed\": 1021, \"preset\": 1, \"weather\": 0, \"density\": 0, \"timeLimit\": 240.0, \"scoreToWin\": 1000.0, \"aiDifficulty\": 0, \"fogOfWar\": true, \"useCustomIslands\": false, \"ships\": [{\"cls\": 1, \"team\": 0, \"x\": 0.0, \"y\": -300.0, \"heading\": 0.0}, {\"cls\": 1, \"team\": 1, \"x\": 0.0, \"y\": 800.0, \"heading\": 180.0}], \"zones\": [{\"name\": \"A\", \"x\": 0.0, \"y\": 0.0, \"radius\": 150.0, \"owner\": 2}], \"islands\": [], \"_notes\": \"A neutral circle 3 km ahead of our cruiser; a rule-AI cruiser comes for it from 8 km beyond. Passed on a win: take the circle and hold it while staying afloat - angle, dodge torpedoes, use smoke and repair, fight back. Random play wins 12 %, sailing straight to the circle 0 %.\"}"
+  },
+  {
+   "index": 3,
+   "name": "3 Duel",
+   "battle": "1v1 battleships, 13 km, open sea",
+   "description": "Win a battleship duel: choose and time fire, angle the hull, do not throw the ship away.",
+   "opponent": "rule",
+   "difficulty": 0,
+   "opponent_text": "rule AI (Recruit)",
+   "pass_text": "passed: won in 70% of the last 100",
+   "commander": false,
+   "time_limit": 0.0,
+   "scenario_json": "{\"scenarioName\": \"RL Stage 0 - Battleship duel\", \"seed\": 1101, \"preset\": 1, \"weather\": 0, \"density\": 0, \"timeLimit\": 180.0, \"scoreToWin\": 1000.0, \"aiDifficulty\": 0, \"fogOfWar\": true, \"useCustomIslands\": false, \"ships\": [{\"cls\": 2, \"team\": 0, \"x\": 0.0, \"y\": -650.0, \"heading\": 0.0}, {\"cls\": 2, \"team\": 1, \"x\": -0.0, \"y\": 650.0, \"heading\": 180.0}], \"zones\": [{\"name\": \"A\", \"x\": 0.0, \"y\": 0.0, \"radius\": 150.0, \"owner\": 2}], \"islands\": [], \"_notes\": \"Open sea, 13 km apart: both battleships are spotted from the first second and inside gun range. Learns target choice, fire timing and angling.\"}"
+  },
+  {
+   "index": 4,
+   "name": "4 King of the Hill",
+   "battle": "3v3 mixed fleets, one circle, open sea",
+   "description": "The first fleet battle: the commander orders ships to hold the circle or engage.",
+   "opponent": "rule",
+   "difficulty": 1,
+   "opponent_text": "rule AI (Veteran)",
+   "pass_text": "passed: won in 70% of the last 100",
+   "commander": true,
+   "time_limit": 0.0,
+   "scenario_json": "{\"scenarioName\": \"RL Stage 1 - King of the hill 3v3\", \"seed\": 1202, \"preset\": 1, \"weather\": 0, \"density\": 0, \"timeLimit\": 360.0, \"scoreToWin\": 1000.0, \"aiDifficulty\": 0, \"fogOfWar\": true, \"useCustomIslands\": false, \"ships\": [{\"cls\": 2, \"team\": 0, \"x\": 0.0, \"y\": -560.0, \"heading\": 0.0}, {\"cls\": 1, \"team\": 0, \"x\": -140.0, \"y\": -500.0, \"heading\": 0.0}, {\"cls\": 0, \"team\": 0, \"x\": 140.0, \"y\": -450.0, \"heading\": 0.0}, {\"cls\": 2, \"team\": 1, \"x\": -0.0, \"y\": 560.0, \"heading\": 180.0}, {\"cls\": 1, \"team\": 1, \"x\": 140.0, \"y\": 500.0, \"heading\": 180.0}, {\"cls\": 0, \"team\": 1, \"x\": -140.0, \"y\": 450.0, \"heading\": 180.0}], \"zones\": [{\"name\": \"A\", \"x\": 0.0, \"y\": 0.0, \"radius\": 190.0, \"owner\": 2}], \"islands\": [], \"_notes\": \"One central cap, no cover. The destroyer can reach the ring in about two minutes. Learns to capture while fighting.\"}"
+  },
+  {
+   "index": 5,
+   "name": "5 Archipelago",
+   "battle": "3v3 mixed fleets, three circles among islands",
+   "description": "Which ship holds which circle, and who hunts - with islands, spotting and smoke.",
+   "opponent": "rule",
+   "difficulty": 1,
+   "opponent_text": "rule AI (Veteran)",
+   "pass_text": "passed: won in 70% of the last 150",
+   "commander": true,
+   "time_limit": 0.0,
+   "scenario_json": "{\"scenarioName\": \"RL Stage 2 - Archipelago 3v3\", \"seed\": 4242, \"preset\": 0, \"weather\": 0, \"density\": 1, \"timeLimit\": 480.0, \"scoreToWin\": 1000.0, \"aiDifficulty\": 0, \"fogOfWar\": true, \"useCustomIslands\": false, \"ships\": [{\"cls\": 2, \"team\": 0, \"x\": 0.0, \"y\": -650.0, \"heading\": 0.0}, {\"cls\": 1, \"team\": 0, \"x\": -300.0, \"y\": -600.0, \"heading\": 0.0}, {\"cls\": 0, \"team\": 0, \"x\": 300.0, \"y\": -560.0, \"heading\": 0.0}, {\"cls\": 2, \"team\": 1, \"x\": -0.0, \"y\": 650.0, \"heading\": 180.0}, {\"cls\": 1, \"team\": 1, \"x\": 300.0, \"y\": 600.0, \"heading\": 180.0}, {\"cls\": 0, \"team\": 1, \"x\": -300.0, \"y\": 560.0, \"heading\": 180.0}], \"zones\": [{\"name\": \"A\", \"x\": -520.0, \"y\": 0.0, \"radius\": 130.0, \"owner\": 2}, {\"name\": \"B\", \"x\": 0.0, \"y\": 0.0, \"radius\": 130.0, \"owner\": 2}, {\"name\": \"C\", \"x\": 520.0, \"y\": 0.0, \"radius\": 130.0, \"owner\": 2}], \"islands\": [], \"_notes\": \"Islands break line of sight: spotting, smoke, radar and cover start to matter.\"}"
+  },
+  {
+   "index": 6,
+   "name": "6 Domination",
+   "battle": "6v6 on a new random map and weather",
+   "description": "The full Domination game against the Elite AI and a league of the fleet's own past selves.",
+   "opponent": "league",
+   "difficulty": 2,
+   "opponent_text": "league: rule AI (Elite), its own copies",
+   "pass_text": "passed: won in 70% of the last 200",
+   "commander": true,
+   "time_limit": 900.0,
+   "procedural": {
+    "mode": 0,
+    "preset": -1,
+    "density": -1,
+    "weather": -1,
+    "ships_min": 6,
+    "ships_max": 6,
+    "capture_radius_min": 0.0,
+    "capture_radius_max": 0.0,
+    "modes": [
+     0,
+     1,
+     2,
+     3
+    ]
+   }
+  },
+  {
+   "index": 7,
+   "name": "7 Open",
+   "battle": "4-8 ships a side, random mode, map, weather and circle size",
+   "description": "Anything the game can produce - judged on maps training never saw.",
+   "opponent": "league",
+   "difficulty": 2,
+   "opponent_text": "league: rule AI (Elite), its own copies",
+   "pass_text": "passed: won in 70% of the last 250",
+   "commander": true,
+   "time_limit": 1200.0,
+   "procedural": {
+    "mode": -1,
+    "preset": -1,
+    "density": -1,
+    "weather": -1,
+    "ships_min": 4,
+    "ships_max": 8,
+    "capture_radius_min": 130.0,
+    "capture_radius_max": 200.0,
+    "modes": [
+     0,
+     1,
+     2,
+     3
+    ]
+   }
+  }
+ ]
+}

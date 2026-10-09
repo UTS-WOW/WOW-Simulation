@@ -19,7 +19,8 @@ asks for a 70 % win rate before moving on.
 
 A stage is a dict:
 
-    name               shown in the logs
+    name               shown in the logs (and in the game's TRAINING STAGES screen, with
+    battle, description  a one-line summary of the battle and of what the stage teaches)
     scenario           a battle file from Training/scenarios (or a list: one is picked per battle)
       or
     procedural         a newly generated battle every time, any value "random" or a list to pick from:
@@ -86,29 +87,45 @@ DEFAULT_CURRICULUM = [
     # 52 % / 76 % (close in, fire at will); capture - circle captured 0 % / 100 % (sail to it); defend -
     # won 12 % / 0 % (sail to the circle). The passive target never scores, so a plain "won" would be
     # passed by random play (the tiebreak goes our way): these stages are judged on their own skill.
-    {"name": "0 Gunnery", "scenario": "scenarios/stage0_gunnery.json", "opponent": "passive",
+    {"name": "0 Gunnery", "battle": "1 battleship vs a passive cruiser, 7 km, open sea",
+     "description": "Destroy a ship: pick the target, keep the guns firing, close in, use torpedoes.",
+     "scenario": "scenarios/stage0_gunnery.json", "opponent": "passive",
      "pass_if": "sunk", "within": 150, "promote_win_rate": 0.70, "window": 50, "reward_weights": NO_CIRCLE},
-    {"name": "1 Capture", "scenario": "scenarios/stage1_capture.json", "opponent": "passive",
+    {"name": "1 Capture", "battle": "1 cruiser, one neutral circle, the enemy far away",
+     "description": "Sail into the capture circle and stay inside until it is captured.",
+     "scenario": "scenarios/stage1_capture.json", "opponent": "passive",
      "pass_if": "captured", "promote_win_rate": 0.70, "window": 50},
-    {"name": "2 Defend", "scenario": "scenarios/stage2_defend.json", "opponent": "rule", "difficulty": 0,
+    {"name": "2 Defend", "battle": "1 cruiser vs 1 cruiser over a neutral circle",
+     "description": "Take the circle and hold it while staying afloat: angle, dodge, smoke, repair, fight back.",
+     "scenario": "scenarios/stage2_defend.json", "opponent": "rule", "difficulty": 0,
      "pass_if": "won", "promote_win_rate": 0.70, "window": 100, "reward_weights": {"survive": 0.02}},
     # The duel is about gunnery and angling. Its circle lies between the two battleships, so the circle
     # reward pulls the ship bow-on into the enemy's guns: measured, sailing to the circle wins 33% of
     # duels, broadside and fire at will 70%, and MAPPO learned the duel only with the circle terms off.
-    {"name": "3 Duel", "scenario": "scenarios/stage0_bb_duel.json", "opponent": "rule", "difficulty": 0,
+    {"name": "3 Duel", "battle": "1v1 battleships, 13 km, open sea",
+     "description": "Win a battleship duel: choose and time fire, angle the hull, do not throw the ship away.",
+     "scenario": "scenarios/stage0_bb_duel.json", "opponent": "rule", "difficulty": 0,
      "promote_win_rate": 0.70, "window": 100, "rehearsal": 0.1, "reward_weights": NO_CIRCLE},
     # ---- fleets: the commander joins in, and the ships learn to share the reward
-    {"name": "4 King of the Hill", "scenario": "scenarios/stage1_koth_3v3.json", "opponent": "rule", "difficulty": 1,
+    {"name": "4 King of the Hill", "battle": "3v3 mixed fleets, one circle, open sea",
+     "description": "The first fleet battle: the commander orders ships to hold the circle or engage.",
+     "scenario": "scenarios/stage1_koth_3v3.json", "opponent": "rule", "difficulty": 1,
      "commander": True, "team_spirit": 0.3, "rehearsal": 0.15, "promote_win_rate": 0.70, "window": 100},
-    {"name": "5 Archipelago", "scenario": "scenarios/stage2_archipelago_3v3.json", "opponent": "rule", "difficulty": 1,
+    {"name": "5 Archipelago", "battle": "3v3 mixed fleets, three circles among islands",
+     "description": "Which ship holds which circle, and who hunts - with islands, spotting and smoke.",
+     "scenario": "scenarios/stage2_archipelago_3v3.json", "opponent": "rule", "difficulty": 1,
      "commander": True, "team_spirit": 0.5, "rehearsal": 0.15, "promote_win_rate": 0.70, "window": 150},
     # ---- the full game against the Elite AI and a league of our own past selves
-    {"name": "6 Domination", "procedural": {"mode": 0, "preset": "random", "density": "random",
+    {"name": "6 Domination", "battle": "6v6 on a new random map and weather",
+     "description": "The full Domination game against the Elite AI and a league of the fleet's own past selves.",
+     "procedural": {"mode": 0, "preset": "random", "density": "random",
                                             "weather": "random", "ships": [6, 6], "time_limit": 900,
                                             "world_reuse": 8},
      "opponent": "league", "opponents": LEAGUE, "difficulty": 2, "commander": True, "team_spirit": 0.8,
      "rehearsal": 0.1, "promote_win_rate": 0.70, "window": 200},
-    {"name": "7 Open", "procedural": {"mode": "random", "preset": "random", "density": "random",
+    {"name": "7 Open", "battle": "4-8 ships a side, random mode, map, weather and circle size",
+     "description": "Anything the game can produce - judged on maps training never saw.",
+     "procedural": {"mode": "random", "preset": "random", "density": "random",
                                       "weather": "random", "ships": [4, 8], "time_limit": 1200,
                                       "capture_radius": [130, 200], "world_reuse": 4},
      "opponent": "league", "opponents": LEAGUE, "difficulty": 2, "commander": True, "team_spirit": 1.0,

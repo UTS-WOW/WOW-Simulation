@@ -714,7 +714,11 @@ class MAPPO:
                     "head_names": self.head_names, "num_timesteps": self.num_timesteps, "n_updates": self.n_updates,
                     "stage": getattr(self.env, "stage", 0), "league": self.league.state_dict(),
                     "teacher": self.teacher.state_dict() if self.teacher is not None else None,
-                    "n_updates_since_teacher": self.n_updates_since_teacher}, path)
+                    "n_updates_since_teacher": self.n_updates_since_teacher,
+                    # for exporting to the game (export.py): what one decision is, what the commander may not see
+                    "decision_period": getattr(self.env, "decision_period", 1.0),
+                    "enemy_privileged": list(getattr(getattr(self.env, "spec", None), "enemy_privileged", (1, 45))),
+                    "match_hidden": [float(1.0 - k) for k in getattr(self.env, "_fleet_match_keep", [])] or None}, path)
         return path
 
     @classmethod

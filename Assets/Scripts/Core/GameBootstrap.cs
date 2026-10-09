@@ -105,7 +105,14 @@ namespace Naval
             if (training) RL.RLEnvironment.Create(_root, port);   // the trainer drives resets
             else if (RL.RLDemo.Requested) RL.RLDemo.Create(_root);   // -rlDemo: straight into a policy battle
             else if (skipMenu) gm.BeginMatch(startMode, seed, false);   // world above was built with this seed
-            else gm.EnterMenu(true);
+            else
+            {
+                gm.EnterMenu(true);
+                // -rlStages: open on the TRAINING STAGES screen (the curriculum, to watch and play)
+                if (RL.RLCommandLine.Has("-rlStages") && UIManager.I != null) UIManager.I.ShowStages(true);
+            }
+            // -rlScreenshot <file.png>: save what is on screen after a few seconds, then quit
+            if (!training && RL.RLCommandLine.Has("-rlScreenshot")) RL.RLScreenshot.Create(_root);
         }
 
         void OnDestroy()
