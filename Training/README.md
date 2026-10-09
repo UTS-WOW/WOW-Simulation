@@ -6,6 +6,13 @@ A recurrent MAPPO trainer for the fleets in this Unity project. The Unity side l
 This page covers **how to run it**. For **how it works** — observations, actions, rewards, networks,
 the algorithm, curriculum and export, with diagrams — see [../RL_README.md](../RL_README.md).
 
+> **New to the project? Start with the simple version.** [`simple_mappo/`](simple_mappo/README.md)
+> is a small MAPPO (two MLPs, one readable reward function, the five-stage curriculum and shared
+> S3 team checkpoints, ~2,000 lines) with a course-style
+> notebook, [`WOW-MAPPO-Simple.ipynb`](WOW-MAPPO-Simple.ipynb), that also runs on Amazon SageMaker.
+> It uses the same Unity environment and the same observation; everything below is the full
+> research pipeline.
+
 ## Contents
 
 - [Requirements](#requirements)

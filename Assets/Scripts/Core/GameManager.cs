@@ -160,14 +160,22 @@ namespace Naval
         public int PlayerKills { get; private set; }
         public int EnemyKills { get; private set; }
         public string ResultSummary { get; private set; } = "";
-        /// <summary>Which side won the finished match. Only meaningful in Victory / Defeat.</summary>
+        /// <summary>Which side won the finished match. Only meaningful in Victory / Defeat; never a draw.</summary>
         public Team Winner { get; private set; } = Team.Neutral;
-        /// <summary>
-        /// The clock ran out with the sides exactly level. The match still resolves as a defeat for the
-        /// player, but a learning agent should see it as the draw it is.
-        /// </summary>
-        public bool IsDraw { get; private set; }
         public string EndReason { get; private set; } = "";
+
+        /// <summary>
+        /// A match never ends level. When the clock runs out with the sides tied it goes to overtime:
+        /// the clock is extended and the first side to pull ahead wins on the spot. After
+        /// <see cref="MaxOvertimePeriods"/> periods a still-level match goes to the tiebreak.
+        /// </summary>
+        public const int MaxOvertimePeriods = 3;
+        /// <summary>0 in regulation time, then the number of the overtime period being played.</summary>
+        public int OvertimePeriod { get; private set; }
+        public bool InOvertime => OvertimePeriod > 0;
+        float _overtimeLength;
+
+        bool IsObjectiveMode => Mode == GameMode.Domination || Mode == GameMode.CaptureAndControl;
 
         static readonly float[] SpeedSteps = { 0f, 1f, 2f, 4f, 8f };
 
@@ -261,7 +269,8 @@ namespace Naval
             PlayerKills = EnemyKills = 0;
             _repair[0] = _repair[1] = 100f;
             ResultSummary = "";
-            Winner = Team.Neutral; IsDraw = false; EndReason = "";
+            Winner = Team.Neutral; EndReason = "";
+            OvertimePeriod = 0;
             EnemyDifficulty = sc.aiDifficulty;
             ApplyTimeScale();
 
@@ -365,7 +374,8 @@ namespace Naval
             PlayerKills = EnemyKills = 0;
             _repair[0] = _repair[1] = 100f;
             ResultSummary = "";
-            Winner = Team.Neutral; IsDraw = false; EndReason = "";
+            Winner = Team.Neutral; EndReason = "";
+            OvertimePeriod = 0;
             ApplyTimeScale();
 
             ClearBattlefield();
@@ -871,38 +881,92 @@ namespace Naval
                 if (transportsAlive == 0) { End(false, "The convoy was destroyed."); return; }
             }
 
-            if (enemyAlive == 0) { End(true, "The enemy fleet has been sunk."); return; }
-            if (playerAlive == 0) { End(false, "Our fleet has been lost."); return; }
-
-            if (Mode == GameMode.Domination || Mode == GameMode.CaptureAndControl)
+            if (enemyAlive == 0 && playerAlive > 0) { End(true, "The enemy fleet has been sunk."); return; }
+            if (playerAlive == 0 && enemyAlive > 0) { End(false, "Our fleet has been lost."); return; }
+            if (playerAlive == 0)
             {
-                if (PlayerScore >= ScoreToWin) { End(true, "Objective points secured."); return; }
-                if (EnemyScore >= ScoreToWin) { End(false, "The enemy secured the objective points."); return; }
+                // both fleets went down on the same tick - there is nobody left to play overtime
+                int lead = Lead();
+                string how = "decided on points";
+                bool win = lead != 0 ? lead > 0 : PlayerWinsTiebreak(out how);
+                End(win, "Both fleets were sunk - " + how + ".");
+                return;
+            }
+
+            if (IsObjectiveMode && (PlayerScore >= ScoreToWin || EnemyScore >= ScoreToWin))
+            {
+                int lead = Lead();
+                if (lead > 0) { End(true, "Objective points secured."); return; }
+                if (lead < 0) { End(false, "The enemy secured the objective points."); return; }
+                // both crossed the line on the same tick and are level: play on, the next point decides
+            }
+
+            // overtime is sudden death
+            if (InOvertime)
+            {
+                int lead = Lead();
+                if (lead != 0) { End(lead > 0, lead > 0 ? "We pulled ahead in overtime." : "The enemy pulled ahead in overtime."); return; }
             }
 
             if (BattleTime >= TimeLimit)
             {
-                bool win;
-                if (Mode == GameMode.Domination || Mode == GameMode.CaptureAndControl)
-                {
-                    bool level = Mathf.Approximately(PlayerScore, EnemyScore);
-                    win = PlayerScore > EnemyScore || (level && FleetPoints > EnemyFleetPoints);
-                    IsDraw = level && FleetPoints == EnemyFleetPoints;
-                }
-                else
-                {
-                    win = FleetPoints > EnemyFleetPoints;
-                    IsDraw = FleetPoints == EnemyFleetPoints;
-                }
-                End(win, IsDraw ? "Time limit reached - dead level." : "Time limit reached.");
+                int lead = Lead();
+                if (lead != 0) { End(lead > 0, "Time limit reached."); return; }
+                if (OvertimePeriod < MaxOvertimePeriods) { BeginOvertime(); return; }
+
+                bool win = PlayerWinsTiebreak(out string how);
+                End(win, "Still level after " + MaxOvertimePeriods + " overtime periods - " + how + ".");
             }
+        }
+
+        /// <summary>
+        /// Who is ahead on what decides the match at the clock: +1 the player, -1 the enemy, 0 level.
+        /// Objective modes compare points as the scoreboard shows them, the others fleet strength.
+        /// </summary>
+        int Lead()
+        {
+            int p = IsObjectiveMode ? Mathf.RoundToInt(PlayerScore) : FleetPoints;
+            int e = IsObjectiveMode ? Mathf.RoundToInt(EnemyScore) : EnemyFleetPoints;
+            return p > e ? 1 : p < e ? -1 : 0;
+        }
+
+        void BeginOvertime()
+        {
+            // every period is as long as the first: a fifth of regulation time, one to three minutes
+            if (OvertimePeriod == 0) _overtimeLength = Mathf.Clamp(TimeLimit * 0.2f, 60f, 180f);
+            OvertimePeriod++;
+            TimeLimit += _overtimeLength;
+            GameEvents.RaiseMessage((OvertimePeriod > 1 ? "Overtime " + OvertimePeriod : "Overtime") + " - " +
+                                    (IsObjectiveMode ? "points" : "fleet strength") +
+                                    " level. The first side to pull ahead wins.", Team.Neutral);
+        }
+
+        /// <summary>
+        /// Settles a match that is still level when there is no more time to play: the healthier
+        /// fleet to the last hit point, and only if even that is identical, the toss of a coin.
+        /// </summary>
+        bool PlayerWinsTiebreak(out string how)
+        {
+            float p = ExactFleetStrength(Team.Player), e = ExactFleetStrength(Team.Enemy);
+            if (p != e) { how = "decided on fleet strength"; return p > e; }
+            how = "decided by the toss of a coin";
+            return Random.value < 0.5f;
+        }
+
+        static float ExactFleetStrength(Team team)
+        {
+            float sum = 0f;
+            var ships = ShipRegistry.OfTeam(team);
+            for (int i = 0; i < ships.Count; i++)
+                if (!ships[i].IsDead) sum += ships[i].Stats.fleetPointCost * ships[i].HealthFraction;
+            return sum;
         }
 
         void End(bool victory, string reason)
         {
             if (Phase == GamePhase.Victory || Phase == GamePhase.Defeat) return;
             Phase = victory ? GamePhase.Victory : GamePhase.Defeat;
-            Winner = IsDraw ? Team.Neutral : victory ? Team.Player : Team.Enemy;
+            Winner = victory ? Team.Player : Team.Enemy;
             EndReason = reason;
             ApplyTimeScale();
 
@@ -912,7 +976,8 @@ namespace Naval
                 "Enemy ships sunk: " + PlayerKills + " / " + EnemyStartCount + "\n" +
                 "Ships lost: " + EnemyKills + " / " + PlayerStartCount + "\n" +
                 "Fleet strength: " + FleetPoints + " vs " + EnemyFleetPoints + "\n" +
-                "Time: " + Mathf.FloorToInt(BattleTime / 60f) + "m " + Mathf.FloorToInt(BattleTime % 60f) + "s";
+                "Time: " + Mathf.FloorToInt(BattleTime / 60f) + "m " + Mathf.FloorToInt(BattleTime % 60f) + "s" +
+                (InOvertime ? "  (overtime " + OvertimePeriod + ")" : "");
 
             AudioManager.PlayUI(victory ? SoundId.Victory : SoundId.Defeat, 1f);
         }

@@ -3,3 +3,5 @@ __pycache__/
 .pytest_cache/
 tests/parity/bin/
 tests/parity/obj/
+runs_simple/
+BUNDLE_VERSION

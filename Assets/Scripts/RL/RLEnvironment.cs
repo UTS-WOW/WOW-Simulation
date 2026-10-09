@@ -521,7 +521,7 @@ namespace Naval.RL
         void SendObservation(bool terminal)
         {
             var gm = GameManager.I;
-            _rewards.EndStep(terminal, gm.Winner, gm.IsDraw);
+            _rewards.EndStep(terminal, gm.Winner);
             _metrics.Sample();
 
             // What the recorded rule-AI fleets did since the last decision, labelled against the
@@ -561,8 +561,9 @@ namespace Naval.RL
             var sb = _wire.Begin();
             Json.Field(sb, "type", "obs"); sb.Append(',');
             Json.Field(sb, "terminal", terminal); sb.Append(',');
-            Json.Field(sb, "winner", !terminal || gm.IsDraw ? -1 : (int)gm.Winner); sb.Append(',');
-            Json.Field(sb, "draw", terminal && gm.IsDraw); sb.Append(',');
+            Json.Field(sb, "winner", terminal ? (int)gm.Winner : -1); sb.Append(',');
+            // still in the protocol for the trainer, but a level match goes to overtime rather than ending
+            Json.Field(sb, "draw", false); sb.Append(',');
             Json.Field(sb, "reason", terminal ? gm.EndReason : ""); sb.Append(',');
             Json.Field(sb, "battle_time", gm.BattleTime); sb.Append(',');
             Json.Field(sb, "episode", _episode); sb.Append(',');

@@ -366,10 +366,16 @@ starting formation. **Battle** begins on command and runs the clock.
 ### End conditions, in evaluation order
 
 1. **Escort only** — a transport reaching the anchorage wins; losing every transport loses.
-2. Either fleet reduced to **zero hulls**.
-3. **Objective modes** — either side reaching **1000 points**.
-4. **Time limit** — objective modes compare score (fleet strength breaks an exact tie); other modes
+2. Either fleet reduced to **zero hulls**. If both go down on the same tick, the side ahead on points
+   wins, then the tiebreak below.
+3. **Objective modes** — either side reaching **1000 points**. If both cross on the same tick, the
+   higher score wins; if they are level, play goes on and the next point decides.
+4. **Time limit** — objective modes compare points as the scoreboard shows them (rounded); other modes
    compare fleet strength.
+5. **Overtime** — a match never ends in a draw. If the two sides are level at the time limit, the clock
+   is extended by an overtime period (a fifth of the time limit, 60–180 s), and the first side to pull
+   ahead wins on the spot. After 3 overtime periods a still-level match goes to exact fleet strength
+   (no rounding), and only if even that is identical, to the toss of a coin.
 
 Fleet strength is `sum of fleetPointCost × 10 × healthFraction` over living hulls, so it accounts for
 damage as well as losses.

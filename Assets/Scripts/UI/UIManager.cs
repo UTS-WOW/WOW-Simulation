@@ -1223,8 +1223,9 @@ namespace Naval
             _objectiveText.text = gm.ObjectiveText;
 
             float t = gm.TimeRemaining;
-            _timerText.text = string.Format("{0:00}:{1:00}", Mathf.FloorToInt(t / 60f), Mathf.FloorToInt(t % 60f));
-            _timerText.color = t <= 60f ? new Color(1f, 0.45f, 0.4f) : TextMain;
+            _timerText.text = (gm.InOvertime ? "OT " : "") +
+                              string.Format("{0:00}:{1:00}", Mathf.FloorToInt(t / 60f), Mathf.FloorToInt(t % 60f));
+            _timerText.color = t <= 60f || gm.InOvertime ? new Color(1f, 0.45f, 0.4f) : TextMain;
 
             _alliedScore.text = Mathf.RoundToInt(gm.PlayerScore).ToString();
             _enemyScore.text = Mathf.RoundToInt(gm.EnemyScore).ToString();
