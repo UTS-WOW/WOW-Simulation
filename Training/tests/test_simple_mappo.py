@@ -89,7 +89,7 @@ def test_training_pass_reproduces_the_rollout(env):
     obs = env.reset()
     E, N = obs["alive"].shape
     mem = policy.new_memory(E, N)
-    rec = {k: [] for k in CAPTAIN_KEYS + ["action_mask", "starts"]}
+    rec = {k: [] for k in CAPTAIN_KEYS + ["action_mask", "starts", "exists"]}
     hs, orders, actions, logps = [], [], [], []
     for _ in range(12):
         out = policy.act(to_tensors(obs, "cpu"), mem)
@@ -98,13 +98,14 @@ def test_training_pass_reproduces_the_rollout(env):
         hs.append(out["h"]), orders.append(out["orders"]), actions.append(out["actions"]), logps.append(out["logp"])
         obs, _, _, _ = env.step(out["actions"].numpy(), out["orders"].numpy())
     T = len(hs)
-    seq = {k: torch.stack(v).reshape(T, E * N, *v[0].shape[2:]) for k, v in rec.items() if k != "starts"}
+    seq = {k: torch.stack(v).reshape(T, E * N, *v[0].shape[2:]) for k, v in rec.items() if k not in ("starts", "exists")}
+    real = torch.stack(rec["exists"]).reshape(T, E * N) > 0.5         # rows that hold a ship (others are not acted on)
     starts = torch.stack(rec["starts"]).repeat_interleave(N, dim=1)
     with torch.no_grad():
         logits = policy.captain.sequence({k: seq[k] for k in CAPTAIN_KEYS}, torch.stack(orders).reshape(T, E * N),
                                          hs[0].reshape(E * N, -1), starts)
         logp, _ = log_prob_entropy(logits, seq["action_mask"], policy.head_sizes, torch.stack(actions).reshape(T, E * N, -1))
-    assert torch.allclose(logp, torch.stack(logps).reshape(T, E * N), atol=1e-4)
+    assert torch.allclose(logp[real], torch.stack(logps).reshape(T, E * N)[real], atol=1e-4)
 
 
 def test_commander_orders_only_real_circles_and_live_ships(env):
@@ -227,5 +228,33 @@ def test_mappo_learns_the_mock_task():
         model.learn(total_timesteps=64 * 4 * 40)
         after = accuracy()
         assert after > max(0.5, before + 0.3), (before, after)
+    finally:
+        env.close()
+
+
+def test_mirror_battles_train_both_fleets():
+    """A mirror battle: our fleet flies both sides, and both sides' experience is training data."""
+    stages = [{"name": "mirror", "scenario": "scenarios/stage1_koth_3v3.json", "opponent": "league",
+               "opponents": {"mirror": 1.0}},
+              {"name": "rule", "scenario": "scenarios/stage1_koth_3v3.json", "opponent": "rule"}]
+    env = NavalEnv(stages=stages, n_envs=2, mock=True, seed=4)
+    try:
+        assert env.two_sided and env.n_rows == 4
+        model = MAPPO(env, n_steps=32, chunk_len=8, n_epochs=1, d_model=32, attn_layers=1, hidden_size=32,
+                      commander=True, verbose=0)
+        obs = env.reset()
+        assert obs["exists"][2:].sum() > 0                       # the enemy fleets are learning rows
+        assert model.predict(obs).shape[0] == 4
+        model.learn(total_timesteps=32 * 2 * 2)
+        b = model.buffer
+        assert b["rewards"][:, 2:].any()                         # the enemy rows earned their own rewards
+        assert np.array_equal(b["dones"][:, :2], b["dones"][:, 2:])
+        done = b["dones"][:, :2] > 0.5
+        assert np.all(b["won"][:, :2][done] + b["won"][:, 2:][done] == 1.0)   # one side wins, the other loses
+        assert model.num_timesteps == 32 * 2 * 2                 # timesteps count battles, not rows
+
+        env.set_stage(1)                                         # a rule-AI battle: the enemy rows sit idle
+        obs = env.reset()
+        assert obs["exists"][2:].sum() == 0 and obs["commander_on"][2:].sum() == 0
     finally:
         env.close()

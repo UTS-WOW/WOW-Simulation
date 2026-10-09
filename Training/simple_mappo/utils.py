@@ -246,7 +246,7 @@ def _evaluate(model, env, n_battles: int, deterministic: bool) -> dict:
     while done_per_env.min() < quota:
         actions = env.sample_random_actions(obs) if model is None else model.predict(obs, deterministic)
         obs, _, dones, infos = env.step(actions)
-        for e in np.flatnonzero(dones):
+        for e in np.flatnonzero(dones[:E]):                # battles (our fleet's rows)
             if done_per_env[e] < quota:
                 results.append(infos[e])
             done_per_env[e] += 1
@@ -399,13 +399,22 @@ def save_video(frames: list, path: str, fps: int = 10) -> str:
     return path
 
 
-def record_battle(model, env, path: str, every: int = 2, deterministic: bool = False, dpi: int = 80) -> str:
+def record_battle(model, env, path: str, every: int = 2, deterministic: bool = False, dpi: int = 80,
+                  stage: int | None = None) -> str:
     """Plays one battle against the rule AI (in the env's first battle slot) and writes a top-down
     replay to path (.mp4, or .gif where ffmpeg is missing). Returns the file written.
 
     model=None plays random legal actions. every: draw a frame every N decisions (seconds).
+    stage: the curriculum stage to play (default: the current one).
     The environment's battles are restarted for it; call model.reset_battles() before training on.
     """
+    if stage is not None and stage != env.stage:
+        previous = env.stage
+        env.set_stage(stage)
+        try:
+            return record_battle(model, env, path, every, deterministic, dpi)
+        finally:
+            env.set_stage(previous)
     from matplotlib.backends.backend_agg import FigureCanvasAgg
     from matplotlib.figure import Figure
     from PIL import Image
@@ -501,18 +510,29 @@ class VideoCallback(BaseCallback):
 
     def _on_training_start(self) -> None:
         self._last = self.num_timesteps
+        self._stage = self.model.env.stage           # the stage this session trains
+        self._session = 0
 
     def _on_rollout_end(self) -> bool:
         if self.num_timesteps - self._last >= self.every:
             self._last = self.num_timesteps
-            env = self.model.env
-            name = f"battle_{self.num_timesteps:09d}_stage{env.stage}{video_ext()}"
-            path = record_battle(self.model, env, os.path.join(self.video_dir, name))
-            self.videos.append(path)
-            if self.show:
-                _display_html(_video_html(Path(path)))
-            self.model.reset_battles()                 # the recording used the training battles
+            self._record(self.model.env.stage)
         return True
+
+    def _on_training_end(self) -> None:
+        # a session too short for `every` (a stage passed quickly) still leaves one replay of its stage
+        if self._session == 0:
+            self._record(self._stage)
+
+    def _record(self, stage: int) -> None:
+        env = self.model.env
+        name = f"battle_{self.num_timesteps:09d}_stage{stage}{video_ext()}"
+        path = record_battle(self.model, env, os.path.join(self.video_dir, name), stage=stage)
+        self.videos.append(path)
+        self._session += 1
+        if self.show:
+            _display_html(_video_html(Path(path)))
+        self.model.reset_battles()                     # the recording used the training battles
 
 
 def _video_html(f: Path, height: int = 400) -> str:

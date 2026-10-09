@@ -51,7 +51,7 @@ pieces those systems relied on:
 | **Dual-clip PPO**, value normalisation + clipping | a very stale sample cannot blow up an update | Honor of Kings, MAPPO | W10-B PPO |
 | **Team spirit, zero-sum reward** | ship rewards blend into the fleet's average as training goes on; the enemy's combat reward is subtracted | OpenAI Five | W10-B reward normalisation |
 | **Imitation warm start + KL anchor** | the captains first copy the Elite rule AI; a fading KL penalty keeps them close at first | AlphaStar | **W9-A**: the same supervised loop |
-| **League self-play** | the enemy is the rule AI, the latest frozen copy, or a past copy chosen by PFSP; Elo ratings | OpenAI Five, AlphaStar | W9-C/D target network (a frozen copy) |
+| **Self-play (both sides learn) + league** | from stage 3, mirror battles: the fleet flies both sides and both sides' experience trains it (twice the data, an opponent always as good as the fleet); stages 6-7 add past copies chosen by PFSP, with Elo ratings; the rule AI stays as the anchor | OpenAI Five, AlphaStar | W9-C/D target network (a frozen copy) |
 | **Curriculum** | 8 stages, each passed at ≥ 70 % of its own goal; earlier stages replayed 10–15 % of the time | TiZero, OpenAI Five | — |
 | **Best-model checkpoint** | `model_best.pt` keeps the best rolling pass rate | — | W9/10 `SaveOnIntervalCallback` |
 
@@ -173,10 +173,10 @@ sailing back and forth.
 | 0 – Gunnery | `gunnery`, 7 km, open sea | 1 BB vs 1 CA | passive target (stop, hold fire) | target sunk within 150 s | 50 |
 | 1 – Capture | `capture`, one neutral circle | 1 CA | passive DD, far away | circle captured | 50 |
 | 2 – Defend | `defend`, neutral circle, enemy coming | 1 CA vs 1 CA | Recruit | won | 100 |
-| 3 – Duel | `bb_duel`, open sea | 1v1 BB | Recruit | won | 100 |
-| 4 – King of the Hill | `koth_3v3`, one circle | 3v3 mixed, **commander**, τ 0.3 | Veteran | won | 100 |
-| 5 – Archipelago | `archipelago_3v3`, 3 circles, islands | 3v3 mixed, commander, τ 0.5 | Veteran | won | 150 |
-| 6 – Domination | procedural 6v6, random map and weather | 6v6, commander, τ 0.8 | **league**: Elite 40 % / latest self 40 % / past selves 20 % | won vs Elite | 200 |
+| 3 – Duel | `bb_duel`, open sea | 1v1 BB | Recruit 70 % / **itself 30 %** | won vs Recruit | 100 |
+| 4 – King of the Hill | `koth_3v3`, one circle | 3v3 mixed, **commander**, τ 0.3 | Veteran 70 % / itself 30 % | won vs Veteran | 100 |
+| 5 – Archipelago | `archipelago_3v3`, 3 circles, islands | 3v3 mixed, commander, τ 0.5 | Veteran 70 % / itself 30 % | won vs Veteran | 150 |
+| 6 – Domination | procedural 6v6, random map and weather | 6v6, commander, τ 0.8 | **league**: Elite 40 % / itself 40 % / past selves 20 % | won vs Elite | 200 |
 | 7 – Open | procedural 4–8 a side, random mode | commander, τ 1.0 | league | final: won vs Elite on 250 **held-out** maps | 250 |
 
 - **Why the first stages are not judged on "won"**: a passive target never scores, so the game's
@@ -187,6 +187,11 @@ sailing back and forth.
   opponent (rule AI or passive target). Self-play and rehearsal battles never count, and the window
   starts empty on every new stage.
 - **Rehearsal**: from stage 3 on, 10–15 % of battles replay an earlier stage so its skills stay.
+- **Self-play, both ways** ("itself"): in a mirror battle the current network flies **both** fleets
+  and both fleets' decisions are training data (the environment then has two rows per battle - our
+  fleet, then the enemy fleet - and the enemy's reward is computed from its own side). It doubles the
+  data from those battles and gives an opponent that is always as good as the fleet. Promotion counts
+  only the battles against the rule AI, so the 70 % gates mean the same as before.
 - **Held-out evaluation** (stage 7): every 100,000 timesteps, 50 battles against the Elite AI on
   generated maps whose seeds training never uses. Training stops once the last 250 reach 70 %.
 - **Any number of stages**: a stage is a dict (see the docstring in `curriculum.py`).

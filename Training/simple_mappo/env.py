@@ -281,6 +281,9 @@ class NavalEnv:
         self._fleet_match_keep = np.array([0.0 if n in PRIVILEGED_MATCH else 1.0 for n in names], np.float32)
 
         E, N = self.n_envs, self.n_agents
+        # mirror battles (both fleets learn): the observation then has a row for each fleet of each battle
+        self.two_sided = any("mirror" in (st.get("opponents") or {}) for st in self.stages)
+        self.n_rows = 2 * E if self.two_sided else E
         self.stage = min(max(0, start_stage), len(self.stages) - 1)
         self._battle_stage = np.zeros(E, dtype=np.int64)   # the stage each running battle was started on
         self._weights = [self.reward_weights] * E          # that battle's reward weights (a stage may override some)
@@ -300,13 +303,14 @@ class NavalEnv:
         self._raw = [None] * E                 # the last message from each battle
         self._final = [None] * E               # the last message of each battle's previous fight
         self._facts = [None] * E               # where the learning fleet's ships are relative to the circles
+        self._facts1 = [None] * E              # ... and the enemy fleet's (for mirror battles)
         self._ships = np.zeros((E, 2), dtype=np.int64)
         self._ep_return = np.zeros((E, N), dtype=np.float64)
         self._ep_terms = [dict() for _ in range(E)]
         self._ep_len = np.zeros(E, dtype=np.int64)
         self._ep_captures = np.zeros(E, dtype=np.float64)  # circles our fleet captured in the battle
         self._t_start = time.time()
-        self.last_reward_groups = np.zeros((E, N, len(REWARD_GROUPS)), dtype=np.float32)
+        self.last_reward_groups = np.zeros((self.n_rows, N, len(REWARD_GROUPS)), dtype=np.float32)
         self.last_expert = None
         self.reset()
 
@@ -317,7 +321,7 @@ class NavalEnv:
             w.reset_async(self._reset_message(e))
         for e, w in enumerate(self.workers):
             self._begin(e, w.recv())
-        return self._observe()
+        return self._observe_rows()
 
     def set_stage(self, stage: int) -> None:
         """Battles started from now on use this stage; battles already running finish on theirs."""
@@ -334,10 +338,19 @@ class NavalEnv:
         self.evaluating, self.held_out = on, on and held_out
 
     def step(self, actions: np.ndarray, orders: np.ndarray | None = None):
-        """actions [E, N, heads] (orders [E, N]: the commander's) -> (obs, rewards [E, N], dones [E], infos)."""
+        """actions [rows, N, heads] (orders [rows, N]: the commander's) -> (obs, rewards [rows, N], dones [rows], infos).
+
+        rows = n_envs, or 2 x n_envs when the curriculum has mirror battles (two_sided): row e is our
+        fleet in battle e, row n_envs + e the enemy fleet of battle e - which learns too in a mirror
+        battle. Actions for n_envs rows only are fine as well (evaluations, replays)."""
         E, N, H = self.n_envs, self.n_agents, len(self.head_sizes)
-        actions = np.asarray(actions, dtype=np.int32).reshape(E, N, H)
-        orders = np.zeros((E, N), dtype=np.int64) if orders is None else np.asarray(orders).reshape(E, N)
+        R = self.n_rows
+        actions = np.asarray(actions, dtype=np.int32).reshape(-1, N, H)
+        if actions.shape[0] < R:
+            actions = np.concatenate([actions, np.zeros((R - actions.shape[0], N, H), np.int32)])
+        orders = np.zeros((R, N), dtype=np.int64) if orders is None else np.asarray(orders).reshape(-1, N)
+        if orders.shape[0] < R:
+            orders = np.concatenate([orders, np.zeros((R - orders.shape[0], N), np.int64)])
         enemy = np.zeros((E, N, H), dtype=np.int32)        # ignored where the rule AI flies the enemy
         passive = [e for e in range(E) if self._opponent[e] == "passive"]
         if passive:
@@ -346,13 +359,16 @@ class NavalEnv:
         if ours:
             enemy[ours] = self.opponent_policy(self._observe(team=1, envs=ours), ours,
                                                [int(self._opponent_id[e]) for e in ours])
+        for e in range(E):
+            if self._opponent[e] == "mirror":
+                enemy[e] = actions[E + e]                  # the learning fleet flies the enemy too
         for e, w in enumerate(self.workers):
             w.step_async(np.stack([actions[e], enemy[e]]))
 
-        rewards = np.zeros((E, N), dtype=np.float32)
-        groups = np.zeros((E, N, len(REWARD_GROUPS)), dtype=np.float32)
-        dones = np.zeros(E, dtype=bool)
-        infos = [{} for _ in range(E)]
+        rewards = np.zeros((R, N), dtype=np.float32)
+        groups = np.zeros((R, N, len(REWARD_GROUPS)), dtype=np.float32)
+        dones = np.zeros(R, dtype=bool)
+        infos = [{} for _ in range(R)]                     # results are reported on our fleet's row
         expert = np.zeros((E, N, H), dtype=np.int64)
         expert_valid = np.zeros((E, N), dtype=np.float32)
         self._starts[:] = 0.0
@@ -361,14 +377,7 @@ class NavalEnv:
             if self.record_expert:
                 # what the rule AI did with each of our ships during this step
                 expert[e], expert_valid[e] = o.arrays["expert_actions"][0], o.arrays["expert_valid"][0]
-            facts = self._ship_facts(o)
-            arr = o.arrays
-            team = dict(zip(self.team_components, arr["team_reward"][0].tolist()))
-            ship = {k: arr["agent_reward"][0, :, i] for i, k in enumerate(self.ship_components)}
-            their = {k: arr["agent_reward"][1, :, i] for i, k in enumerate(self.ship_components)}
-            r, g, terms = compute_rewards(self._facts[e], facts, team, ship, their,
-                                          int(self._ships[e, 0]), int(self._ships[e, 1]), self._weights[e],
-                                          self.decision_period, orders[e], float(self._spirit[e]))
+            r, g, terms, team, facts = self._rewards(e, o, 0, orders[e])
             exists = self._exists(e)
             rewards[e] = r * exists
             groups[e] = g
@@ -379,9 +388,17 @@ class NavalEnv:
             for k, v in terms.items():
                 self._ep_terms[e][k] = self._ep_terms[e].get(k, 0.0) + float((v * exists).sum())
             self._facts[e] = facts
+            if self._opponent[e] == "mirror":
+                # the enemy fleet's reward, from its own side (its own circles, its kills, its losses)
+                r1, g1, _, _, facts1 = self._rewards(e, o, 1, orders[E + e])
+                exists1 = self._exists(e, 1)
+                rewards[E + e], groups[E + e] = r1 * exists1, g1
+                self._facts1[e] = facts1
 
             if o.terminal:
                 dones[e] = True
+                if self.two_sided:
+                    dones[E + e] = True
                 infos[e] = self._result(e, o)
                 self._final[e] = o
                 w.reset_async(self._reset_message(e))
@@ -391,7 +408,20 @@ class NavalEnv:
         self.last_reward_groups = groups
         if self.record_expert:
             self.last_expert = (expert, expert_valid)
-        return self._observe(), rewards, dones, infos
+        return self._observe_rows(), rewards, dones, infos
+
+    def _rewards(self, e: int, o, team: int, orders: np.ndarray):
+        """One fleet's reward for this step of battle e (team 0: ours, 1: the enemy's)."""
+        arr, other = o.arrays, 1 - team
+        facts = self._ship_facts(o, team)
+        team_terms = dict(zip(self.team_components, arr["team_reward"][team].tolist()))
+        ship = {k: arr["agent_reward"][team, :, i] for i, k in enumerate(self.ship_components)}
+        their = {k: arr["agent_reward"][other, :, i] for i, k in enumerate(self.ship_components)}
+        before = self._facts[e] if team == 0 else self._facts1[e]
+        r, g, terms = compute_rewards(before, facts, team_terms, ship, their,
+                                      int(self._ships[e, team]), int(self._ships[e, other]), self._weights[e],
+                                      self.decision_period, orders, float(self._spirit[e]))
+        return r, g, terms, team_terms, facts
 
     def sample_random_actions(self, obs: dict) -> np.ndarray:
         """A uniformly random legal option on every head - the baseline any policy has to beat."""
@@ -442,6 +472,8 @@ class NavalEnv:
         names = list(mix)
         p = np.array([float(mix[n]) for n in names])
         choice = names[int(self.rng.choice(len(names), p=p / p.sum()))]
+        if choice == "mirror" and self.two_sided:
+            return "mirror", -1                # our own fleet on both sides, both learning
         if choice == "rule" or self.opponent_policy is None:
             return "rule", -1
         if choice == "past":
@@ -494,6 +526,7 @@ class NavalEnv:
         self._raw[e] = o
         self._ships[e] = o.ships
         self._facts[e] = self._ship_facts(o)
+        self._facts1[e] = self._ship_facts(o, 1)
         self._ep_return[e] = 0.0
         self._ep_terms[e] = {}
         self._ep_len[e] = 0
@@ -504,11 +537,11 @@ class NavalEnv:
     def _exists(self, e: int, team: int = 0) -> np.ndarray:
         return (np.arange(self.n_agents) < self._ships[e, team]).astype(np.float32)
 
-    def _ship_facts(self, o) -> dict:
+    def _ship_facts(self, o, team: int = 0) -> dict:
         a = o.arrays
         if self.zone_features is None:
-            return no_facts(a["alive"][0], MAX_ZONES)
-        return ship_facts(a["zones"][0], a["zone_mask"][0], a["alive"][0], self.zone_features)
+            return no_facts(a["alive"][team], MAX_ZONES)
+        return ship_facts(a["zones"][team], a["zone_mask"][team], a["alive"][team], self.zone_features)
 
     def _passive_actions(self, envs: list[int]) -> np.ndarray:
         """A target that does nothing: stop and hold fire (every other head takes option 0)."""
@@ -582,6 +615,19 @@ class NavalEnv:
             out["t"].append(self._t[e])
             out["commander_on"].append(float(self._commander[e]))
         return {k: np.asarray(np.stack(v), dtype=np.float32) for k, v in out.items()}
+
+    def _observe_rows(self) -> dict:
+        """Our fleet's rows for every battle, then - two_sided - the enemy fleet's rows. An enemy row
+        only counts (exists, commander) in a mirror battle, where that fleet is learning too."""
+        ours = self._observe()
+        if not self.two_sided:
+            return ours
+        theirs = self._observe(team=1)
+        learns = np.array([float(k == "mirror") for k in self._opponent], np.float32)
+        for key in ("exists", "own_mask", "alive"):
+            theirs[key] = theirs[key] * learns[:, None]
+        theirs["commander_on"] = theirs["commander_on"] * learns
+        return {k: np.concatenate([ours[k], theirs[k]]) for k in ours}
 
     def _legal(self, mask: np.ndarray) -> np.ndarray:
         """Every head needs at least one legal option; sunk ships and empty slots get option 0."""

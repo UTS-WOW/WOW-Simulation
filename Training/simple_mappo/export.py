@@ -241,6 +241,14 @@ def export_parity_case(source, path: str, n_allies=2, n_contacts=3, n_zones=2, n
     return path
 
 
+def _mix_text(mix: dict, level: str) -> str:
+    """{"rule": 0.7, "mirror": 0.3} -> "rule AI (Veteran) 70% · itself (both sides learn) 30%"."""
+    names = {"rule": f"rule AI ({level})", "mirror": "itself (both sides learn)", "latest": "a frozen copy",
+             "past": "its past selves"}
+    total = sum(mix.values()) or 1.0
+    return " · ".join(f"{names.get(k, k)} {v / total:.0%}" for k, v in mix.items())
+
+
 def export_stages(path: str = GAME_STAGES, curriculum="default") -> str:
     """Writes the curriculum for the game's TRAINING STAGES screen (Assets/Scripts/RL/RLStages.cs):
     every stage's battle (its scenario file embedded, or the generator's settings), its opponent and
@@ -263,8 +271,8 @@ def export_stages(path: str = GAME_STAGES, curriculum="default") -> str:
         level = ["Recruit", "Veteran", "Elite"][min(max(difficulty, 0), 2)]
         out = {"index": i, "name": st["name"], "battle": st.get("battle", ""), "description": st.get("description", ""),
                "opponent": opponent, "difficulty": difficulty,
-               "opponent_text": {"passive": "a passive target", "rule": f"rule AI ({level})",
-                                 "league": f"league: rule AI ({level}), its own copies"}.get(opponent, opponent),
+               "opponent_text": {"passive": "a passive target", "rule": f"rule AI ({level})"}.get(opponent)
+                                or _mix_text(st.get("opponents") or {"rule": 1.0}, level),
                "pass_text": f"passed: {passed}" + (f" in {rate:.0%} of the last {window}" if rate else ""),
                "commander": bool(st.get("commander", False)), "time_limit": float(st.get("time_limit") or 0)}
         if "procedural" in st:

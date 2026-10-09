@@ -26,8 +26,10 @@ updates - with these additions:
 * Value normalisation and value clipping [MAPPO], entropy bonus that decays over training.
 * Imitation warm start + KL anchor [AS]: the captain can start from a copy of the rule AI
   (imitation.py) and is pulled back towards it by a KL penalty that fades out.
-* League self-play [Five, AS]: the enemy is the rule AI, a frozen copy of the current fleet, or a
-  past copy picked by PFSP (league.py) - per curriculum stage.
+* League self-play [Five, AS]: the enemy is the rule AI, the fleet itself ("mirror": the current
+  network flies both fleets and BOTH sides' experience trains it - twice the data, an opponent that
+  is always as good as the fleet), a frozen copy, or a past copy picked by PFSP (league.py) - mixed
+  per curriculum stage, with the rule AI kept as the anchor every promotion is judged against.
 * Death masking [MAPPO]: a sunk ship stops training the actor; its critic keeps learning the team's
   value until the battle ends, because team rewards keep arriving.
 
@@ -313,7 +315,7 @@ class MAPPO:
             if self.n_updates % self.hp["opponent_refresh"] == 0:
                 self.opponent.load_state_dict(self.policy.state_dict())
             stage = self.env.stages[self.env.stage]
-            if stage.get("opponent") == "league" and self.n_updates % self.hp["snapshot_every"] == 0:
+            if "past" in (stage.get("opponents") or {}) and self.n_updates % self.hp["snapshot_every"] == 0:
                 self.league.add(self.policy, self.n_updates)
             if log_interval and self.n_updates % log_interval == 0:
                 self._log(stats, start)
@@ -326,7 +328,8 @@ class MAPPO:
         """Plays n_steps decisions in every battle and stores what happened."""
         T = self.hp["n_steps"]
         obs = self._last_obs
-        E, N = obs["alive"].shape
+        E, N = obs["alive"].shape                   # rows: a fleet in a battle (two per battle in mirror curricula)
+        n_battles = getattr(self.env, "n_envs", E)
         G, L = self.n_groups, sum(self.head_sizes)
         if not self._fits(self._memory, obs):
             self._memory = self.policy.new_memory(E, N)
@@ -364,14 +367,16 @@ class MAPPO:
             obs, rewards, dones, infos = self.env.step(buf["actions"][t], buf["orders"][t])
             buf["rewards"][t], buf["dones"][t] = self.env.last_reward_groups, dones
             for e in np.flatnonzero(dones):
-                buf["won"][t, e] = float(infos[e]["won"])
+                # row e < battles: our fleet; row battles + b: the enemy fleet of battle b (mirror battles)
+                won = infos[e]["won"] if e < n_battles else not infos[e - n_battles]["won"]
+                buf["won"][t, e] = float(won)
             for info in infos:
                 if info:
                     self._episodes.append(info)
                     if not info.get("evaluation"):
                         stage = self.env.stages[min(info["stage"], len(self.env.stages) - 1)]
                         self.league.record(info, difficulty=int(stage.get("difficulty", 0)))
-            self.num_timesteps += E
+            self.num_timesteps += n_battles           # decisions per battle, as before
             if not callback.on_step(locals()):
                 self._last_obs = obs
                 return False
@@ -670,7 +675,7 @@ class MAPPO:
             row["ep_rew_mean"] = float(np.mean([e["episode"]["r"] for e in eps]))
             row["ep_len_mean"] = float(np.mean([e["episode"]["l"] for e in eps]))
             gate = [e for e in eps if e.get("opponent", "rule") in ("rule", "passive")]
-            selfp = [e["won"] for e in eps if e.get("opponent") in ("latest", "past")]
+            selfp = [e["won"] for e in eps if e.get("opponent") in ("latest", "past", "mirror")]
             if gate:
                 row["win_rate"] = float(np.mean([e["won"] for e in gate]))       # against the stage's own opponent
                 row["pass_rate"] = float(np.mean([e.get("passed", e["won"]) for e in gate]))   # its goal

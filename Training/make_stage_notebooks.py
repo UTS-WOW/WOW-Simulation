@@ -42,24 +42,27 @@ A battle is *passed* when the target is sunk within 150 seconds - just sinking i
          learns="""**Defend yourself while holding the circle.** A neutral circle lies 3 km ahead of our cruiser; an enemy cruiser flown by the rule AI comes for it from 8 km beyond. Winning means taking the circle and holding it *while staying afloat* - angling, dodging torpedoes, smoke, repair and fighting back. A per-second "survive" reward is switched on for this stage.""",
          measured="Measured: random play wins 12% of battles, sailing straight to the circle 0% - the cruiser has to fight smart."),
     dict(file="Stage3-Duel.ipynb", name="Duel", scenario="bb_duel", fleet="1v1 battleships",
-         opponent="Recruit rule-based AI", rule="won in ≥70% of the last 100 battles", session=300_000, script="broadside",
-         learns="""**1v1.** Two battleships 13 km apart on open sea, both spotted and inside gun range from the first second. The duel is about **choosing and timing fire, angling the hull, and not throwing the ship away**. The circle reward is off here: the circle lies between the two battleships, so racing to it means sailing bow-on into the enemy's guns.""",
+         opponent="Recruit rule AI 70% · itself 30% (both sides learn)", rule="won in ≥70% of the last 100 battles against the rule AI",
+         session=300_000, script="broadside",
+         learns="""**1v1.** Two battleships 13 km apart on open sea, both spotted and inside gun range from the first second. The duel is about **choosing and timing fire, angling the hull, and not throwing the ship away**. The circle reward is off here: the circle lies between the two battleships, so racing to it means sailing bow-on into the enemy's guns.
+
+**Self-play starts here.** 30% of battles are *mirror* battles: the fleet flies **both** battleships and **both sides learn** (OpenAI Five's self-play) - twice the training data from those battles, and an opponent that is always exactly as good as the fleet. Only the battles against the rule AI count for promotion.""",
          measured="Measured earlier with this battle: random play wins 16-28%, the broadside script 70%, flat MAPPO from scratch 59% after 300,000 timesteps."),
     dict(file="Stage4-King-of-the-Hill.ipynb", name="King of the Hill", scenario="koth_3v3", fleet="3v3 mixed fleet",
-         opponent="Veteran rule-based AI", rule="won in ≥70% of the last 100 battles", session=500_000, script="circle",
+         opponent="Veteran rule AI 70% · itself 30% (both sides learn)", rule="won in ≥70% of the last 100 battles against the rule AI", session=500_000, script="circle",
          learns="""**The first fleet battle - and the commander joins in.** A battleship, a cruiser and a destroyer a side, one capture circle in the middle of the open sea, 6 minutes. Every 10 seconds the **fleet commander** gives each ship an order - *free*, *engage* or *hold the circle* - and the captains carry it out (the circle reward follows the order). Team spirit 0.3: each ship's own reward is now partly shared with the fleet. 15% of battles replay earlier stages so the single-ship skills stay.""",
          measured="Measured earlier with this battle: random play wins about 18% against Veteran, flat MAPPO from scratch 25-33%, the circle script 67-88% (against Recruit), imitation alone (naval_rl) 58%."),
     dict(file="Stage5-Archipelago.ipynb", name="Archipelago", scenario="archipelago_3v3", fleet="3v3 mixed fleet",
-         opponent="Veteran rule-based AI", rule="won in ≥70% of the last 150 battles", session=500_000, script="circle",
+         opponent="Veteran rule AI 70% · itself 30% (both sides learn)", rule="won in ≥70% of the last 150 battles against the rule AI", session=500_000, script="circle",
          learns="""The same three ships a side, now among islands with **three capture circles** (A, B, C) and 8 minutes. This is where the commander earns its place: **which ship holds which circle, and who hunts**. Islands break line of sight, so spotting, smoke, radar and cover matter. Team spirit 0.5.""",
          measured="Measured earlier: imitation alone (naval_rl) won 45%, flat MAPPO 27%."),
     dict(file="Stage6-Domination.ipynb", name="Domination", scenario="domination_6v6", fleet="6v6 fleet",
-         opponent="League: Elite rule AI 40% · latest self 40% · past selves 20%",
+         opponent="League: Elite rule AI 40% · itself 40% (both sides learn) · past selves 20%",
          rule="won in ≥70% of the last 200 battles against the Elite AI", session=500_000, script="circle",
-         learns="""The full Domination game at 6v6, 15 minutes, on a **newly generated battlefield** every 8 battles (random preset, island density and weather). The enemy is drawn from a **league** (OpenAI Five / AlphaStar): the Elite rule AI, a frozen copy of our own fleet, or an older copy picked by prioritised fictitious self-play - the ones we lose to come up most. Everyone gets an **Elo rating**. Only battles against the Elite AI count for promotion. Team spirit 0.8.""",
+         learns="""The full Domination game at 6v6, 15 minutes, on a **newly generated battlefield** every 8 battles (random preset, island density and weather). The enemy is drawn from a **league** (OpenAI Five / AlphaStar): the Elite rule AI, the fleet **itself** (a mirror battle - both sides learn), or an older copy picked by prioritised fictitious self-play - the ones we lose to come up most. Everyone gets an **Elo rating**. Only battles against the Elite AI count for promotion. Team spirit 0.8.""",
          measured=""),
     dict(file="Stage7-Open.ipynb", name="Open", scenario="open", fleet="Random 4–8 ships per side",
-         opponent="League: Elite rule AI 40% · latest self 40% · past selves 20%",
+         opponent="League: Elite rule AI 40% · itself 40% (both sides learn) · past selves 20%",
          rule="Final stage: won in ≥70% of the last 250 held-out battles against the Elite AI", session=500_000,
          script="circle",
          learns="""Anything the game can produce: 4 to 8 ships a side, a random game mode (Domination, Skirmish, Fleet Battle, Capture and Control), map preset, density, weather and circle size, 20 minutes - against the league. Team spirit 1.0: every ship cares about the fleet as much as about itself.
@@ -158,7 +161,7 @@ METHOD_MD = """
 | **Centralised critic** | sees the true battle (training only); one value per reward group + win probability | MAPPO, Honor of Kings multi-head value | W10-A/B actor-critic |
 | **Update** | PPO with dual clip, value normalisation and clipping | MAPPO, Honor of Kings | W10-B PPO |
 | **Warm start** | the captain first copies the Elite rule AI (StageP), then a fading KL penalty keeps it close | AlphaStar | W9-A supervised training loop |
-| **League** | the enemy is the rule AI, our latest copy, or a past copy (PFSP) - with Elo ratings | OpenAI Five, AlphaStar | W9-C/D frozen target network |
+| **Self-play & league** | from stage 3: mirror battles - the fleet on **both** sides, **both** learning; stages 6-7 add past copies (PFSP) and Elo ratings; the rule AI stays as the anchor promotion is judged against | OpenAI Five, AlphaStar | W9-C/D frozen target network |
 | **Curriculum** | 8 stages, each passed at ≥70% of its own goal; earlier stages are replayed 10-15% of the time | TiZero, OpenAI Five | - |
 """
 
@@ -287,7 +290,7 @@ if RUN_BASELINES:
 
 **Replays**: five times a session a battle is recorded and **shown right here, under the training table**, while training goes on. The files are in `runs_simple/<RUN_NAME>/videos/` (`.gif` on SageMaker, which has no ffmpeg - double-click one in the file browser; `.mp4` where ffmpeg exists), and in the team folder.
 
-In the table: `win_rate` / `pass_rate` against the stage's own opponent{', `win_rate_self_play` against our own copies, `elo` the fleet''s rating' if league else ''}{', `orders_free` the share of the commander''s orders that leave the ship free' if k >= 4 else ''}.
+In the table: `win_rate` / `pass_rate` against the stage's own opponent{', `win_rate_self_play` in battles against itself (about 0.5 in mirror battles - both sides are the fleet), `elo` the fleet''s rating' if k >= 3 else ''}{', `orders_free` the share of the commander''s orders that leave the ship free' if k >= 4 else ''}.
 """)
     code(r"""
 curriculum = CurriculumCallback(stop_on_promotion=not KEEP_GOING)

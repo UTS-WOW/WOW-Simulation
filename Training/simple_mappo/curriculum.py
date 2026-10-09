@@ -10,11 +10,15 @@ asks for a 70 % win rate before moving on.
     1 Capture          capture (one circle)           1 CA         passive, far away            -          -
                          passed: the circle captured
     2 Defend           defend (a neutral circle)      1 CA vs CA   Recruit                      -          -
-    3 Duel             bb_duel (open sea)             1v1 BB       Recruit                      -          -
-    4 King of the Hill koth_3v3 (one circle)          3v3 mixed    Veteran                      on         0.3
-    5 Archipelago      archipelago_3v3 (3 circles)    3v3 mixed    Veteran                      on         0.5
-    6 Domination       random map, random weather     6v6          league: Elite / self / past  on         0.8
-    7 Open             random mode, map, weather      4-8 a side   league: Elite / self / past  on         1.0
+    3 Duel             bb_duel (open sea)             1v1 BB       Recruit 70 % / itself 30 %   -          -
+    4 King of the Hill koth_3v3 (one circle)          3v3 mixed    Veteran 70 % / itself 30 %   on         0.3
+    5 Archipelago      archipelago_3v3 (3 circles)    3v3 mixed    Veteran 70 % / itself 30 %   on         0.5
+    6 Domination       random map, random weather     6v6          Elite 40 / itself 40 / past  on         0.8
+    7 Open             random mode, map, weather      4-8 a side   Elite 40 / itself 40 / past  on         1.0
+
+  "itself" is a mirror battle: the current fleet flies BOTH sides and both sides' experience trains
+  it - twice the data per battle, and an opponent that is always exactly as good as the fleet.
+  Promotion only ever counts the battles against the rule AI.
                                                                    stop: 70 % of 250 held-out battles vs Elite
 
 A stage is a dict:
@@ -39,10 +43,12 @@ A stage is a dict:
                          "league"   a mix, given by `opponents` (OpenAI Five / AlphaStar self-play):
                                       rule    the rule AI at `difficulty` - the anchor that keeps the
                                               fleet honest, and the only battles that count for promotion
+                                      mirror  our own current fleet on BOTH sides, and both sides learn
+                                              (OpenAI Five's self-play): twice the data per battle
                                       latest  a frozen copy of our own fleet, refreshed every few updates
                                       past    an older copy from the league's pool, picked by
                                               prioritised fictitious self-play (the ones we lose to most)
-    opponents          for "league": shares, e.g. {"rule": 0.4, "latest": 0.4, "past": 0.2}
+    opponents          for "league": shares, e.g. {"rule": 0.4, "mirror": 0.4, "past": 0.2}
     commander          True: the fleet commander gives orders in this stage (False: every ship is free)
     team_spirit        tau in rewards.py: how much each ship's own reward is shared with the fleet
     rehearsal          share of battles replayed from earlier stages, so old skills are not forgotten
@@ -79,7 +85,8 @@ import numpy as np
 from .callbacks import BaseCallback
 
 NO_CIRCLE = {"approach_circle": 0.0, "in_circle": 0.0}
-LEAGUE = {"rule": 0.4, "latest": 0.4, "past": 0.2}
+LEAGUE = {"rule": 0.4, "mirror": 0.4, "past": 0.2}       # stages 6-7: the rule AI, itself (both sides learn), past selves
+SELF_PLAY = {"rule": 0.7, "mirror": 0.3}                  # stages 3-5: mostly the rule AI, some battles against itself
 
 DEFAULT_CURRICULUM = [
     # ---- single skills, one ship
@@ -104,16 +111,16 @@ DEFAULT_CURRICULUM = [
     # duels, broadside and fire at will 70%, and MAPPO learned the duel only with the circle terms off.
     {"name": "3 Duel", "battle": "1v1 battleships, 13 km, open sea",
      "description": "Win a battleship duel: choose and time fire, angle the hull, do not throw the ship away.",
-     "scenario": "scenarios/stage0_bb_duel.json", "opponent": "rule", "difficulty": 0,
+     "scenario": "scenarios/stage0_bb_duel.json", "opponent": "league", "opponents": SELF_PLAY, "difficulty": 0,
      "promote_win_rate": 0.70, "window": 100, "rehearsal": 0.1, "reward_weights": NO_CIRCLE},
     # ---- fleets: the commander joins in, and the ships learn to share the reward
     {"name": "4 King of the Hill", "battle": "3v3 mixed fleets, one circle, open sea",
      "description": "The first fleet battle: the commander orders ships to hold the circle or engage.",
-     "scenario": "scenarios/stage1_koth_3v3.json", "opponent": "rule", "difficulty": 1,
+     "scenario": "scenarios/stage1_koth_3v3.json", "opponent": "league", "opponents": SELF_PLAY, "difficulty": 1,
      "commander": True, "team_spirit": 0.3, "rehearsal": 0.15, "promote_win_rate": 0.70, "window": 100},
     {"name": "5 Archipelago", "battle": "3v3 mixed fleets, three circles among islands",
      "description": "Which ship holds which circle, and who hunts - with islands, spotting and smoke.",
-     "scenario": "scenarios/stage2_archipelago_3v3.json", "opponent": "rule", "difficulty": 1,
+     "scenario": "scenarios/stage2_archipelago_3v3.json", "opponent": "league", "opponents": SELF_PLAY, "difficulty": 1,
      "commander": True, "team_spirit": 0.5, "rehearsal": 0.15, "promote_win_rate": 0.70, "window": 150},
     # ---- the full game against the Elite AI and a league of our own past selves
     {"name": "6 Domination", "battle": "6v6 on a new random map and weather",
