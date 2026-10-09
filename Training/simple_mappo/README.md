@@ -274,15 +274,28 @@ A plain folder path also works in place of `s3://` (a shared drive, or for testi
 
 ### On your computer
 
+From the repository, or from `wow_sagemaker.zip` unzipped anywhere (it holds the code, the
+notebooks, the headless Linux player and the imitation checkpoint):
+
 ```bash
-cd Training
-jupyter lab WOW-MAPPO-Simple.ipynb                       # the walkthrough
-python train_simple.py --total-timesteps 5000000         # imitation, then the curriculum, headless
+cd Training                                              # (or <unzipped folder>/Training)
+pip install -r requirements.txt jupyter
+jupyter lab                                              # open StageP-Imitation.ipynb, then Stage0-Gunnery.ipynb ...
+python train_simple.py --total-timesteps 5000000         # or headless: imitation, then the curriculum
 python train_simple.py --scenario scenarios/stage1_koth_3v3.json --run-name koth   # one battle only
+python -m pytest tests -q                                # checks the code on the mock environment (no Unity)
 ```
 
-Needs Python 3.10+, PyTorch, NumPy, pandas, matplotlib, Pillow, and the headless player
-(`Training/build_player.sh` builds it into `Builds/NavalTrainer/`).
+- The notebooks and `train_simple.py` use the run folder `runs_simple/fleet/` (`RUN_NAME` /
+  `--run-name`). If `runs_simple/fleet/models/imitation.pt` is already there (the zip ships one),
+  Stage 0 starts from it and StageP can be skipped; running StageP again replaces it.
+- Every session continues the run's latest checkpoint, so you can stop (Kernel > Interrupt, then run
+  the "Save and hand over" cell) and continue another day. Use a new `RUN_NAME` for a fresh run.
+- `n_envs` defaults to half the CPU cores; each battle is one Unity process.
+- Linux needs nothing else. The headless player is a Linux build: on Windows / macOS build your own
+  with `Training/build_player.sh` (or use WSL / SageMaker).
+
+Needs Python 3.10+, PyTorch, NumPy, pandas, matplotlib, Pillow (and Jupyter for the notebooks).
 
 ### On Amazon SageMaker
 
@@ -423,6 +436,37 @@ What came out of it, all now in the code:
 - The notebook runs top to bottom (training, checkpoints, all plots, per-stage evaluation, replays),
   and two "teammates" can take turns on one shared run from the notebook and from `train_simple.py`.
 - A SageMaker training job was emulated with the unzipped bundle.
+
+### Results of the commander method (2026-10-09, first local checks)
+
+Measured on a 16-core desktop with the real game, before any long training run.
+
+**Imitation alone** (`StageP`: 72 Elite-vs-Elite battles recorded in 2.5 min, 102k labelled
+decisions, 8 epochs; held-out accuracy move 0.72, speed 0.89, target 0.91, fire 0.95), 24 battles a
+stage, sampled actions:
+
+| Stage | Clone: pass rate | Random: pass rate |
+|---|---|---|
+| 0 Gunnery (sunk ≤ 150 s) | 0.58 | 0.42 |
+| 1 Capture | **1.00** | 0.00 |
+| 2 Defend | 0.46 | 0.33 |
+| 3 Duel | 0.25 | 0.17 |
+| 4 King of the Hill vs Veteran | **0.83** | 0.04 |
+| 5 Archipelago vs Veteran | 0.58 | 0.33 |
+
+**Then reinforcement learning** from the clone (`train_simple.py`, 12 battles in parallel, default
+settings), stopped after 135k timesteps (~15 minutes) so the team could take over:
+
+| Stage | Passed at | Notes |
+|---|---|---|
+| 0 Gunnery | 11k timesteps (70 %) | |
+| 1 Capture | 27k timesteps (100 %) | |
+| 2 Defend | 58k timesteps (70 %) | RL lifted the clone from 46 % to 70 % |
+| 3 Duel | not yet | rolling pass rate 20 % → 50 % in 77k timesteps (clone: 25 %; flat MAPPO earlier: 59 % after 300k) |
+
+For comparison, the flat MAPPO of the previous version reached 25-33 % on King of the Hill after
+400-600k timesteps; the clone alone starts at 83 %. These are short runs with 24-100 battle windows,
+so treat single numbers as ±10 %.
 
 ## Why a simpler version? A review of the original method (`naval_rl/`)
 
