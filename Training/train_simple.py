@@ -11,6 +11,8 @@ models/model_latest.pt, refreshed every --save-interval and on Ctrl+C) until --t
 raise it to train on. The curriculum promotes from stage to stage by itself.
     python train_simple.py --mock --total-timesteps 20000          # no Unity: checks the code only
     python train_simple.py --no-commander --no-memory --attn-layers 0 --run-name ablation_flat   # an ablation
+    python train_simple.py --ports 5005                            # train in the open Unity editor and watch it
+                         # (GameBootstrap > tick "Rl Training Server", press Play first; one battle, slower)
 
 A new run starts with imitation (--imitation-battles, default 60): the Elite rule AI is recorded and
 the captains are cloned from it (simple_mappo/imitation.py) before reinforcement learning begins.
@@ -104,6 +106,9 @@ def parse_args():
     p.add_argument("--user", help="your name, shown to teammates in the shared run")
     p.add_argument("--force-lock", action="store_true", help="take over a run whose lock is held by a dead session")
     p.add_argument("--unity-binary")
+    p.add_argument("--ports", type=int, nargs="+",
+                   help="connect to games already running instead of launching headless players - e.g. the "
+                        "Unity editor in Play mode with GameBootstrap > Rl Training Server ticked (port 5005)")
     p.add_argument("--base-port", type=int, default=5005)
     p.add_argument("--device", default="auto")
     p.add_argument("--mock", action="store_true")
@@ -133,13 +138,17 @@ def main():
     resume = a.resume or pulled or (local_latest if os.path.exists(local_latest) else None)
     cloned = os.path.join(models_dir, "imitation.pt")
     if not resume and not a.no_imitation and not os.path.exists(cloned) and a.imitation_battles > 0 and not a.mock:
-        imitate(a, run_dir, cloned, storage)          # before the training battles start: one set of players at a time
+        if a.ports:
+            print("no imitation checkpoint yet - recording the Elite AI needs headless players: run once without "
+                  "--ports (or the StageP notebook) first; training from scratch in the editor instead")
+        else:
+            imitate(a, run_dir, cloned, storage)      # before the training battles start: one set of players at a time
 
     env = Monitor(NavalEnv(a.scenario or "", n_envs=a.n_envs, opponent_difficulty=a.opponent_difficulty,
                            stages=None if a.scenario else a.curriculum, start_stage=a.start_stage,
                            decision_period=a.decision_period, sim_dt=a.sim_dt,
                            time_limit=a.time_limit, reward_weights=weights, unity_binary=a.unity_binary,
-                           base_port=a.base_port, seed=a.seed, mock=a.mock,
+                           base_port=a.base_port, ports=a.ports, seed=a.seed, mock=a.mock,
                            unity_log_dir=os.path.join(run_dir, "unity_logs")), log_dir)
     try:
         if resume:

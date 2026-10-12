@@ -370,13 +370,13 @@ if os.path.exists(best_path):
     md("""
 ## Put the fleet into your Unity game
 
-Exports the best checkpoint (captains + fleet commander) as the game's policy file. The game runs it in plain C# (`Assets/Scripts/RL/RLPolicy.cs`), no Python needed. From the repository it goes straight into `Assets/StreamingAssets/RL/naval_policy.bin` (the old file is kept as `.bak`); elsewhere (SageMaker) it goes into the run folder - download it (right-click > Download) and copy it there.
+Exports the best checkpoint (captains + fleet commander) as the game's policy file - or the latest, if it has reached a later stage than the best. The game runs it in plain C# (`Assets/Scripts/RL/RLPolicy.cs`), no Python needed. From the repository it goes straight into `Assets/StreamingAssets/RL/naval_policy.bin` (the old file is kept as `.bak`); elsewhere (SageMaker) it goes into the run folder - download it (right-click > Download) and copy it there.
 
 Then in Unity: **Play**, and on the setup screen set **ENEMY AI: LEARNED** (fight against it) or **YOUR FLEET: LEARNED** (watch it fight). The game reads the file when it starts, so press Play again after exporting. From a computer later: `python export_simple.py` (or `--team-storage s3://... --run-name fleet` to fetch a teammate's run first).
 """)
     code(r"""
-from simple_mappo.export import export_policy
-checkpoint = os.path.join(models_dir, "model_best.pt" if os.path.exists(os.path.join(models_dir, "model_best.pt")) else "model_latest.pt")
+from simple_mappo.export import export_policy, pick_checkpoint
+checkpoint = pick_checkpoint(models_dir)        # model_best.pt, or model_latest.pt if it reached a later stage
 in_repo = os.path.isdir(os.path.join("..", "Assets", "StreamingAssets"))
 target = os.path.join("..", "Assets", "StreamingAssets", "RL", "naval_policy.bin") if in_repo else os.path.join(run_dir, "naval_policy.bin")
 print("exported", checkpoint, "->", os.path.abspath(export_policy(checkpoint, target)))

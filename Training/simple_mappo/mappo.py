@@ -494,14 +494,17 @@ class MAPPO:
         for epoch in range(hp["n_epochs"]):
             # the critic: on battle states (t, e) - it is not recurrent
             states = np.random.permutation(T * E)
-            for mb in np.array_split(states, hp["n_minibatches"]):
+            for mb in np.array_split(states, min(hp["n_minibatches"], len(states))):
                 t_i, e_i = np.unravel_index(mb, (T, E))
                 self._critic_step(b, t_i, e_i, returns_norm, values_old_norm, cmd_returns_norm, stats)
 
             # the captains: on chunks of chunk_len consecutive decisions of one ship slot
             if train_actor:
                 chunks = self._chunks(b)
-                for mb in np.array_split(np.random.permutation(len(chunks)), hp["n_minibatches"]):
+                # never more minibatches than chunks: one battle with one ship (the Unity editor) has few
+                for mb in np.array_split(np.random.permutation(len(chunks)), max(1, min(hp["n_minibatches"], len(chunks)))):
+                    if len(mb) == 0:
+                        continue
                     self._captain_step(b, chunks[mb], adv, ent_coef, kl_coef, stats)
 
             # the commander: on its decisions

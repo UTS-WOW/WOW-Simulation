@@ -12,6 +12,8 @@
 
 from __future__ import annotations
 
+import csv
+import json
 import os
 
 
@@ -113,11 +115,15 @@ class SaveOnIntervalCallback(BaseCallback):
 
 
 class BestModelCallback(BaseCallback):
-    """Keeps models/model_best.pt: the checkpoint with the best rolling pass rate on the current stage
-    (its goal - usually a win - against its qualifying opponent). A safety net - if training later gets worse, the best
-    version is still there to evaluate, hand in, or continue from.
+    """Keeps models/model_best.pt: the checkpoint with the best rolling pass rate on the stage being
+    trained (its goal - usually a win - against its qualifying opponent). A safety net - if training
+    later gets worse, the best version is still there to evaluate, export to the game, or continue from.
 
-    window: battles in the rolling win rate; min_battles: how many before a "best" counts at all.
+    The best carries over between sessions: models/model_best.json records its stage and pass rate, and
+    the rolling window is rebuilt from logs/monitor.csv - so a new session only replaces model_best.pt
+    when it really does better on that stage, or reaches a later stage.
+
+    window: battles in the rolling pass rate; min_battles: how many before a "best" counts at all.
     """
 
     def __init__(self, save_path: str, window: int = 100, min_battles: int = 50, verbose: int = 1):
@@ -126,6 +132,31 @@ class BestModelCallback(BaseCallback):
         self.results: list[float] = []
         self.best = -1.0
         self.best_stage = -1
+        self.record_path = os.path.join(save_path, "model_best.json")
+
+    def _on_training_start(self) -> None:
+        stage = self.model.env.stage
+        self.best_stage, self.best, self.results = stage, -1.0, self._from_log(stage)
+        if os.path.exists(self.record_path):
+            with open(self.record_path) as f:
+                rec = json.load(f)
+            if rec.get("stage") == stage:
+                self.best = float(rec.get("pass_rate", -1.0))          # the same stage: beat it
+            elif rec.get("stage", -1) > stage:
+                self.best = float("inf")                               # trained further already: keep that one
+        if self.verbose and self.best >= 0 and self.best != float("inf"):
+            print(f"model_best.pt so far: passed {self.best:.0%} on stage {stage}")
+
+    def _from_log(self, stage: int) -> list[float]:
+        path = getattr(self.model.env, "path", None)                   # the Monitor's monitor.csv
+        if not path or not os.path.exists(path):
+            return []
+        with open(path) as f:
+            next(f)                                                    # the '#{...}' header line
+            rows = [r for r in csv.DictReader(f) if int(float(r.get("stage") or 0)) == stage
+                    and r.get("opponent") in ("rule", "passive")]
+        key = "passed" if rows and rows[0].get("passed") not in (None, "") else "won"
+        return [float(r[key]) for r in rows][-self.window:]
 
     def _on_step(self) -> bool:
         env = self.model.env
@@ -133,7 +164,7 @@ class BestModelCallback(BaseCallback):
             if info and info.get("stage") == env.stage and info.get("opponent") in ("rule", "passive") \
                     and not info.get("evaluation"):
                 self.results.append(float(info.get("passed", info["won"])))
-        if env.stage != self.best_stage:                   # a new stage: a new best to beat
+        if env.stage != self.best_stage:                   # promoted: a later stage, a new best to beat
             self.best_stage, self.best, self.results = env.stage, -1.0, self.results[-1:]
         self.results = self.results[-self.window:]
         return True
@@ -144,6 +175,9 @@ class BestModelCallback(BaseCallback):
             if rate > self.best:
                 self.best = rate
                 path = self.model.save(os.path.join(self.save_path, "model_best"))
+                with open(self.record_path, "w") as f:
+                    json.dump({"stage": self.best_stage, "pass_rate": rate, "battles": len(self.results),
+                               "timesteps": self.num_timesteps}, f)
                 if self.verbose:
                     print(f"new best on stage {self.best_stage}: passed {rate:.0%} of the last {len(self.results)} - {path}")
         return True

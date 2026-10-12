@@ -147,6 +147,26 @@ def _match_hidden(env) -> list[float]:
     return [float(1.0 - k) for k in keep]
 
 
+def pick_checkpoint(models_dir: str, verbose: bool = True) -> str | None:
+    """The checkpoint to put into the game: model_best.pt, unless model_latest.pt has reached a later
+    curriculum stage (a best from an earlier stage is the weaker fleet). imitation.pt if nothing else."""
+    found = {}
+    for name in ("model_best.pt", "model_latest.pt"):
+        path = os.path.join(models_dir, name)
+        if os.path.exists(path):
+            ck = torch.load(path, map_location="cpu", weights_only=False)
+            found[name] = (ck.get("stage", 0), ck.get("num_timesteps", 0), path)
+            if verbose:
+                print(f"  {name:16s} stage {found[name][0]}, {found[name][1]:,} timesteps")
+    if not found:
+        path = os.path.join(models_dir, "imitation.pt")
+        return path if os.path.exists(path) else None
+    best, latest = found.get("model_best.pt"), found.get("model_latest.pt")
+    if best and (latest is None or best[0] >= latest[0]):
+        return best[2]
+    return latest[2]
+
+
 def export_policy(source, path: str = GAME_POLICY, commander: bool = True, backup: bool = True,
                   max_obstacles: int = 4) -> str:
     """Writes the fleet (captain + commander) as the game's policy file. source: a MAPPO model, or a

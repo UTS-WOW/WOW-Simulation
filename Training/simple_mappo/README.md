@@ -250,6 +250,35 @@ Builds/NavalTrainer/NavalTrainer.x86_64 -batchmode -nographics -rlDemo both -rlD
 (The headless player reads `Builds/NavalTrainer/NavalTrainer_Data/StreamingAssets/RL/naval_policy.bin`;
 export there with `--out` for this check.)
 
+### A fleet trained on SageMaker -> your Unity project
+
+1. On SageMaker, run the **"Put the fleet into your Unity game"** cell of the stage notebook you trained
+   last (re-run it after more training: it exports `model_best.pt`, else `model_latest.pt`). It writes
+   `<bundle folder>/Assets/StreamingAssets/RL/naval_policy.bin` (about 1.5 MB).
+2. In the SageMaker file browser go to `Assets/StreamingAssets/RL/`, right-click `naval_policy.bin` >
+   **Download**.
+3. Copy it into your project as `Assets/StreamingAssets/RL/naval_policy.bin` (replace the old one).
+4. Unity: **Play** > BATTLE SETUP > **TRAINING STAGES** > **WATCH AI** on any stage (or ENEMY AI: LEARNED in
+   a normal battle). The status line must say "commander MAPPO with fleet commander".
+
+Alternatively download the checkpoint (`Training/runs_simple/fleet/models/model_best.pt`) into the same
+place in your copy of the project and run `python export_simple.py` there.
+
+### Train in the Unity editor (watch it learn)
+
+The open editor can be the training environment instead of the headless players: select
+**GameBootstrap** in the scene, tick **Rl Training Server** (port 5005), press **Play** - the game waits -
+then run
+
+```bash
+python train_simple.py --ports 5005 --run-name editor_test
+```
+
+The fleet trains while you watch the battle in the Game view. It is one battle at a time and the
+editor renders every frame, so it is much slower than headless training - use it to see what the
+fleet does, and SageMaker or `train_simple.py` without `--ports` for real training. When the trainer
+stops, the editor leaves Play mode. The run continues next time like any other (`--run-name`).
+
 ### Watch (and play) the training stages in the game
 
 The game's **BATTLE SETUP** screen has a **TRAINING STAGES** button. It lists the curriculum - the same

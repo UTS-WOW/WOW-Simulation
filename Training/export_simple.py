@@ -1,7 +1,8 @@
 """Put a trained fleet into the Unity game - no Python needed while the game runs.
 
     # from this repository, after training here:
-    python export_simple.py                                   # runs_simple/fleet: model_best.pt (else model_latest.pt)
+    python export_simple.py                                   # runs_simple/fleet: model_best.pt, or model_latest.pt
+                                                              # if that one reached a later stage
     python export_simple.py --model runs_simple/fleet/models/model_latest.pt
     python export_simple.py --model runs_simple/fleet/models/imitation.pt      # just the clone of the Elite AI
 
@@ -21,7 +22,7 @@ from __future__ import annotations
 import argparse
 import os
 
-from simple_mappo.export import GAME_POLICY, GAME_STAGES, export_policy, export_stages
+from simple_mappo.export import GAME_POLICY, GAME_STAGES, export_policy, export_stages, pick_checkpoint
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -50,16 +51,11 @@ def main():
         from simple_mappo import TeamStorage
         storage = TeamStorage(a.team_storage, a.run_name)
         for name in ("model_best.pt", "model_latest.pt"):
-            local = os.path.join(run_dir, "models", name)
-            if storage.backend.download(f"models/{name}", local):
-                model = local
+            if storage.backend.download(f"models/{name}", os.path.join(run_dir, "models", name)):
                 print(f"downloaded {name} from {storage.location}")
-                break
     if model is None:
-        for name in ("model_best.pt", "model_latest.pt", "imitation.pt"):
-            if os.path.exists(os.path.join(run_dir, "models", name)):
-                model = os.path.join(run_dir, "models", name)
-                break
+        # the best checkpoint - unless the latest one has reached a later stage
+        model = pick_checkpoint(os.path.join(run_dir, "models"))
     if model is None:
         raise SystemExit(f"no checkpoint found in {run_dir}/models - pass --model")
 

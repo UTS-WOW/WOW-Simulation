@@ -39,5 +39,5 @@ zip -qr "$OUT" \
   Builds/NavalTrainer \
   Assets Packages ProjectSettings \
   -x '*/__pycache__/*' 'Builds/NavalTrainer/*_BurstDebugInformation_DoNotShip/*' 'Builds/NavalTrainer/runs/*' \
-     'Assets/Screenshots/*' 'Assets/Screenshots.meta' 'Assets/StreamingAssets/RL/*.bak' '*.tmp'
+     'Assets/Screenshots/*' 'Assets/Screenshots.meta' 'Assets/StreamingAssets/RL/*.bak' 'Assets/StreamingAssets/RL/*.bak.meta' '*.tmp'
 echo "wrote $OUT ($(du -h "$OUT" | cut -f1)), version $VERSION"
