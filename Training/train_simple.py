@@ -1,6 +1,8 @@
-"""Train the fleet (MAPPO with a commander) from the command line - on your machine or as a SageMaker job.
+"""Train the fleet (MAPPO with a commander, or Double DQN) from the command line - on your machine or as a
+SageMaker job.
 
-    python train_simple.py --total-timesteps 5000000                 # imitation, then the curriculum, stages 0-7
+    python train_simple.py --total-timesteps 5000000                 # imitation, then the curriculum, stages 0-8
+    python train_simple.py --algo ddqn --total-timesteps 5000000     # the same with Double DQN (run "fleet_ddqn")
     python train_simple.py --start-stage 3                           # begin at a later stage
     python train_simple.py --curriculum my_stages.json               # your own stages (any number)
     python train_simple.py --scenario scenarios/stage0_bb_duel.json --run-name duel   # one battle only
@@ -41,7 +43,7 @@ import shutil
 import time
 from collections import OrderedDict
 
-from simple_mappo import (MAPPO, BestModelCallback, CurriculumCallback, Monitor, NavalEnv, REWARD_WEIGHTS,
+from simple_mappo import (MAPPO, BestModelCallback, CurriculumCallback, FleetDDQN, Monitor, NavalEnv, REWARD_WEIGHTS,
                           SaveOnIntervalCallback, TeamStorage, TeamSyncCallback, VideoCallback, behaviour_cloning,
                           collect_expert, evaluate, save_imitation, training_status)
 
@@ -52,8 +54,10 @@ ON_SAGEMAKER = "SM_MODEL_DIR" in os.environ
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     # the battle
+    p.add_argument("--algo", choices=["mappo", "ddqn"], default="mappo",
+                   help="mappo (simple_mappo/mappo.py) or ddqn (Double DQN, simple_mappo/ddqn.py)")
     p.add_argument("--curriculum", default="default",
-                   help='"default" (stages 0-7, see simple_mappo/curriculum.py) or a JSON file of stages')
+                   help='"default" (stages 0-8, see simple_mappo/curriculum.py) or a JSON file of stages')
     p.add_argument("--start-stage", type=int, default=0)
     p.add_argument("--scenario", nargs="+", help="train on these battles only, instead of the curriculum")
     p.add_argument("--opponent-difficulty", type=int, default=0, help="with --scenario: 0 Recruit, 1 Veteran, 2 Elite")
@@ -92,9 +96,22 @@ def parse_args():
     p.add_argument("--ippo", action="store_true", help="IPPO baseline: the critic sees only each ship's own view "
                                                         "(needs --no-commander)")
     p.add_argument("--no-value-norm", action="store_true", help="switch off MAPPO's value normalisation")
+    # Double DQN (--algo ddqn)
+    p.add_argument("--dqn-learning-rate", type=float, default=2.5e-4)
+    p.add_argument("--buffer-size", type=int, default=40_000, help="decisions in the replay buffer")
+    p.add_argument("--learning-starts", type=int, default=4_000)
+    p.add_argument("--batch-size", type=int, default=32, help="chunks per gradient step")
+    p.add_argument("--gradient-steps", type=int, default=4, help="gradient steps per 32 decisions per battle")
+    p.add_argument("--n-step", type=int, default=5)
+    p.add_argument("--target-update-interval", type=int, default=250, help="gradient steps between target copies")
+    p.add_argument("--exploration-initial-eps", type=float, default=1.0)
+    p.add_argument("--exploration-final-eps", type=float, default=0.05)
+    p.add_argument("--exploration-timesteps", type=int, default=300_000)
+    p.add_argument("--mixer", choices=["none", "qmix", "vdn"], default="none",
+                   help="none: every ship on its own reward; qmix / vdn: one fleet value")
     p.add_argument("--seed", type=int, default=0)
     # bookkeeping
-    p.add_argument("--run-name", default="fleet")
+    p.add_argument("--run-name", default=None, help='default "fleet" (MAPPO) or "fleet_ddqn" (Double DQN)')
     p.add_argument("--save-interval", type=int, default=50_000)
     p.add_argument("--video-every", type=int, default=None,
                    help="record a replay video every N timesteps (default: every save-interval; 0: never)")
@@ -117,6 +134,8 @@ def parse_args():
 
 def main():
     a = parse_args()
+    a.run_name = a.run_name or ("fleet_ddqn" if a.algo == "ddqn" else "fleet")
+    method = FleetDDQN if a.algo == "ddqn" else MAPPO
     storage = TeamStorage(a.team_storage, a.run_name, user=a.user) if a.team_storage else None
     if ON_SAGEMAKER and not storage:
         print("WARNING: no --team-storage: this job saves its model only when it finishes (to /opt/ml/model)")
@@ -137,6 +156,9 @@ def main():
     local_latest = os.path.join(models_dir, "model_latest.pt")
     resume = a.resume or pulled or (local_latest if os.path.exists(local_latest) else None)
     cloned = os.path.join(models_dir, "imitation.pt")
+    shared = os.path.join(HERE, "runs_simple", "fleet", "models", "imitation.pt")
+    if not a.mock and not os.path.exists(cloned) and os.path.exists(shared):
+        cloned = shared                                 # one clone of the Elite AI serves both methods
     if not resume and not a.no_imitation and not os.path.exists(cloned) and a.imitation_battles > 0 and not a.mock:
         if a.ports:
             print("no imitation checkpoint yet - recording the Elite AI needs headless players: run once without "
@@ -152,8 +174,21 @@ def main():
                            unity_log_dir=os.path.join(run_dir, "unity_logs")), log_dir)
     try:
         if resume:
-            model = MAPPO.load(resume, env=env, device=a.device, log_dir=log_dir, verbose=1)
+            model = method.load(resume, env=env, device=a.device, log_dir=log_dir, verbose=1)
             print(f"resuming {resume} at {model.num_timesteps} timesteps")
+        elif a.algo == "ddqn":
+            model = FleetDDQN(env, learning_rate=a.dqn_learning_rate, buffer_size=a.buffer_size,
+                              learning_starts=a.learning_starts, batch_size=a.batch_size,
+                              gradient_steps=a.gradient_steps, n_step=a.n_step,
+                              target_update_interval=a.target_update_interval,
+                              exploration_initial_eps=a.exploration_initial_eps,
+                              exploration_final_eps=a.exploration_final_eps,
+                              exploration_timesteps=a.exploration_timesteps, mixer=a.mixer, d_model=a.d_model,
+                              attn_layers=a.attn_layers, hidden_size=a.hidden_size, recurrent=not a.no_memory,
+                              commander=not a.no_commander, commander_period=a.commander_period,
+                              device=a.device, seed=a.seed, log_dir=log_dir)
+            if not a.no_imitation and os.path.exists(cloned):
+                model.init_from_imitation(cloned)
         else:
             ent = a.ent_coef if a.ent_coef == "auto" else float(a.ent_coef)
             model = MAPPO(env, learning_rate=a.learning_rate, critic_learning_rate=a.critic_learning_rate,

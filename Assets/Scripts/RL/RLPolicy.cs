@@ -56,6 +56,10 @@ namespace Naval.RL
         /// <summary>The file holds the fleet commander (v2): call Command every CommanderPeriod decisions.</summary>
         public bool HasCommander { get; private set; }
         public int CommanderPeriod { get; private set; } = 10;
+        /// <summary>The method that trained it: "commander-mappo", "fleet-ddqn" (Double DQN) or "imitation".</summary>
+        public string Method { get; private set; } = "commander-mappo";
+        /// <summary>Its scores are Q-values (Double DQN): take the best option instead of sampling.</summary>
+        public bool Greedy { get; private set; }
         public const int OrderFree = 0, OrderEngage = 1, OrderCircle = 2;     // order 2 + k = hold circle k
         int _enemyHiddenStart, _enemyHiddenEnd;     // critic_enemy columns the commander may not see (true state)
         bool[] _matchHidden;                        // critic_match columns it may not see (true enemy strength)
@@ -92,6 +96,8 @@ namespace Naval.RL
             if (header.TryGetValue("order_features", out var of)) p.OrderFeatures = MiniJson.Int(of);
             if (header.TryGetValue("has_commander", out var hc)) p.HasCommander = (bool)hc;
             if (header.TryGetValue("commander_period", out var cp)) p.CommanderPeriod = Math.Max(1, MiniJson.Int(cp));
+            if (header.TryGetValue("method", out var me) && me is string method) p.Method = method;
+            if (header.TryGetValue("greedy", out var gr)) p.Greedy = (bool)gr;
             if (header.TryGetValue("enemy_privileged", out var ep))
             {
                 var l = (List<object>)ep;

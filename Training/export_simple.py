@@ -5,13 +5,16 @@
                                                               # if that one reached a later stage
     python export_simple.py --model runs_simple/fleet/models/model_latest.pt
     python export_simple.py --model runs_simple/fleet/models/imitation.pt      # just the clone of the Elite AI
+    python export_simple.py --run-name fleet_ddqn                              # the Double DQN fleet
+                                                         # -> naval_policy_ddqn.bin (TRAINED FLEET: DOUBLE DQN)
 
     # a run trained on SageMaker / by a teammate: fetch its checkpoint from the team folder first
     python export_simple.py --team-storage s3://<bucket>/wow-mappo --run-name fleet
 
-It writes Assets/StreamingAssets/RL/naval_policy.bin (the previous one is kept as naval_policy.bin.bak).
-Then open the project in Unity, press Play, and on the setup screen set ENEMY AI: LEARNED (fight
-against it) or YOUR FLEET: LEARNED (watch it fight). RLPolicyDriver flies those ships with the
+It writes Assets/StreamingAssets/RL/naval_policy.bin - or naval_policy_ddqn.bin for a Double DQN
+checkpoint (the previous file is kept as .bak). Then open the project in Unity, press Play, and on the
+TRAINING STAGES screen pick TRAINED FLEET: MAPPO or DOUBLE DQN and WATCH AI on a stage - or on the
+setup screen set ENEMY AI: LEARNED (fight against it) or YOUR FLEET: LEARNED (watch it fight). RLPolicyDriver flies those ships with the
 trained captains - and, in fleets of two or more, with the trained fleet commander. The file is read
 when the game starts: after exporting again, stop and press Play again. The line under those
 buttons says which policy is loaded ("commander MAPPO with fleet commander").
@@ -22,7 +25,9 @@ from __future__ import annotations
 import argparse
 import os
 
-from simple_mappo.export import GAME_POLICY, GAME_STAGES, export_policy, export_stages, pick_checkpoint
+import torch
+
+from simple_mappo.export import GAME_POLICY, GAME_POLICY_DDQN, GAME_STAGES, export_policy, export_stages, pick_checkpoint
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -32,7 +37,8 @@ def main():
     p.add_argument("--model", help="a checkpoint (model_*.pt or imitation.pt); default: the run's best, else latest")
     p.add_argument("--run-name", default="fleet")
     p.add_argument("--team-storage", help="download the run's checkpoint from this team folder first (s3://... or a folder)")
-    p.add_argument("--out", default=GAME_POLICY, help="the policy file (default: the game's StreamingAssets/RL/naval_policy.bin)")
+    p.add_argument("--out", default=None, help="the policy file (default: the game's StreamingAssets/RL/naval_policy.bin, "
+                                                "or naval_policy_ddqn.bin for a Double DQN checkpoint)")
     p.add_argument("--no-commander", action="store_true", help="export the captains only (every ship free)")
     p.add_argument("--stages-only", action="store_true",
                    help="only write the curriculum for the game's TRAINING STAGES screen (stages.json)")
@@ -40,7 +46,8 @@ def main():
 
     # the curriculum, for the game's TRAINING STAGES screen (kept in step with simple_mappo/curriculum.py)
     stages = export_stages(os.path.join(os.path.dirname(os.path.abspath(a.out)), "stages.json")
-                           if a.out != GAME_POLICY else GAME_STAGES)
+                           if a.out and os.path.abspath(a.out) not in (os.path.abspath(GAME_POLICY),
+                                                                       os.path.abspath(GAME_POLICY_DDQN)) else GAME_STAGES)
     print(f"stages     -> {stages}")
     if a.stages_only:
         return
@@ -59,9 +66,14 @@ def main():
     if model is None:
         raise SystemExit(f"no checkpoint found in {run_dir}/models - pass --model")
 
-    path = export_policy(model, os.path.abspath(a.out), commander=not a.no_commander)
+    out = a.out
+    if out is None:
+        ddqn = torch.load(model, map_location="cpu", weights_only=False).get("method") == "fleet-ddqn"
+        out = GAME_POLICY_DDQN if ddqn else GAME_POLICY
+    path = export_policy(model, os.path.abspath(out), commander=not a.no_commander)
     print(f"exported {model}\n      -> {path}")
-    print("In Unity: press Play (again), then on the setup screen set ENEMY AI: LEARNED or YOUR FLEET: LEARNED.")
+    print("In Unity: press Play (again), then TRAINING STAGES > TRAINED FLEET (MAPPO / DOUBLE DQN) > WATCH AI,\n"
+          "or on the setup screen set ENEMY AI: LEARNED or YOUR FLEET: LEARNED.")
 
 
 if __name__ == "__main__":

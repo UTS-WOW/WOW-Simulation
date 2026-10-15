@@ -817,7 +817,7 @@ namespace Naval
         void BuildStagesMenu()
         {
             var p = Panel("StagesMenu", _canvas.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f),
-                new Vector2(-560f, -400f), new Vector2(560f, 400f), new Color(0.04f, 0.08f, 0.13f, 0.97f));
+                new Vector2(-650f, -400f), new Vector2(650f, 400f), new Color(0.04f, 0.08f, 0.13f, 0.97f));
             _stagesPanel = p.gameObject;
 
             Label("StagesTitle", p, "TRAINING STAGES", 28, TextAnchor.UpperCenter, Accent,
@@ -830,7 +830,8 @@ namespace Naval
             if (stages.Count == 0)
                 Label("NoStages", p, RL.RLStages.Status, 14, TextAnchor.MiddleCenter, TextMain,
                     new Vector2(0f, 0.5f), new Vector2(1f, 0.5f), new Vector2(0f, -20f), new Vector2(0f, 20f));
-            const float rowH = 76f;
+            // rows share the space between the title and the bottom bar (nine stages fit)
+            float rowH = Mathf.Min(76f, 646f / Mathf.Max(1, stages.Count));
             for (int i = 0; i < stages.Count; i++)
             {
                 var st = stages[i];
@@ -841,7 +842,8 @@ namespace Naval
                     15, TextAnchor.MiddleLeft, TextMain, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(12f, -24f), new Vector2(-340f, -4f));
                 Label("Desc", row, st.description, 12, TextAnchor.MiddleLeft, TextDim,
                     new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(12f, -44f), new Vector2(-340f, -26f));
-                Label("Rule", row, "vs " + st.opponentText + "    ·    " + st.passText, 12, TextAnchor.MiddleLeft, Accent,
+                Label("Rule", row, (string.IsNullOrEmpty(st.fleetText) ? "" : "SHIPS  " + st.fleetText + "    ·    ") +
+                    "vs " + st.opponentText + "    ·    " + st.passText, 12, TextAnchor.MiddleLeft, Accent,
                     new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(12f, -64f), new Vector2(-340f, -46f));
 
                 var stage = st;
@@ -854,7 +856,18 @@ namespace Naval
             }
 
             _stagesStatusText = Label("StagesStatus", p, "", 12, TextAnchor.MiddleCenter, TextDim,
-                new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(200f, 18f), new Vector2(-200f, 52f));
+                new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(190f, 18f), new Vector2(-390f, 52f));
+            // which trained fleet WATCH AI / FIGHT AI use: the MAPPO one or the Double DQN one
+            Label("PolicyHdr", p, "TRAINED FLEET", 11, TextAnchor.MiddleRight, TextDim,
+                new Vector2(1f, 0f), new Vector2(1f, 0f), new Vector2(-380f, 18f), new Vector2(-292f, 52f));
+            Button("MAPPO", p, new Vector2(1f, 0f), new Vector2(1f, 0f), new Vector2(-284f, 18f), new Vector2(-172f, 52f),
+                () => RL.RLPolicyDriver.I?.UsePolicy(RL.RLPolicyDriver.MappoFile),
+                () => RL.RLPolicyDriver.I != null && System.IO.File.Exists(RL.RLPolicyDriver.FilePath(RL.RLPolicyDriver.MappoFile)),
+                () => RL.RLPolicyDriver.PolicyFile == RL.RLPolicyDriver.MappoFile);
+            Button("DOUBLE DQN", p, new Vector2(1f, 0f), new Vector2(1f, 0f), new Vector2(-164f, 18f), new Vector2(-30f, 52f),
+                () => RL.RLPolicyDriver.I?.UsePolicy(RL.RLPolicyDriver.DdqnFile),
+                () => RL.RLPolicyDriver.I != null && System.IO.File.Exists(RL.RLPolicyDriver.FilePath(RL.RLPolicyDriver.DdqnFile)),
+                () => RL.RLPolicyDriver.PolicyFile == RL.RLPolicyDriver.DdqnFile);
             Button("BACK", p, new Vector2(0f, 0f), new Vector2(0f, 0f), new Vector2(30f, 18f), new Vector2(170f, 52f),
                 () => { _showStages = false; });
 

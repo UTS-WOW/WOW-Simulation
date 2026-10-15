@@ -23,6 +23,7 @@ namespace Naval.RL
             var s = go.AddComponent<RLScreenshot>();
             s._path = Path.GetFullPath(RLCommandLine.Str("-rlScreenshot", "screenshot.png"));
             s._after = RLCommandLine.Int("-rlScreenshotSeconds", 3);
+            Application.runInBackground = true;      // keep rendering when the window has no focus
             return s;
         }
 

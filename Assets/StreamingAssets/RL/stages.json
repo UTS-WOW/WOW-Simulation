@@ -12,6 +12,7 @@
    "pass_text": "passed: every enemy ship sunk within 150 s in 70% of the last 50",
    "commander": false,
    "time_limit": 0.0,
+   "fleet_text": "ours: 1 BB \u00b7 enemy: 1 CA (a passive target)",
    "scenario_json": "{\"scenarioName\": \"RL Stage 0 - Gunnery\", \"seed\": 1001, \"preset\": 1, \"weather\": 0, \"density\": 0, \"timeLimit\": 240.0, \"scoreToWin\": 1000.0, \"aiDifficulty\": 0, \"fogOfWar\": true, \"useCustomIslands\": false, \"ships\": [{\"cls\": 2, \"team\": 0, \"x\": 0.0, \"y\": -350.0, \"heading\": 0.0}, {\"cls\": 1, \"team\": 1, \"x\": 0.0, \"y\": 350.0, \"heading\": 90.0}], \"zones\": [{\"name\": \"A\", \"x\": 0.0, \"y\": 0.0, \"radius\": 150.0, \"owner\": 2}], \"islands\": [], \"_notes\": \"Open sea, 7 km apart: the cruiser is spotted from the first second and inside gun range. It is a passive target - Python flies it with stop + hold fire, so it neither moves nor shoots. Passed when it is sunk: learns to pick the target, keep the guns firing and use torpedoes.\"}"
   },
   {
@@ -25,6 +26,7 @@
    "pass_text": "passed: a circle captured in 70% of the last 50",
    "commander": false,
    "time_limit": 0.0,
+   "fleet_text": "ours: 1 CA \u00b7 enemy: 1 DD (a passive target)",
    "scenario_json": "{\"scenarioName\": \"RL Stage 1 - Capture\", \"seed\": 1011, \"preset\": 1, \"weather\": 0, \"density\": 0, \"timeLimit\": 240.0, \"scoreToWin\": 1000.0, \"aiDifficulty\": 0, \"fogOfWar\": true, \"useCustomIslands\": false, \"ships\": [{\"cls\": 1, \"team\": 0, \"x\": 0.0, \"y\": -450.0, \"heading\": 0.0}, {\"cls\": 0, \"team\": 1, \"x\": 0.0, \"y\": 1600.0, \"heading\": 0.0}], \"zones\": [{\"name\": \"A\", \"x\": 0.0, \"y\": 0.0, \"radius\": 150.0, \"owner\": 2}], \"islands\": [], \"_notes\": \"One cruiser, one neutral circle 4.5 km ahead. The enemy destroyer is passive and 16 km beyond the circle, out of sight. Points come only from holding the circle: learns to reach it and stay inside.\"}"
   },
   {
@@ -38,6 +40,7 @@
    "pass_text": "passed: won in 70% of the last 100",
    "commander": false,
    "time_limit": 0.0,
+   "fleet_text": "1 CA a side",
    "scenario_json": "{\"scenarioName\": \"RL Stage 2 - Defend\", \"seed\": 1021, \"preset\": 1, \"weather\": 0, \"density\": 0, \"timeLimit\": 240.0, \"scoreToWin\": 1000.0, \"aiDifficulty\": 0, \"fogOfWar\": true, \"useCustomIslands\": false, \"ships\": [{\"cls\": 1, \"team\": 0, \"x\": 0.0, \"y\": -300.0, \"heading\": 0.0}, {\"cls\": 1, \"team\": 1, \"x\": 0.0, \"y\": 800.0, \"heading\": 180.0}], \"zones\": [{\"name\": \"A\", \"x\": 0.0, \"y\": 0.0, \"radius\": 150.0, \"owner\": 2}], \"islands\": [], \"_notes\": \"A neutral circle 3 km ahead of our cruiser; a rule-AI cruiser comes for it from 8 km beyond. Passed on a win: take the circle and hold it while staying afloat - angle, dodge torpedoes, use smoke and repair, fight back. Random play wins 12 %, sailing straight to the circle 0 %.\"}"
   },
   {
@@ -47,10 +50,11 @@
    "description": "Win a battleship duel: choose and time fire, angle the hull, do not throw the ship away.",
    "opponent": "league",
    "difficulty": 0,
-   "opponent_text": "rule AI (Recruit) 70% \u00b7 itself (both sides learn) 30%",
+   "opponent_text": "rule AI (Recruit) 70% \u00b7 itself (mirror) 30%",
    "pass_text": "passed: won in 70% of the last 100",
    "commander": false,
    "time_limit": 0.0,
+   "fleet_text": "1 BB a side",
    "scenario_json": "{\"scenarioName\": \"RL Stage 0 - Battleship duel\", \"seed\": 1101, \"preset\": 1, \"weather\": 0, \"density\": 0, \"timeLimit\": 180.0, \"scoreToWin\": 1000.0, \"aiDifficulty\": 0, \"fogOfWar\": true, \"useCustomIslands\": false, \"ships\": [{\"cls\": 2, \"team\": 0, \"x\": 0.0, \"y\": -650.0, \"heading\": 0.0}, {\"cls\": 2, \"team\": 1, \"x\": -0.0, \"y\": 650.0, \"heading\": 180.0}], \"zones\": [{\"name\": \"A\", \"x\": 0.0, \"y\": 0.0, \"radius\": 150.0, \"owner\": 2}], \"islands\": [], \"_notes\": \"Open sea, 13 km apart: both battleships are spotted from the first second and inside gun range. Learns target choice, fire timing and angling.\"}"
   },
   {
@@ -60,10 +64,11 @@
    "description": "The first fleet battle: the commander orders ships to hold the circle or engage.",
    "opponent": "league",
    "difficulty": 1,
-   "opponent_text": "rule AI (Veteran) 70% \u00b7 itself (both sides learn) 30%",
+   "opponent_text": "rule AI (Veteran) 70% \u00b7 itself (mirror) 30%",
    "pass_text": "passed: won in 70% of the last 100",
    "commander": true,
    "time_limit": 0.0,
+   "fleet_text": "1 BB \u00b7 1 CA \u00b7 1 DD a side",
    "scenario_json": "{\"scenarioName\": \"RL Stage 1 - King of the hill 3v3\", \"seed\": 1202, \"preset\": 1, \"weather\": 0, \"density\": 0, \"timeLimit\": 360.0, \"scoreToWin\": 1000.0, \"aiDifficulty\": 0, \"fogOfWar\": true, \"useCustomIslands\": false, \"ships\": [{\"cls\": 2, \"team\": 0, \"x\": 0.0, \"y\": -560.0, \"heading\": 0.0}, {\"cls\": 1, \"team\": 0, \"x\": -140.0, \"y\": -500.0, \"heading\": 0.0}, {\"cls\": 0, \"team\": 0, \"x\": 140.0, \"y\": -450.0, \"heading\": 0.0}, {\"cls\": 2, \"team\": 1, \"x\": -0.0, \"y\": 560.0, \"heading\": 180.0}, {\"cls\": 1, \"team\": 1, \"x\": 140.0, \"y\": 500.0, \"heading\": 180.0}, {\"cls\": 0, \"team\": 1, \"x\": -140.0, \"y\": 450.0, \"heading\": 180.0}], \"zones\": [{\"name\": \"A\", \"x\": 0.0, \"y\": 0.0, \"radius\": 190.0, \"owner\": 2}], \"islands\": [], \"_notes\": \"One central cap, no cover. The destroyer can reach the ring in about two minutes. Learns to capture while fighting.\"}"
   },
   {
@@ -73,10 +78,11 @@
    "description": "Which ship holds which circle, and who hunts - with islands, spotting and smoke.",
    "opponent": "league",
    "difficulty": 1,
-   "opponent_text": "rule AI (Veteran) 70% \u00b7 itself (both sides learn) 30%",
+   "opponent_text": "rule AI (Veteran) 70% \u00b7 itself (mirror) 30%",
    "pass_text": "passed: won in 70% of the last 150",
    "commander": true,
    "time_limit": 0.0,
+   "fleet_text": "1 BB \u00b7 1 CA \u00b7 1 DD a side",
    "scenario_json": "{\"scenarioName\": \"RL Stage 2 - Archipelago 3v3\", \"seed\": 4242, \"preset\": 0, \"weather\": 0, \"density\": 1, \"timeLimit\": 480.0, \"scoreToWin\": 1000.0, \"aiDifficulty\": 0, \"fogOfWar\": true, \"useCustomIslands\": false, \"ships\": [{\"cls\": 2, \"team\": 0, \"x\": 0.0, \"y\": -650.0, \"heading\": 0.0}, {\"cls\": 1, \"team\": 0, \"x\": -300.0, \"y\": -600.0, \"heading\": 0.0}, {\"cls\": 0, \"team\": 0, \"x\": 300.0, \"y\": -560.0, \"heading\": 0.0}, {\"cls\": 2, \"team\": 1, \"x\": -0.0, \"y\": 650.0, \"heading\": 180.0}, {\"cls\": 1, \"team\": 1, \"x\": 300.0, \"y\": 600.0, \"heading\": 180.0}, {\"cls\": 0, \"team\": 1, \"x\": -300.0, \"y\": 560.0, \"heading\": 180.0}], \"zones\": [{\"name\": \"A\", \"x\": -520.0, \"y\": 0.0, \"radius\": 130.0, \"owner\": 2}, {\"name\": \"B\", \"x\": 0.0, \"y\": 0.0, \"radius\": 130.0, \"owner\": 2}, {\"name\": \"C\", \"x\": 520.0, \"y\": 0.0, \"radius\": 130.0, \"owner\": 2}], \"islands\": [], \"_notes\": \"Islands break line of sight: spotting, smoke, radar and cover start to matter.\"}"
   },
   {
@@ -86,10 +92,11 @@
    "description": "The full Domination game against the Elite AI and a league of the fleet's own past selves.",
    "opponent": "league",
    "difficulty": 2,
-   "opponent_text": "rule AI (Elite) 40% \u00b7 itself (both sides learn) 40% \u00b7 its past selves 20%",
+   "opponent_text": "rule AI (Elite) 40% \u00b7 itself (mirror) 40% \u00b7 past selves 20%",
    "pass_text": "passed: won in 70% of the last 200",
    "commander": true,
    "time_limit": 900.0,
+   "fleet_text": "1 BB \u00b7 2 CA \u00b7 2 DD \u00b7 1 SS a side",
    "procedural": {
     "mode": 0,
     "preset": -1,
@@ -111,13 +118,14 @@
    "index": 7,
    "name": "7 Open",
    "battle": "4-8 ships a side, random mode, map, weather and circle size",
-   "description": "Anything the game can produce - judged on maps training never saw.",
+   "description": "Anything the game can produce: modes, maps, weather and fleet sizes it has not seen.",
    "opponent": "league",
    "difficulty": 2,
-   "opponent_text": "rule AI (Elite) 40% \u00b7 itself (both sides learn) 40% \u00b7 its past selves 20%",
-   "pass_text": "passed: won in 70% of the last 250",
+   "opponent_text": "rule AI (Elite) 40% \u00b7 itself (mirror) 40% \u00b7 past selves 20%",
+   "pass_text": "passed: won in 70% of the last 200",
    "commander": true,
    "time_limit": 1200.0,
+   "fleet_text": "4-8 a side, balanced mix (up to 2 BB \u00b7 2 CA \u00b7 3 DD \u00b7 1 SS)",
    "procedural": {
     "mode": -1,
     "preset": -1,
@@ -134,6 +142,20 @@
      3
     ]
    }
+  },
+  {
+   "index": 8,
+   "name": "8 Archipelago 9v9",
+   "battle": "9v9, every ship class, five circles among islands",
+   "description": "Hold more circles than the enemy: three across the middle, one near each fleet. Split the fleet - do not crowd the centre.",
+   "opponent": "league",
+   "difficulty": 2,
+   "opponent_text": "rule AI (Elite) 40% \u00b7 itself (mirror) 40% \u00b7 past selves 20%",
+   "pass_text": "passed: won in 70% of the last 200",
+   "commander": true,
+   "time_limit": 0.0,
+   "fleet_text": "2 BB \u00b7 3 CA \u00b7 2 DD \u00b7 2 SS a side",
+   "scenario_json": "{\"scenarioName\": \"RL Stage 8 - Archipelago 9v9, five circles\", \"seed\": 8808, \"preset\": 0, \"weather\": 0, \"density\": 1, \"timeLimit\": 720.0, \"scoreToWin\": 1000.0, \"aiDifficulty\": 2, \"fogOfWar\": true, \"useCustomIslands\": true, \"ships\": [{\"cls\": 0, \"team\": 0, \"x\": -480.0, \"y\": -620.0, \"heading\": 0.0}, {\"cls\": 3, \"team\": 0, \"x\": -160.0, \"y\": -620.0, \"heading\": 0.0}, {\"cls\": 3, \"team\": 0, \"x\": 160.0, \"y\": -620.0, \"heading\": 0.0}, {\"cls\": 0, \"team\": 0, \"x\": 480.0, \"y\": -620.0, \"heading\": 0.0}, {\"cls\": 1, \"team\": 0, \"x\": -560.0, \"y\": -730.0, \"heading\": 0.0}, {\"cls\": 2, \"team\": 0, \"x\": -280.0, \"y\": -730.0, \"heading\": 0.0}, {\"cls\": 1, \"team\": 0, \"x\": 0.0, \"y\": -730.0, \"heading\": 0.0}, {\"cls\": 2, \"team\": 0, \"x\": 280.0, \"y\": -730.0, \"heading\": 0.0}, {\"cls\": 1, \"team\": 0, \"x\": 560.0, \"y\": -730.0, \"heading\": 0.0}, {\"cls\": 0, \"team\": 1, \"x\": 480.0, \"y\": 620.0, \"heading\": 180.0}, {\"cls\": 3, \"team\": 1, \"x\": 160.0, \"y\": 620.0, \"heading\": 180.0}, {\"cls\": 3, \"team\": 1, \"x\": -160.0, \"y\": 620.0, \"heading\": 180.0}, {\"cls\": 0, \"team\": 1, \"x\": -480.0, \"y\": 620.0, \"heading\": 180.0}, {\"cls\": 1, \"team\": 1, \"x\": 560.0, \"y\": 730.0, \"heading\": 180.0}, {\"cls\": 2, \"team\": 1, \"x\": 280.0, \"y\": 730.0, \"heading\": 180.0}, {\"cls\": 1, \"team\": 1, \"x\": 0.0, \"y\": 730.0, \"heading\": 180.0}, {\"cls\": 2, \"team\": 1, \"x\": -280.0, \"y\": 730.0, \"heading\": 180.0}, {\"cls\": 1, \"team\": 1, \"x\": -560.0, \"y\": 730.0, \"heading\": 180.0}], \"zones\": [{\"name\": \"A\", \"x\": -560.0, \"y\": 0.0, \"radius\": 120.0, \"owner\": 2}, {\"name\": \"B\", \"x\": 0.0, \"y\": 0.0, \"radius\": 120.0, \"owner\": 2}, {\"name\": \"C\", \"x\": 560.0, \"y\": 0.0, \"radius\": 120.0, \"owner\": 2}, {\"name\": \"D\", \"x\": -280.0, \"y\": 380.0, \"radius\": 120.0, \"owner\": 2}, {\"name\": \"E\", \"x\": 280.0, \"y\": -380.0, \"radius\": 120.0, \"owner\": 2}], \"islands\": [{\"x\": -280.0, \"y\": -40.0, \"radius\": 70.0, \"isRock\": false}, {\"x\": 280.0, \"y\": 40.0, \"radius\": 70.0, \"isRock\": false}, {\"x\": -820.0, \"y\": -260.0, \"radius\": 110.0, \"isRock\": false}, {\"x\": 820.0, \"y\": 260.0, \"radius\": 110.0, \"isRock\": false}, {\"x\": 700.0, \"y\": -280.0, \"radius\": 90.0, \"isRock\": false}, {\"x\": -700.0, \"y\": 280.0, \"radius\": 90.0, \"isRock\": false}, {\"x\": 440.0, \"y\": -170.0, \"radius\": 40.0, \"isRock\": true}, {\"x\": -440.0, \"y\": 170.0, \"radius\": 40.0, \"isRock\": true}, {\"x\": 0.0, \"y\": -260.0, \"radius\": 30.0, \"isRock\": true}, {\"x\": 0.0, \"y\": 260.0, \"radius\": 30.0, \"isRock\": true}], \"_notes\": \"9v9, every fighting class a side (2 battleships, 3 cruisers, 2 destroyers, 2 submarines). Five circles: A B C across the middle, D up-left near the enemy, E down-right near us (the game's Capture and Control layout). Islands are placed by hand and point-symmetric, so both sides face the same map; none sits on a circle.\"}"
   }
  ]
 }

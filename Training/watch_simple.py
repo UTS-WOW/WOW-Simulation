@@ -20,7 +20,9 @@ from __future__ import annotations
 import argparse
 import os
 
-from simple_mappo import MAPPO, NavalEnv, record_unity_video
+import torch
+
+from simple_mappo import MAPPO, FleetDDQN, NavalEnv, record_unity_video
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -41,7 +43,8 @@ def main():
     else:
         env = NavalEnv(stages="default", n_envs=1, graphics=True, base_port=5900,
                        unity_log_dir=os.path.join(HERE, "runs_simple", "watch", "unity_logs"))
-    model = MAPPO.load(a.model, env=env)
+    ddqn = torch.load(a.model, map_location="cpu", weights_only=False).get("method") == "fleet-ddqn"
+    model = (FleetDDQN if ddqn else MAPPO).load(a.model, env=env)      # a MAPPO or a Double DQN checkpoint
     if a.stage is not None:
         env.set_stage(a.stage)
     print(f"{os.path.basename(a.model)} ({model.num_timesteps:,} timesteps) on stage '{env.stages[env.stage]['name']}'")

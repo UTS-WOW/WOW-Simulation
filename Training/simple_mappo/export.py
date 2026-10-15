@@ -2,6 +2,9 @@
 
     python export_simple.py --model runs_simple/fleet/models/model_best.pt
         -> Assets/StreamingAssets/RL/naval_policy.bin (the previous file is kept as naval_policy.bin.bak)
+    python export_simple.py --run-name fleet_ddqn
+        -> Assets/StreamingAssets/RL/naval_policy_ddqn.bin (a Double DQN fleet: the game takes its best
+           action instead of sampling - "greedy" in the header)
 
 Then in Unity: Play, and on the setup screen set "Enemy AI: Learned" (or "Your fleet: Learned"); the
 game's RLPolicyDriver flies those ships with the exported captains and, in fleets of two or more,
@@ -31,6 +34,7 @@ from .networks import Captain, Commander
 VERSION = 2
 TRAINING_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GAME_POLICY = os.path.join(TRAINING_DIR, "..", "Assets", "StreamingAssets", "RL", "naval_policy.bin")
+GAME_POLICY_DDQN = os.path.join(TRAINING_DIR, "..", "Assets", "StreamingAssets", "RL", "naval_policy_ddqn.bin")
 GAME_STAGES = os.path.join(TRAINING_DIR, "..", "Assets", "StreamingAssets", "RL", "stages.json")
 
 # What the commander may not see (simple_mappo/env.py zeroes the same): the true-state columns of
@@ -104,22 +108,26 @@ def commander_tensors(commander: Commander):
 
 
 def _load(source):
-    """A MAPPO model, or the path of a MAPPO / imitation checkpoint -> what the export needs."""
-    if not isinstance(source, str):                          # a MAPPO model in memory
+    """A MAPPO / Double DQN model, or the path of a MAPPO / Double DQN / imitation checkpoint -> what the
+    export needs. A Double DQN captain's head scores are its advantages, so its best action is the
+    highest score: the game plays it greedily."""
+    if not isinstance(source, str):                          # a model in memory
         env = source.env
+        greedy = hasattr(source, "value_head")               # FleetDDQN
         return {"captain": source.policy.captain, "commander": source.policy.commander, "dims": source.dims,
                 "heads": source.heads, "arch": source.arch, "commander_period": source.hp["commander_period"],
                 "decision_period": getattr(env, "decision_period", 1.0),
                 "enemy_privileged": tuple(getattr(getattr(env, "spec", None), "enemy_privileged", DEFAULT_ENEMY_PRIVILEGED)),
-                "match_hidden": _match_hidden(env), "about": {"timesteps": source.num_timesteps,
-                                                              "stage": getattr(env, "stage", 0)}}
+                "match_hidden": _match_hidden(env), "method": "fleet-ddqn" if greedy else "commander-mappo",
+                "greedy": greedy, "about": {"timesteps": source.num_timesteps, "stage": getattr(env, "stage", 0)}}
     ck = torch.load(source, map_location="cpu", weights_only=False)
     dims, heads = ck["dims"], ck["heads"]
+    method = ck.get("method", "commander-mappo")
     if "captain" in ck:                                      # an imitation checkpoint: the clone, no commander
         arch = ck["arch"]
         captain = Captain(dims, heads, arch["d"], arch["attn_heads"], arch["layers"], arch["hidden"], arch["recurrent"])
         captain.load_state_dict(ck["captain"])
-        commander, period, about = None, 10, {"imitation": True}
+        commander, period, about, method = None, 10, {"imitation": True}, "imitation"
     else:
         from .networks import FleetPolicy
         hp = ck["hyperparameters"]
@@ -136,7 +144,7 @@ def _load(source):
     return {"captain": captain, "commander": commander, "dims": dims, "heads": heads, "arch": arch,
             "commander_period": period, "decision_period": ck.get("decision_period", 1.0),
             "enemy_privileged": tuple(ck.get("enemy_privileged", DEFAULT_ENEMY_PRIVILEGED)),
-            "match_hidden": match_hidden, "about": about}
+            "match_hidden": match_hidden, "method": method, "greedy": method == "fleet-ddqn", "about": about}
 
 
 def _match_hidden(env) -> list[float]:
@@ -169,8 +177,9 @@ def pick_checkpoint(models_dir: str, verbose: bool = True) -> str | None:
 
 def export_policy(source, path: str = GAME_POLICY, commander: bool = True, backup: bool = True,
                   max_obstacles: int = 4) -> str:
-    """Writes the fleet (captain + commander) as the game's policy file. source: a MAPPO model, or a
-    checkpoint path (model_*.pt from training, or imitation.pt for the clone alone). Returns the path."""
+    """Writes the fleet (captain + commander) as the game's policy file. source: a MAPPO or Double DQN
+    model, or a checkpoint path (model_*.pt from training, or imitation.pt for the clone alone).
+    Returns the path."""
     m = _load(source)
     tensors, blobs, offset = [], [], 0
     parts = list(captain_tensors(m["captain"]))
@@ -184,7 +193,7 @@ def export_policy(source, path: str = GAME_POLICY, commander: bool = True, backu
         offset += arr.size
     dims = {k: int(v) for k, v in m["dims"].items() if k != "fleet_match"}
     header = {
-        "version": VERSION, "method": "commander-mappo",
+        "version": VERSION, "method": m["method"], "greedy": bool(m["greedy"]),
         "d": m["arch"]["d"], "heads": m["arch"]["attn_heads"], "layers": m["arch"]["layers"], "hidden": m["arch"]["hidden"],
         "dims": dims, "max_obstacles": max_obstacles,
         "action_heads": [{"name": h["name"], "fixed": h["fixed"], "pointer": h["pointer"]} for h in m["heads"]],
@@ -218,7 +227,10 @@ def export_parity_case(source, path: str, n_allies=2, n_contacts=3, n_zones=2, n
     cap, com, d = m["captain"].eval(), m["commander"], m["dims"]
     g = torch.Generator().manual_seed(seed)
     r = lambda *shape: torch.randn(*shape, generator=g) * 0.5
-    A, C, Z, O = 7, 8, 5, 4                          # the training paddings
+    # the training paddings: as many contact / circle slots as the pointer heads have options
+    C = next(h["size"] - h["fixed"] for h in m["heads"] if h["pointer"] == "contacts")
+    Z = next(h["size"] - h["fixed"] for h in m["heads"] if h["pointer"] == "zones")
+    A, O = C - 1, 4
     obs = {"self": r(1, d["self"]), "allies": r(1, A, d["ally"]), "contacts": r(1, C, d["contact"]),
            "zones": r(1, Z, d["zone"]), "obstacles": r(1, O, d["obstacle"])}
     for key, n, size in (("ally_mask", n_allies, A), ("contact_mask", n_contacts, C), ("zone_mask", n_zones, Z),
@@ -240,7 +252,7 @@ def export_parity_case(source, path: str, n_allies=2, n_contacts=3, n_zones=2, n
 
     if com is not None:
         com = com.eval()
-        N = 8
+        N = C
         own, enemy = r(1, N, d["critic_own"]), r(1, N, d["critic_enemy"])
         zones, match = r(1, Z, d["critic_zone"]), r(1, d["critic_match"])
         p0, p1 = m["enemy_privileged"]
@@ -262,9 +274,9 @@ def export_parity_case(source, path: str, n_allies=2, n_contacts=3, n_zones=2, n
 
 
 def _mix_text(mix: dict, level: str) -> str:
-    """{"rule": 0.7, "mirror": 0.3} -> "rule AI (Veteran) 70% · itself (both sides learn) 30%"."""
-    names = {"rule": f"rule AI ({level})", "mirror": "itself (both sides learn)", "latest": "a frozen copy",
-             "past": "its past selves"}
+    """{"rule": 0.7, "mirror": 0.3} -> "rule AI (Veteran) 70% · itself (mirror) 30%" (mirror: both sides learn)."""
+    names = {"rule": f"rule AI ({level})", "mirror": "itself (mirror)", "latest": "a frozen copy",
+             "past": "past selves"}
     total = sum(mix.values()) or 1.0
     return " · ".join(f"{names.get(k, k)} {v / total:.0%}" for k, v in mix.items())
 
@@ -273,7 +285,11 @@ def export_stages(path: str = GAME_STAGES, curriculum="default") -> str:
     """Writes the curriculum for the game's TRAINING STAGES screen (Assets/Scripts/RL/RLStages.cs):
     every stage's battle (its scenario file embedded, or the generator's settings), its opponent and
     what passes it - so the game starts a stage exactly the way training does."""
-    from .curriculum import RANDOM_CHOICES, load_curriculum
+    from .curriculum import RANDOM_CHOICES, load_curriculum, stage_fleets
+
+    def read_scenario(path):
+        with open(os.path.join(TRAINING_DIR, path)) as f:
+            return json.load(f)
 
     def pick(v, default):              # "random" or a list -> -1 (the game picks one); otherwise the value
         v = default if v is None else v
@@ -294,7 +310,8 @@ def export_stages(path: str = GAME_STAGES, curriculum="default") -> str:
                "opponent_text": {"passive": "a passive target", "rule": f"rule AI ({level})"}.get(opponent)
                                 or _mix_text(st.get("opponents") or {"rule": 1.0}, level),
                "pass_text": f"passed: {passed}" + (f" in {rate:.0%} of the last {window}" if rate else ""),
-               "commander": bool(st.get("commander", False)), "time_limit": float(st.get("time_limit") or 0)}
+               "commander": bool(st.get("commander", False)), "time_limit": float(st.get("time_limit") or 0),
+               "fleet_text": stage_fleets(st, read_scenario)["short"]}
         if "procedural" in st:
             p = st["procedural"]
             ships = p.get("ships", [6, 6])

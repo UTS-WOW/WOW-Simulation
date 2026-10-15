@@ -258,3 +258,103 @@ def test_mirror_battles_train_both_fleets():
         assert obs["exists"][2:].sum() == 0 and obs["commander_on"][2:].sum() == 0
     finally:
         env.close()
+
+
+# ---------------------------------------------------------------------------------------------- circles
+
+def test_free_ships_spread_over_the_circles_that_need_them():
+    """9 free ships, 5 neutral circles: shared out nearest first, at most 2 per circle (9 / 5 rounded up)."""
+    from simple_mappo.rewards import circle_duty
+    rng = np.random.default_rng(0)
+    dist = rng.uniform(0.5, 6.0, size=(9, 5)).astype(np.float32)
+    dist[:, 1] = 0.2                                   # every ship is closest to the centre circle
+    facts = {"dist_km": dist, "inside": np.zeros((9, 5), np.float32), "alive": np.ones(9, np.float32),
+             "mine": np.zeros(5, np.float32)}
+    circle = circle_duty(facts, np.zeros(9, np.int64))
+    assert sorted(np.bincount(circle, minlength=5).tolist()) == [1, 2, 2, 2, 2]
+    # a circle we own already needs nobody; an order still wins over the sharing out
+    facts["mine"][1] = 1.0
+    orders = np.zeros(9, np.int64)
+    orders[0] = 2 + 1                                  # ship 0: hold circle 1
+    circle = circle_duty(facts, orders)
+    assert circle[0] == 1 and (circle[1:] != 1).all()
+    # every circle ours: each free ship guards its nearest
+    facts["mine"][:] = 1.0
+    assert (circle_duty(facts, None) == dist.argmin(1)).all()
+
+
+def test_circles_held_pays_the_fleet():
+    from simple_mappo.rewards import REWARD_WEIGHTS, compute_rewards
+    N = 2
+    facts = {"dist_km": np.full((N, 3), np.inf, np.float32), "inside": np.zeros((N, 3), np.float32),
+             "alive": np.ones(N, np.float32), "mine": np.zeros(3, np.float32)}
+    team = {k: 0.0 for k in ("zones_captured", "zones_lost", "kills", "losses", "win", "loss")}
+    team["circles_held"] = (2 - 1) / 3                  # we hold 2 of 3 circles, they hold 1
+    zero = np.zeros(N, np.float32)
+    ship = {"damage_dealt": zero, "damage_taken": zero, "friendly_fire_dealt": zero}
+    _, _, terms = compute_rewards(facts, facts, team, ship, None, N, N, REWARD_WEIGHTS, 2.0)
+    assert terms["circles_held"] == pytest.approx(np.full(N, REWARD_WEIGHTS["circles_held"] * 2.0 / 3))
+
+
+# ---------------------------------------------------------------------------------------------- Double DQN
+
+def test_checkpoints_from_fewer_ship_slots_still_fit():
+    from simple_mappo.networks import same_heads
+    eight = [{"name": "target", "fixed": 1, "pointer": "contacts", "size": 9}]
+    nine = [{"name": "target", "fixed": 1, "pointer": "contacts", "size": 10}]
+    assert same_heads(eight, nine)
+    assert not same_heads(eight, [{"name": "target", "fixed": 2, "pointer": "contacts", "size": 11}])
+
+
+def test_epsilon_greedy_takes_the_best_legal_option_or_a_random_legal_one():
+    from simple_mappo.networks import epsilon_greedy
+    scores = torch.tensor([[5.0, 1.0, 0.0, 9.0, 2.0]]).repeat(500, 1)
+    mask = torch.tensor([[1.0, 1.0, 0.0, 0.0, 1.0]]).repeat(500, 1)   # option 3 scores best but is illegal
+    greedy = epsilon_greedy(scores, mask, [3, 2], 0.0)
+    assert (greedy[:, 0] == 0).all() and (greedy[:, 1] == 1).all()
+    explore = epsilon_greedy(scores, mask, [3, 2], 1.0)
+    assert set(explore[:, 0].tolist()) == {0, 1} and set(explore[:, 1].tolist()) == {1}
+
+
+def test_n_step_targets_stop_at_the_end_of_a_battle(env):
+    from simple_mappo.ddqn import FleetDDQN
+    model = FleetDDQN(env, d_model=32, attn_layers=1, hidden_size=32, gamma=0.5, n_step=2, verbose=0)
+    r = torch.tensor([[1.0], [1.0], [1.0], [1.0]])     # [T + 1, B]
+    done = torch.tensor([[0.0], [1.0], [0.0], [0.0]])  # the battle ends after step 1
+    q_next = torch.tensor([[10.0], [10.0], [10.0], [10.0]])
+    y = model._n_step_targets(r, done, q_next)[:, 0]
+    # t=0: 1 + 0.5 * 1, then the battle ended - no bootstrap; t=1: 1, ended; t=2: 1 + 0.5 * 10 (chunk end)
+    assert y.tolist() == pytest.approx([1.5, 1.0, 6.0])
+
+
+def test_replay_keeps_only_used_ship_slots_and_pads_batches():
+    from simple_mappo.ddqn import SequenceReplay
+    replay = SequenceReplay(capacity=64, chunk_len=4)
+    for ships in (1, 3):
+        exists = np.zeros((5, 9), np.float32)
+        exists[:, :ships] = 1
+        replay.add({"exists": exists, "self": np.ones((5, 9, 7), np.float32), "critic_enemy_mask": exists.copy(),
+                    "critic_enemy": np.ones((5, 9, 2), np.float32), "rewards": np.ones((5, 9), np.float32),
+                    "dones": np.zeros(5, np.float32), "h0": np.ones((9, 4), np.float32)})
+    assert replay.chunks[0]["self"].shape == (5, 1, 7) and replay.chunks[0]["self"].dtype == np.float16
+    batch = replay.sample(8)
+    assert batch["self"].shape == (5, 8, 3, 7) and batch["h0"].shape == (8, 3, 4)
+
+
+def test_ddqn_learn_save_load_and_predict(env, tmp_path):
+    from simple_mappo.ddqn import FleetDDQN
+    model = FleetDDQN(env, d_model=32, attn_layers=1, hidden_size=32, chunk_len=8, learning_starts=16, batch_size=4,
+                      gradient_steps=2, mixer="qmix", verbose=0, log_dir=str(tmp_path))
+    model.learn(total_timesteps=8 * env.n_envs * 3, log_interval=1)
+    assert model.n_updates == 3 and model.n_gradient_steps > 0 and (tmp_path / "progress.csv").exists()
+    path = model.save(str(tmp_path / "q"))
+    again = FleetDDQN.load(path, env=env)
+    obs = env.reset()
+    a1, a2 = model.predict(obs, deterministic=True), again.predict(obs, deterministic=True)
+    assert np.array_equal(a1, a2)
+    mask = obs["action_mask"]
+    off = 0
+    for h, size in enumerate(env.head_sizes):        # greedy actions are legal ones
+        chosen = np.take_along_axis(mask[..., off:off + size], a1[..., h:h + 1], -1)
+        assert (chosen[obs["exists"] > 0.5] > 0.5).all()
+        off += size

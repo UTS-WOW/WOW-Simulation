@@ -32,7 +32,8 @@ JOB_REQUIREMENTS = "matplotlib\npillow\n"     # for the replay videos; PyTorch, 
 # numbers from the training table, charted by SageMaker on the job's page (Monitor -> Algorithm metrics)
 METRICS = [{"Name": name, "Regex": rf"\| {name} +\| +([-0-9.e+]+) +\|"}
            for name in ("total_timesteps", "stage", "win_rate", "win_rate_self_play", "ep_rew_mean", "fps",
-                        "entropy", "explained_variance", "pass_rate", "orders_free", "elo")]
+                        "entropy", "explained_variance", "pass_rate", "orders_free", "elo",
+                        "q_loss", "q_value", "epsilon")]   # the last three: Double DQN jobs (--algo ddqn)
 
 
 def _session():

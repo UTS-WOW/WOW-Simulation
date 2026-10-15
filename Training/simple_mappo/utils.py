@@ -36,10 +36,17 @@ class Monitor:
 
     Columns: r (average reward per ship), l (decisions), t (seconds since start), won, battle_time,
     the game's own scores and kills, and term_<name>: what each reward term paid per ship.
+
+    Two Monitors can share one NavalEnv - one Unity player per battle for both methods - each with its
+    own log and its own curriculum stage (MAPPO and Double DQN climb the stages separately):
+
+        battles = NavalEnv(stages="default", n_envs=8)
+        env, env_dqn = Monitor(battles, "runs_simple/fleet/logs"), Monitor(battles, "runs_simple/fleet_ddqn/logs")
     """
 
     def __init__(self, env, log_dir: str):
         self.env = env
+        self._stage = env.stage
         os.makedirs(log_dir, exist_ok=True)
         self.path = os.path.join(log_dir, "monitor.csv")
         self.terms = list(env.reward_weights)
@@ -53,10 +60,24 @@ class Monitor:
     def __getattr__(self, name):
         return getattr(self.env, name)
 
+    @property
+    def stage(self) -> int:
+        return self._stage
+
+    def set_stage(self, stage: int) -> None:
+        self.env.set_stage(stage)
+        self._stage = self.env.stage
+
+    def _own_stage(self) -> None:
+        if self.env.stage != self._stage:             # another Monitor of the same battles moved it
+            self.env.set_stage(self._stage)
+
     def reset(self):
+        self._own_stage()
         return self.env.reset()
 
     def step(self, actions, orders=None):
+        self._own_stage()
         obs, rewards, dones, infos = self.env.step(actions, orders)
         rows = [self._row(i) for i in infos if i]
         if rows:
@@ -182,22 +203,93 @@ def plot_reward_terms(log_folder: str, window: int = 50, stage: int | None = Non
 
 
 def plot_progress(log_folder: str):
-    """The PPO diagnostics from progress.csv, one row per update."""
+    """The training diagnostics from progress.csv, one row per update: PPO's for a MAPPO run, the
+    Q-learning ones (TD loss, Q-values, epsilon, replay size) for a Double DQN run."""
     import matplotlib.pyplot as plt
     import pandas as pd
     path = os.path.join(log_folder, "progress.csv")
     if not os.path.exists(path):
-        print("PPO diagnostics: no updates logged yet")
+        print("diagnostics: no updates logged yet")
         return
     df = pd.read_csv(path)
-    cols = ["policy_loss", "value_loss", "entropy", "approx_kl", "clip_fraction", "explained_variance"]
+    if "q_loss" in df:
+        cols, title = ["q_loss", "q_value", "target_value", "epsilon", "commander_loss", "replay_decisions"], "Double DQN"
+    else:
+        cols, title = ["policy_loss", "value_loss", "entropy", "approx_kl", "clip_fraction", "explained_variance"], "PPO"
     fig, axes = plt.subplots(2, 3, figsize=(14, 6))
     for ax, c in zip(axes.ravel(), cols):
-        ax.plot(df.total_timesteps, df[c])
+        if c in df and df[c].notna().any():
+            ax.plot(df.total_timesteps, df[c])
         ax.set_title(c)
         ax.set_xlabel("timesteps")
+    fig.suptitle(f"{title} diagnostics")
     plt.tight_layout()
     plt.show()
+
+
+# ---------------------------------------------------------------------------------------------- comparing methods
+
+def _stage_battles(log_dir: str, stage: int):
+    """A run's training battles on one stage, with the timesteps it had spent on the stage after each."""
+    path = os.path.join(log_dir, "monitor.csv")
+    if not os.path.exists(path):
+        return None
+    df = load_results(log_dir, stage=stage)
+    df["on_stage"] = np.cumsum(df.l.values) if len(df) else []
+    return df
+
+
+def plot_comparison(runs: dict, stage: int, window: int = 50):
+    """Two methods (or more) on one stage: {"MAPPO": its log_dir, "Double DQN": its log_dir}.
+    Left: the pass rate against the stage's own opponent (what promotion counts); right: the reward
+    per battle. x: timesteps each run spent on this stage - a fair race from the same starting line."""
+    import matplotlib.pyplot as plt
+    fig, (left, right) = plt.subplots(1, 2, figsize=(14, 4.5))
+    for name, log_dir in runs.items():
+        df = _stage_battles(log_dir, stage)
+        if df is None or not len(df):
+            print(f"{name}: no battles on stage {stage} yet")
+            continue
+        gate = df[df.opponent.astype(str).isin(["rule", "passive"])]
+        if len(gate):
+            w = max(1, min(window, len(gate)))
+            y = np.convolve(gate.passed.values.astype(float), np.ones(w) / w, mode="valid")
+            left.plot(gate.on_stage.values[w - 1:], y, label=name)
+        y = _smooth(df.r.values, window)
+        right.plot(df.on_stage.values[len(df) - len(y):], y, label=name)
+    left.axhline(0.7, color="gray", lw=0.8, ls="--")
+    left.set_ylim(0, 1)
+    left.set_title(f"Stage {stage}: pass rate (last {window} battles vs its own opponent)")
+    right.set_title(f"Stage {stage}: reward per ship per battle (smoothed)")
+    for ax in (left, right):
+        ax.set_xlabel("Timesteps on this stage")
+        ax.legend()
+    plt.tight_layout()
+    plt.show()
+
+
+def compare_stages(runs: dict, stages: list[dict], window: int = 50):
+    """Every stage, every method, side by side (from the runs' monitor.csv): how long each needed on the
+    stage, how it was doing at the end, and whether it passed (moved on to a later stage)."""
+    import pandas as pd
+    rows = []
+    for k, st in enumerate(stages):
+        row = {"stage": st["name"]}
+        for name, log_dir in runs.items():
+            path = os.path.join(log_dir, "monitor.csv")
+            if not os.path.exists(path):
+                continue
+            everything = load_results(log_dir)
+            df = everything[everything.stage == k]
+            later = (everything.stage > k).values
+            first_later = int(np.argmax(later)) if later.any() else len(everything)
+            before = df[df.index < first_later]                         # until promotion (no rehearsals after it)
+            gate = before[before.opponent.astype(str).isin(["rule", "passive"])]
+            row[f"{name}: timesteps"] = int(before.l.sum()) if len(before) else None     # None: before this log
+            row[f"{name}: pass rate"] = round(float(gate.passed.tail(window).mean()), 2) if len(gate) else None
+            row[f"{name}: passed"] = "yes" if later.any() else ("training" if len(df) else "-")
+        rows.append(row)
+    return pd.DataFrame(rows).set_index("stage")
 
 
 # ---------------------------------------------------------------------------------------------- evaluation

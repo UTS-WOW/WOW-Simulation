@@ -25,6 +25,7 @@ namespace Naval.RL
 
         public static RLDemo Create(Transform parent)
         {
+            Application.runInBackground = true;      // a demo keeps playing when the window has no focus
             var go = new GameObject("RLDemo");
             go.transform.SetParent(parent, false);
             var d = go.AddComponent<RLDemo>();

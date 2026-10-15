@@ -94,7 +94,7 @@ import numpy as np
 from .callbacks import BaseCallback
 
 NO_CIRCLE = {"approach_circle": 0.0, "in_circle": 0.0, "circles_held": 0.0}
-LEAGUE = {"rule": 0.4, "mirror": 0.4, "past": 0.2}       # stages 6-7: the rule AI, itself (both sides learn), past selves
+LEAGUE = {"rule": 0.4, "mirror": 0.4, "past": 0.2}       # stages 6-8: the rule AI, itself (both sides learn), past selves
 SELF_PLAY = {"rule": 0.7, "mirror": 0.3}                  # stages 3-5: mostly the rule AI, some battles against itself
 
 DEFAULT_CURRICULUM = [
@@ -190,6 +190,63 @@ def stage_sizes(stage: dict, load_scenario) -> tuple[int, int, int]:
         enemy = max(enemy, sum(1 for s in sc["ships"] if s["team"] == 1))
         zones = max(zones, len(sc.get("zones", [])))
     return own, enemy, max(1, zones)
+
+
+# the game's ship classes (Assets/Scripts/Core/NavalTypes.cs, ShipClassType) - in scenario files "cls"
+SHIP_CLASSES = {2: ("battleship", "BB"), 1: ("cruiser", "CA"), 0: ("destroyer", "DD"), 3: ("submarine", "SS"),
+                4: ("transport", "AP")}
+
+
+def balanced_fleet(count: int) -> dict[int, int]:
+    """The fleet the game builds for a generated battle of `count` ships (FleetSetup.BalancedFor in
+    GameManager.cs): about a fifth battleships, submarines from 6 ships up, the rest half cruisers,
+    half destroyers. {class: ships}."""
+    if count <= 0:
+        return {}
+    battleships = int(np.clip(round(count * 0.22), 1 if count >= 3 else 0, count))
+    subs = int(np.clip(round(count * 0.12), 1, 4)) if count >= 6 else 0
+    remaining = max(0, count - battleships - subs)
+    cruisers = round(remaining * 0.5)
+    fleet = {2: battleships, 1: cruisers, 0: remaining - cruisers, 3: subs}
+    while sum(fleet.values()) > count:                      # rounding, as the game does it
+        last = next(c for c in (3, 0, 1, 2) if fleet[c] > 0)
+        fleet[last] -= 1
+    fleet[0] += count - sum(fleet.values())
+    return {c: n for c, n in fleet.items() if n}
+
+
+def fleet_text(fleet: dict[int, int], short: bool = True) -> str:
+    """{2: 1, 1: 2} -> "1 BB · 2 CA" (short) or "1 battleship, 2 cruisers"."""
+    parts = []
+    for c in (2, 1, 0, 3, 4):
+        if fleet.get(c):
+            name, abbr = SHIP_CLASSES[c]
+            parts.append(f"{fleet[c]} {abbr}" if short else f"{fleet[c]} {name}{'s' if fleet[c] > 1 else ''}")
+    return (" · " if short else ", ").join(parts) or "-"
+
+
+def stage_fleets(stage: dict, load_scenario) -> dict:
+    """Who sails in a stage: {"ours": {class: ships}, "theirs": {...}, "text": one line for people,
+    "short": a shorter one for the game's TRAINING STAGES screen}.
+    A generated stage with a range of fleet sizes reports its largest fleet (and the range in "text")."""
+    if "procedural" in stage:
+        ships = stage["procedural"].get("ships", [6, 6])
+        lo, hi = (int(ships[0]), int(ships[-1])) if isinstance(ships, (list, tuple)) else (int(ships), int(ships))
+        ours = balanced_fleet(hi)
+        text = (f"{fleet_text(ours)} a side" if lo == hi else
+                f"{lo}-{hi} ships a side, the game's balanced mix: {lo} = {fleet_text(balanced_fleet(lo))} … "
+                f"{hi} = {fleet_text(ours)}")
+        short = text if lo == hi else f"{lo}-{hi} a side, balanced mix (up to {fleet_text(ours)})"
+        return {"ours": ours, "theirs": dict(ours), "text": text, "short": short}
+    paths = stage["scenario"] if isinstance(stage["scenario"], list) else [stage["scenario"]]
+    sc = load_scenario(paths[0])
+    count = lambda team: {c: n for c in SHIP_CLASSES if (n := sum(1 for s in sc["ships"] if s["team"] == team
+                                                                   and int(s["cls"]) == c))}
+    ours, theirs = count(0), count(1)
+    passive = " (a passive target)" if stage.get("opponent") == "passive" else ""
+    text = (f"{fleet_text(ours)} a side" if ours == theirs and not passive else
+            f"ours: {fleet_text(ours)} · enemy: {fleet_text(theirs)}{passive}")
+    return {"ours": ours, "theirs": theirs, "text": text, "short": text}
 
 
 def map_seed(rng: np.random.Generator, held_out: bool) -> int:

@@ -25,7 +25,15 @@ namespace Naval.RL
     {
         public static RLPolicyDriver I { get; private set; }
 
-        public static string PolicyPath => Path.Combine(Application.streamingAssetsPath, "RL", "naval_policy.bin");
+        /// <summary>The policy files training exports (Training/export_simple.py): MAPPO's and Double DQN's.</summary>
+        public const string MappoFile = "naval_policy.bin", DdqnFile = "naval_policy_ddqn.bin";
+
+        /// <summary>Which of them flies the Learned ships (the TRAINING STAGES screen switches it).</summary>
+        public static string PolicyFile { get; private set; } = MappoFile;
+
+        public static string PolicyPath => FilePath(PolicyFile);
+
+        public static string FilePath(string file) => Path.Combine(Application.streamingAssetsPath, "RL", file);
 
         public RLPolicy Policy { get; private set; }
         public string Status { get; private set; } = "no trained policy";
@@ -84,6 +92,13 @@ namespace Naval.RL
             return d;
         }
 
+        /// <summary>Switches the Learned ships to another exported policy file (MappoFile or DdqnFile) and loads it.</summary>
+        public bool UsePolicy(string file)
+        {
+            PolicyFile = file;
+            return TryLoad();
+        }
+
         /// <summary>(Re)loads the exported policy. Safe to call while playing, e.g. after a new export.</summary>
         public bool TryLoad()
         {
@@ -91,7 +106,7 @@ namespace Naval.RL
             string path = PolicyPath;
             if (!File.Exists(path))
             {
-                Status = "no trained policy (train one, it is exported to StreamingAssets/RL/naval_policy.bin)";
+                Status = "no trained policy (train one, it is exported to StreamingAssets/RL/" + PolicyFile + ")";
                 return false;
             }
             try
@@ -101,7 +116,8 @@ namespace Naval.RL
                     throw new FormatException("policy has " + Policy.ActionHeads.Count + " action heads, the game has " + RLLayout.HeadCount);
                 if (!SameLayout(Policy))
                     throw new FormatException("policy was trained on a different observation or action layout - retrain it");
-                Status = "trained policy loaded (" + (Policy.Version >= 2 ? "commander MAPPO" + (Policy.HasCommander ? " with fleet commander" : "") + ", " : "")
+                string method = Policy.Method == "fleet-ddqn" ? "Double DQN" : Policy.Method == "imitation" ? "imitation clone" : "commander MAPPO";
+                Status = "trained policy loaded (" + (Policy.Version >= 2 ? method + (Policy.HasCommander ? " with fleet commander" : "") + ", " : "")
                          + Policy.ActionMode + ", " + File.GetLastWriteTime(path).ToString("yyyy-MM-dd HH:mm") + ")";
                 return true;
             }
@@ -352,7 +368,7 @@ namespace Naval.RL
             int best = 0;
             for (int j = 0; j < size; j++)
                 if (mask[maskOffset + j] > 0.5f && logits[offset + j] > max) { max = logits[offset + j]; best = j; }
-            if (float.IsNegativeInfinity(max) || !Sample) return best;
+            if (float.IsNegativeInfinity(max) || !Sample || Policy.Greedy) return best;     // Double DQN: the best Q
 
             double total = 0;
             for (int j = 0; j < size; j++)

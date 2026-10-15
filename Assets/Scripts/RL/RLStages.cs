@@ -25,6 +25,8 @@ namespace Naval.RL
         {
             public int index;
             public string name, battle, description, opponent, opponentText, passText;
+            /// <summary>The ships of each side by class, e.g. "2 BB · 3 CA · 2 DD · 2 SS a side".</summary>
+            public string fleetText;
             public int difficulty;
             public bool commander;
             public float timeLimit;
@@ -79,6 +81,7 @@ namespace Naval.RL
                         index = MiniJson.Int(d["index"]),
                         name = Text(d, "name"), battle = Text(d, "battle"), description = Text(d, "description"),
                         opponent = Text(d, "opponent"), opponentText = Text(d, "opponent_text"), passText = Text(d, "pass_text"),
+                        fleetText = Text(d, "fleet_text"),
                         difficulty = d.ContainsKey("difficulty") ? MiniJson.Int(d["difficulty"]) : 0,
                         commander = d.ContainsKey("commander") && (bool)d["commander"],
                         timeLimit = d.ContainsKey("time_limit") ? (float)MiniJson.Num(d["time_limit"]) : 0f,
