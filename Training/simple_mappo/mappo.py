@@ -56,7 +56,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .callbacks import BaseCallback, CallbackList
-from .league import OpponentPool
+from .league import LeagueMixin, OpponentPool
 from .networks import (CAPTAIN_KEYS, NEG_INF, CentralCritic, Commander, FleetPolicy, LocalCritic, Memory,
                        kl_to, log_prob_entropy, same_heads, to_tensors)
 from .rewards import REWARD_GROUPS
@@ -124,7 +124,7 @@ def ppo_objective(ratio: torch.Tensor, advantage: torch.Tensor, clip_range: floa
     return surrogate
 
 
-class MAPPO:
+class MAPPO(LeagueMixin):
     def __init__(self, env, learning_rate: float = 3e-4, critic_learning_rate: float = 5e-4,
                  commander_learning_rate: float = 1e-4, n_steps: int = 256, n_minibatches: int = 4,
                  n_epochs: int = 5, gamma: float = 0.995, gae_lambda: float = 0.95, clip_range: float = 0.2,
@@ -135,7 +135,8 @@ class MAPPO:
                  centralised_critic: bool = True, normalize_values: bool = True, commander: bool = True,
                  commander_period: int = 10, kl_bc_coef: float = 0.1, kl_bc_final: float = 0.01,
                  kl_bc_updates: int = 1000, actor_warmup_updates: int = 0, opponent_refresh: int = 10,
-                 snapshot_every: int = 25, pool_size: int = 20, device: str = "auto", torch_threads: int | None = 4,
+                 snapshot_every: int = 25, pool_size: int = 20, pfsp: str = "hard", device: str = "auto",
+                 torch_threads: int | None = 4,
                  seed: int = 0, verbose: int = 1, log_dir: str | None = None):
         """
         learning_rate        the captains' (actors') step size; critic_learning_rate and
@@ -171,6 +172,8 @@ class MAPPO:
         opponent_refresh     updates between refreshing the frozen copy that plays "latest" in the league
         snapshot_every       updates between adding a past copy to the league's pool (league stages only)
         pool_size            past copies kept in the pool
+        pfsp                 how past copies are picked: "hard" (the ones we lose to) or "variance" (the
+                             ones we beat about half the time) - league.py
         torch_threads        CPU threads for PyTorch: a few, so the network does not fight the Unity
                              players for the cores (None: PyTorch's default, all cores)
         log_dir              where progress.csv (one row per update) is written
@@ -189,7 +192,7 @@ class MAPPO:
                        commander=commander, commander_period=commander_period, kl_bc_coef=kl_bc_coef,
                        kl_bc_final=kl_bc_final, kl_bc_updates=kl_bc_updates,
                        actor_warmup_updates=actor_warmup_updates, opponent_refresh=opponent_refresh,
-                       snapshot_every=snapshot_every, pool_size=pool_size, seed=seed)
+                       snapshot_every=snapshot_every, pool_size=pool_size, pfsp=pfsp, seed=seed)
         self.verbose = verbose
         self.log_dir = log_dir
         if device == "auto":
@@ -224,7 +227,7 @@ class MAPPO:
         self.teacher: FleetPolicy | None = None
         # the league: a frozen copy of the current fleet ("latest") and a pool of past copies
         self.opponent = copy.deepcopy(self.policy).eval()
-        self.league = OpponentPool(pool_size, seed)
+        self.league = OpponentPool(pool_size, seed, pfsp=pfsp)
         self._past: dict[int, FleetPolicy] = {}
         if hasattr(env, "set_opponent_policy"):
             env.set_opponent_policy(self._opponent_act, self.league.sample)
@@ -264,34 +267,6 @@ class MAPPO:
         self.last_orders = out["orders"].cpu().numpy()
         return out["actions"].cpu().numpy()
 
-    def _opponent_act(self, obs: dict, envs: list[int], ids: list[int]) -> np.ndarray:
-        """The enemy fleet's actions in league battles: the frozen latest copy (id -1) or a past one."""
-        E = self.env.n_envs
-        if self._opp_memory is None or self._opp_memory.h.shape[0] != E:
-            self._opp_memory = self.policy.new_memory(E, self.env.n_agents)
-        tens = self._tensors(obs)
-        envs, ids = np.asarray(envs), np.asarray(ids)
-        actions = np.zeros((len(envs), self.env.n_agents, len(self.head_sizes)), dtype=np.int32)
-        for sid in np.unique(ids):
-            rows = np.flatnonzero(ids == sid)
-            policy = self.opponent if sid < 0 else self._past_policy(int(sid))
-            memory = self._opp_memory.take(envs[rows])
-            out = policy.act({k: v[rows] for k, v in tens.items()}, memory)
-            self._opp_memory.put(envs[rows], memory)
-            actions[rows] = out["actions"].cpu().numpy()
-        return actions
-
-    def _past_policy(self, sid: int) -> FleetPolicy:
-        if sid not in self._past:
-            weights = self.league.weights(sid)
-            if weights is None:
-                return self.opponent
-            policy = copy.deepcopy(self.opponent)
-            policy.load_state_dict(weights)
-            self._past = {k: v for k, v in self._past.items() if self.league.weights(k) is not None}
-            self._past[sid] = policy
-        return self._past[sid]
-
     def reset_battles(self) -> None:
         """Starts fresh battles (e.g. after an evaluation took over the environment)."""
         self._last_obs = self.env.reset()
@@ -314,9 +289,7 @@ class MAPPO:
             stats = self.train()
             if self.n_updates % self.hp["opponent_refresh"] == 0:
                 self.opponent.load_state_dict(self.policy.state_dict())
-            stage = self.env.stages[self.env.stage]
-            if "past" in (stage.get("opponents") or {}) and self.n_updates % self.hp["snapshot_every"] == 0:
-                self.league.add(self.policy, self.n_updates)
+            self._league_step()                           # past copies, the champion (league.py)
             if log_interval and self.n_updates % log_interval == 0:
                 self._log(stats, start)
             if not callback.on_rollout_end():
@@ -678,7 +651,7 @@ class MAPPO:
             row["ep_rew_mean"] = float(np.mean([e["episode"]["r"] for e in eps]))
             row["ep_len_mean"] = float(np.mean([e["episode"]["l"] for e in eps]))
             gate = [e for e in eps if e.get("opponent", "rule") in ("rule", "passive")]
-            selfp = [e["won"] for e in eps if e.get("opponent") in ("latest", "past", "mirror")]
+            selfp = [e["won"] for e in eps if e.get("opponent") in ("latest", "past", "mirror", "champion", "rival")]
             if gate:
                 row["win_rate"] = float(np.mean([e["won"] for e in gate]))       # against the stage's own opponent
                 row["pass_rate"] = float(np.mean([e.get("passed", e["won"]) for e in gate]))   # its goal

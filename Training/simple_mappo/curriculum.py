@@ -10,17 +10,19 @@ asks for a 70 % win rate before moving on.
     1 Capture          capture (one circle)           1 CA         passive, far away            -          -
                          passed: the circle captured
     2 Defend           defend (a neutral circle)      1 CA vs CA   Recruit                      -          -
-    3 Duel             bb_duel (open sea)             1v1 BB       Recruit 70 % / itself 30 %   -          -
-    4 King of the Hill koth_3v3 (one circle)          3v3 mixed    Veteran 70 % / itself 30 %   on         0.3
-    5 Archipelago      archipelago_3v3 (3 circles)    3v3 mixed    Veteran 70 % / itself 30 %   on         0.5
-    6 Domination       random map, random weather     6v6          Elite 40 / itself 40 / past  on         0.8
-    7 Open             random mode, map, weather      4-8 a side   Elite 40 / itself 40 / past  on         1.0
-    8 Archipelago 9v9  archipelago_9v9 (5 circles)    9v9, every   Elite 40 / itself 40 / past  on         1.0
+    3 Duel             bb_duel (open sea)             1v1 BB       Recruit 60 % / self-play 40  -          -
+    4 King of the Hill koth_3v3 (one circle)          3v3 mixed    Veteran 60 % / self-play 40  on         0.3
+    5 Archipelago      archipelago_3v3 (3 circles)    3v3 mixed    Veteran 60 % / self-play 40  on         0.5
+    6 Domination       random map, random weather     6v6          Elite 40 % / self-play 60    on         0.8
+    7 Open             random mode, map, weather      4-8 a side   Elite 40 % / self-play 60    on         1.0
+    8 Archipelago 9v9  archipelago_9v9 (5 circles)    9v9, every   Elite 40 % / self-play 60    on         1.0
                                                       class
 
-  "itself" is a mirror battle: the current fleet flies BOTH sides and both sides' experience trains
-  it - twice the data per battle, and an opponent that is always exactly as good as the fleet.
-  Promotion only ever counts the battles against the rule AI.
+  self-play (league.py): "mirror" - the current fleet flies BOTH sides and both sides' experience
+  trains it; "champion" - the strongest version so far, replaced only when the fleet beats it in 55 %
+  of 40 battles (so it always has its best self to beat); "past" - older copies, the ones it loses to
+  most often first; "rival" - the OTHER method's fleet (MAPPO <-> Double DQN, cross-play: different
+  training, different habits). Promotion only ever counts the battles against the rule AI.
                                                                    stop: 70 % of 200 evaluation battles vs Elite
 
   The ships of each stage (classes: DD destroyer, CA cruiser, BB battleship, SS submarine):
@@ -49,15 +51,20 @@ A stage is a dict:
     opponent           who flies the enemy fleet:
                          "rule"     the game's rule-based AI at `difficulty`
                          "passive"  a target: Python orders it to stop and hold fire
-                         "league"   a mix, given by `opponents` (OpenAI Five / AlphaStar self-play):
-                                      rule    the rule AI at `difficulty` - the anchor that keeps the
-                                              fleet honest, and the only battles that count for promotion
-                                      mirror  our own current fleet on BOTH sides, and both sides learn
-                                              (OpenAI Five's self-play): twice the data per battle
-                                      latest  a frozen copy of our own fleet, refreshed every few updates
-                                      past    an older copy from the league's pool, picked by
-                                              prioritised fictitious self-play (the ones we lose to most)
-    opponents          for "league": shares, e.g. {"rule": 0.4, "mirror": 0.4, "past": 0.2}
+                         "league"   a mix, given by `opponents` (OpenAI Five / AlphaGo Zero / AlphaStar):
+                                      rule     the rule AI at `difficulty` - the anchor that keeps the
+                                               fleet honest, and the only battles that count for promotion
+                                      mirror   our own current fleet on BOTH sides, and both sides learn
+                                               (OpenAI Five's self-play): twice the data per battle
+                                      latest   a frozen copy of our own fleet, refreshed every few updates
+                                      past     an older copy from the league's pool, picked by
+                                               prioritised fictitious self-play (the ones we lose to most)
+                                      champion the strongest version so far (replaced when beaten in
+                                               55 % of 40 battles - AlphaGo Zero's gating)
+                                      rival    the other method's fleet: MAPPO's for the Double DQN run
+                                               and the other way round (cross-play, model.set_rival)
+                                    a champion / rival that does not exist yet plays a mirror battle
+    opponents          for "league": shares, e.g. {"rule": 0.4, "mirror": 0.25, "champion": 0.1, ...}
     commander          True: the fleet commander gives orders in this stage (False: every ship is free)
     team_spirit        tau in rewards.py: how much each ship's own reward is shared with the fleet
     rehearsal          share of battles replayed from earlier stages, so old skills are not forgotten
@@ -94,8 +101,9 @@ import numpy as np
 from .callbacks import BaseCallback
 
 NO_CIRCLE = {"approach_circle": 0.0, "in_circle": 0.0, "circles_held": 0.0}
-LEAGUE = {"rule": 0.4, "mirror": 0.4, "past": 0.2}       # stages 6-8: the rule AI, itself (both sides learn), past selves
-SELF_PLAY = {"rule": 0.7, "mirror": 0.3}                  # stages 3-5: mostly the rule AI, some battles against itself
+# who flies the enemy (league.py): stages 3-5 mostly the rule AI, stages 6-8 a full league
+SELF_PLAY = {"rule": 0.6, "mirror": 0.15, "champion": 0.1, "past": 0.05, "rival": 0.1}
+LEAGUE = {"rule": 0.4, "mirror": 0.25, "champion": 0.1, "past": 0.15, "rival": 0.1}
 
 DEFAULT_CURRICULUM = [
     # ---- single skills, one ship

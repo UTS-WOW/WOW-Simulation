@@ -274,11 +274,15 @@ def export_parity_case(source, path: str, n_allies=2, n_contacts=3, n_zones=2, n
 
 
 def _mix_text(mix: dict, level: str) -> str:
-    """{"rule": 0.7, "mirror": 0.3} -> "rule AI (Veteran) 70% · itself (mirror) 30%" (mirror: both sides learn)."""
-    names = {"rule": f"rule AI ({level})", "mirror": "itself (mirror)", "latest": "a frozen copy",
-             "past": "past selves"}
+    """{"rule": 0.6, "mirror": 0.15, ...} -> "Veteran AI 60% · self-play 40% (mirror/champion/past/rival)" -
+    short enough for one line of the game's TRAINING STAGES screen."""
     total = sum(mix.values()) or 1.0
-    return " · ".join(f"{names.get(k, k)} {v / total:.0%}" for k, v in mix.items())
+    rule = mix.get("rule", 0.0) / total
+    others = [k for k, v in mix.items() if k != "rule" and v > 0]
+    if not others:
+        return f"rule AI ({level})"
+    text = f"{level} AI {rule:.0%} · " if rule > 0 else ""
+    return text + f"self-play {1 - rule:.0%} ({'/'.join(others)})"
 
 
 def export_stages(path: str = GAME_STAGES, curriculum="default") -> str:

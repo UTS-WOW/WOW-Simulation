@@ -358,3 +358,48 @@ def test_ddqn_learn_save_load_and_predict(env, tmp_path):
         chosen = np.take_along_axis(mask[..., off:off + size], a1[..., h:h + 1], -1)
         assert (chosen[obs["exists"] > 0.5] > 0.5).all()
         off += size
+
+
+# ---------------------------------------------------------------------------------------------- the league
+
+def test_champion_is_replaced_only_when_beaten():
+    """AlphaGo Zero's gating: the learner takes the champion's place after winning 55 % of 10 battles."""
+    pool = OpponentPool(champion_games=10, champion_win_rate=0.55)
+    net = torch.nn.Linear(2, 2)
+    first = pool.crown(net, 0)
+    for _ in range(10):
+        pool.record({"opponent": "champion", "opponent_id": first, "won": False})
+    assert not pool.champion_beaten()
+    for _ in range(6):
+        pool.record({"opponent": "champion", "opponent_id": first, "won": True})
+    assert pool.champion_beaten()                    # 6 of the last 10
+    second = pool.crown(net, 1)
+    assert pool.champion == second and pool.sample("champion") == second
+    assert pool._get(first)["kind"] == "past" and not pool.champion_beaten()
+
+
+def test_cross_play_puts_the_other_methods_fleet_in_the_league(env):
+    from simple_mappo.ddqn import FleetDDQN
+    mappo = MAPPO(env, d_model=32, attn_layers=1, hidden_size=32, verbose=0)
+    dqn = FleetDDQN(env, d_model=32, attn_layers=1, hidden_size=32, verbose=0)
+    assert mappo.set_rival(dqn) and dqn.set_rival(mappo)
+    rival = mappo.league.sample("rival")
+    assert mappo.league.greedy(rival)                # a Double DQN fleet takes its best action
+    assert not dqn.league.greedy(dqn.league.sample("rival"))
+    assert not mappo.set_rival(FleetDDQN(env, d_model=16, attn_layers=1, hidden_size=32, verbose=0))  # other network
+    obs = env.reset()
+    enemy = {k: v[:1] for k, v in obs.items()}
+    assert mappo._opponent_act(enemy, [0], [rival]).shape == (1, env.n_agents, len(env.head_sizes))
+
+
+def test_a_missing_champion_or_rival_plays_a_mirror_battle():
+    stages = [{"name": "x", "scenario": "scenarios/stage1_koth_3v3.json", "opponent": "league",
+               "opponents": {"rival": 1.0, "mirror": 0.0}}]
+    env = NavalEnv(stages=stages, n_envs=1, mock=True)
+    try:
+        env.set_opponent_policy(lambda *a: None, lambda kind: None)        # nothing in the league yet
+        assert env._pick_opponent(env.stages[0]) == ("mirror", -1)
+        env.set_opponent_policy(lambda *a: None, lambda kind: 7 if kind == "rival" else None)
+        assert env._pick_opponent(env.stages[0]) == ("rival", 7)
+    finally:
+        env.close()

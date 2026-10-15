@@ -3,6 +3,8 @@ SageMaker job.
 
     python train_simple.py --total-timesteps 5000000                 # imitation, then the curriculum, stages 0-8
     python train_simple.py --algo ddqn --total-timesteps 5000000     # the same with Double DQN (run "fleet_ddqn")
+    python train_simple.py --rival runs_simple/fleet_ddqn/models/model_latest.pt   # cross-play: that fleet
+                                                                     # joins this run's league as "rival"
     python train_simple.py --start-stage 3                           # begin at a later stage
     python train_simple.py --curriculum my_stages.json               # your own stages (any number)
     python train_simple.py --scenario scenarios/stage0_bb_duel.json --run-name duel   # one battle only
@@ -110,6 +112,11 @@ def parse_args():
     p.add_argument("--mixer", choices=["none", "qmix", "vdn"], default="none",
                    help="none: every ship on its own reward; qmix / vdn: one fleet value")
     p.add_argument("--seed", type=int, default=0)
+    # the league (simple_mappo/league.py)
+    p.add_argument("--rival", help="cross-play: the other method's checkpoint (its champion, if it has one) joins "
+                                   "the league as 'rival' (default: the other run's model_latest.pt, if there is one)")
+    p.add_argument("--pfsp", choices=["hard", "variance"], default="hard",
+                   help="how past copies are picked: the ones we lose to (hard) or beat about half the time (variance)")
     # bookkeeping
     p.add_argument("--run-name", default=None, help='default "fleet" (MAPPO) or "fleet_ddqn" (Double DQN)')
     p.add_argument("--save-interval", type=int, default=50_000)
@@ -186,7 +193,7 @@ def main():
                               exploration_timesteps=a.exploration_timesteps, mixer=a.mixer, d_model=a.d_model,
                               attn_layers=a.attn_layers, hidden_size=a.hidden_size, recurrent=not a.no_memory,
                               commander=not a.no_commander, commander_period=a.commander_period,
-                              device=a.device, seed=a.seed, log_dir=log_dir)
+                              pfsp=a.pfsp, device=a.device, seed=a.seed, log_dir=log_dir)
             if not a.no_imitation and os.path.exists(cloned):
                 model.init_from_imitation(cloned)
         else:
@@ -197,10 +204,13 @@ def main():
                           ent_coef=ent, d_model=a.d_model, attn_layers=a.attn_layers, hidden_size=a.hidden_size,
                           recurrent=not a.no_memory, commander=not a.no_commander,
                           commander_period=a.commander_period, kl_bc_coef=a.kl_bc, centralised_critic=not a.ippo,
-                          normalize_values=not a.no_value_norm, device=a.device, seed=a.seed, log_dir=log_dir)
+                          normalize_values=not a.no_value_norm, pfsp=a.pfsp, device=a.device, seed=a.seed, log_dir=log_dir)
             if not a.no_imitation and os.path.exists(cloned):
                 model.init_from_imitation(cloned)
 
+        other = os.path.join(HERE, "runs_simple", "fleet" if a.algo == "ddqn" else "fleet_ddqn", "models", "model_latest.pt")
+        if not a.mock:
+            model.set_rival(a.rival or other)               # cross-play (skipped when there is no such checkpoint)
         t0 = time.time()
         print("stages:", " -> ".join(s["name"] for s in env.stages), f"(starting at stage {env.stage})")
         callbacks = [SaveOnIntervalCallback(a.save_interval, models_dir), CurriculumCallback(),

@@ -8,8 +8,9 @@ How it fits together:
 
 NavalEnv runs n_envs battles side by side - the same idea as make_atari_env(n_envs=4) in the Atari
 notebooks. Every ship of the Player fleet is an agent. The enemy fleet is flown by the game's own
-rule-based AI, by Python as a passive target (stop, hold fire), or - in league battles - by a frozen
-copy of our own fleet (see curriculum.py, "opponent").
+rule-based AI, by Python as a passive target (stop, hold fire), or - in league battles - by our own
+fleet (mirror), a frozen copy of it (latest, past, champion) or the other method's fleet (rival) - see
+curriculum.py, "opponent", and league.py.
 
 What reset() and step() return (E = n_envs, N = ships per side, everything padded to MAX_SHIPS etc.):
 
@@ -99,6 +100,8 @@ OBS_KEYS = CAPTAIN_ARRAYS + CRITIC_ARRAYS + ["action_mask", "alive", "exists", "
                                             "fleet_match", "starts", "t", "commander_on"]
 # columns of critic_match that are not public knowledge: the commander does not get them
 PRIVILEGED_MATCH = ("their_fleet_strength", "their_alive_frac_true")
+# opponents flown by a frozen copy of a fleet (ours, or the other method's): the model's opponent_policy acts
+SNAPSHOT_OPPONENTS = ("latest", "past", "champion", "rival")
 # a passive target: stop (speed option 3) and hold fire (fire option 1); every other head option 0
 PASSIVE = {"speed": 3, "fire": 1}
 
@@ -294,7 +297,7 @@ class NavalEnv:
         self._battle_stage = np.zeros(E, dtype=np.int64)   # the stage each running battle was started on
         self._weights = [self.reward_weights] * E          # that battle's reward weights (a stage may override some)
         self._opponent = ["rule"] * E                      # who flies its enemy: rule, passive, latest or past
-        self._opponent_id = np.full(E, -1, dtype=np.int64) # which past snapshot ("past" only)
+        self._opponent_id = np.full(E, -1, dtype=np.int64) # which snapshot (past, champion, rival)
         self._commander = np.zeros(E, dtype=bool)          # the fleet commander gives orders in that battle
         self._spirit = np.zeros(E, dtype=np.float32)       # its team spirit (rewards.py)
         self._eval_battle = np.zeros(E, dtype=bool)        # that battle was started for an evaluation
@@ -302,7 +305,7 @@ class NavalEnv:
         self._t = np.zeros(E, dtype=np.int64)              # decisions since the battle started
         self._starts = np.ones(E, dtype=np.float32)        # the observation is a battle's first
         self.opponent_policy = None            # set by MAPPO: (enemy obs, envs, snapshot ids) -> enemy actions
-        self.opponent_sampler = None           # set by MAPPO: () -> a past snapshot to fight (PFSP), or None
+        self.opponent_sampler = None           # set by the model: (kind) -> a snapshot id of that kind, or None
         self.evaluating = False                # evaluation: the stage's own opponent only (no self-play)
         self.held_out = False                  # evaluation on maps training never sees
         self._world = [(0, 10**9)] * E         # generated map seed and battles fought on it, per slot
@@ -335,8 +338,9 @@ class NavalEnv:
         self.stage = min(max(0, stage), len(self.stages) - 1)
 
     def set_opponent_policy(self, policy, sampler=None) -> None:
-        """policy(enemy obs, envs, snapshot ids) -> enemy actions, for battles our own (frozen) fleet
-        flies the enemy in; sampler() -> the id of a past snapshot to fight, or None."""
+        """policy(enemy obs, envs, snapshot ids) -> enemy actions, for battles a frozen fleet (ours, or the
+        other method's) flies the enemy in; sampler(kind) -> the id of a "past" / "champion" / "rival"
+        snapshot to fight, or None."""
         self.opponent_policy, self.opponent_sampler = policy, sampler
 
     def set_evaluation(self, on: bool, held_out: bool = False) -> None:
@@ -362,7 +366,7 @@ class NavalEnv:
         passive = [e for e in range(E) if self._opponent[e] == "passive"]
         if passive:
             enemy[passive] = self._passive_actions(passive)
-        ours = [e for e in range(E) if self._opponent[e] in ("latest", "past")]
+        ours = [e for e in range(E) if self._opponent[e] in SNAPSHOT_OPPONENTS]
         if ours:
             enemy[ours] = self.opponent_policy(self._observe(team=1, envs=ours), ours,
                                                [int(self._opponent_id[e]) for e in ours])
@@ -491,9 +495,12 @@ class NavalEnv:
             return "mirror", -1                # our own fleet on both sides, both learning
         if choice == "rule" or self.opponent_policy is None:
             return "rule", -1
-        if choice == "past":
-            ident = self.opponent_sampler() if self.opponent_sampler else None
-            return ("past", int(ident)) if ident is not None else ("latest", -1)
+        if choice in ("past", "champion", "rival"):
+            ident = self.opponent_sampler(choice) if self.opponent_sampler else None
+            if ident is not None:
+                return choice, int(ident)
+            # none yet (no past copy, no champion crowned, no other method's fleet): play ourselves instead
+            return ("mirror", -1) if self.two_sided else ("latest", -1)
         return "latest", -1
 
     def _reset_message(self, e: int) -> dict:

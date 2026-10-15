@@ -95,7 +95,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .callbacks import BaseCallback, CallbackList
-from .league import OpponentPool
+from .league import LeagueMixin, OpponentPool
 from .networks import (CAPTAIN_KEYS, NEG_INF, Commander, EntityEncoder, FleetPolicy, Memory, kl_to, layer, pool,
                        same_heads, to_tensors, trim)
 
@@ -237,7 +237,9 @@ class SequenceReplay:
 
 # ---------------------------------------------------------------------------------------------- Double DQN
 
-class FleetDDQN:
+class FleetDDQN(LeagueMixin):
+    GREEDY = True                       # its own copies in the league take their best action
+
     def __init__(self, env, learning_rate: float = 2.5e-4, commander_learning_rate: float = 1e-4,
                  buffer_size: int = 40_000, learning_starts: int = 4_000, batch_size: int = 32,
                  max_batch_ship_steps: int = 4096, chunk_len: int = 32, gradient_steps: int = 4,
@@ -249,7 +251,8 @@ class FleetDDQN:
                  hidden_size: int = 128, recurrent: bool = True, commander: bool = True, commander_period: int = 10,
                  kl_bc_coef: float = 0.5, kl_bc_final: float = 0.05, kl_bc_steps: int = 20_000,
                  imitation_temperature: float = 0.1,
-                 opponent_refresh: int = 80, snapshot_every: int = 200, pool_size: int = 20, device: str = "auto",
+                 opponent_refresh: int = 80, snapshot_every: int = 200, pool_size: int = 20, pfsp: str = "hard",
+                 device: str = "auto",
                  torch_threads: int | None = 4, seed: int = 0, verbose: int = 1, log_dir: str | None = None):
         """
         learning_rate          step size of the Q-network (captain + value stream + mixer); the
@@ -294,7 +297,7 @@ class FleetDDQN:
                        commander_period=commander_period, kl_bc_coef=kl_bc_coef, kl_bc_final=kl_bc_final,
                        kl_bc_steps=kl_bc_steps, imitation_temperature=imitation_temperature,
                        opponent_refresh=opponent_refresh,
-                       snapshot_every=snapshot_every, pool_size=pool_size, seed=seed)
+                       snapshot_every=snapshot_every, pool_size=pool_size, pfsp=pfsp, seed=seed)
         self.verbose = verbose
         self.log_dir = log_dir
         if device == "auto":
@@ -339,7 +342,7 @@ class FleetDDQN:
 
         # the league, exactly as MAPPO's
         self.opponent = copy.deepcopy(self.policy).eval()
-        self.league = OpponentPool(pool_size, seed)
+        self.league = OpponentPool(pool_size, seed, pfsp=pfsp)
         self._past: dict[int, FleetPolicy] = {}
         if hasattr(env, "set_opponent_policy"):
             env.set_opponent_policy(self._opponent_act, self.league.sample)
@@ -388,35 +391,6 @@ class FleetDDQN:
         self.last_orders = out["orders"].cpu().numpy()
         return out["actions"].cpu().numpy()
 
-    def _opponent_act(self, obs: dict, envs: list[int], ids: list[int]) -> np.ndarray:
-        """The enemy fleet's actions in league battles: the frozen latest copy (id -1) or a past one."""
-        E = self.env.n_envs
-        if self._opp_memory is None or self._opp_memory.h.shape[0] != E:
-            self._opp_memory = self.policy.new_memory(E, self.env.n_agents)
-        tens = self._tensors(obs)
-        envs, ids = np.asarray(envs), np.asarray(ids)
-        actions = np.zeros((len(envs), self.env.n_agents, len(self.head_sizes)), dtype=np.int32)
-        eps = self.hp["opponent_epsilon"]
-        for sid in np.unique(ids):
-            rows = np.flatnonzero(ids == sid)
-            policy = self.opponent if sid < 0 else self._past_policy(int(sid))
-            memory = self._opp_memory.take(envs[rows])
-            out = policy.act({k: v[rows] for k, v in tens.items()}, memory, epsilon=eps, commander_epsilon=eps)
-            self._opp_memory.put(envs[rows], memory)
-            actions[rows] = out["actions"].cpu().numpy()
-        return actions
-
-    def _past_policy(self, sid: int) -> FleetPolicy:
-        if sid not in self._past:
-            weights = self.league.weights(sid)
-            if weights is None:
-                return self.opponent
-            policy = copy.deepcopy(self.opponent)
-            policy.load_state_dict(weights)
-            self._past = {k: v for k, v in self._past.items() if self.league.weights(k) is not None}
-            self._past[sid] = policy
-        return self._past[sid]
-
     def reset_battles(self) -> None:
         self._last_obs = self.env.reset()
 
@@ -443,9 +417,7 @@ class FleetDDQN:
             self.n_updates += 1
             if self.n_updates % self.hp["opponent_refresh"] == 0:
                 self.opponent.load_state_dict(self.policy.state_dict())
-            stage = self.env.stages[self.env.stage]
-            if "past" in (stage.get("opponents") or {}) and self.n_updates % self.hp["snapshot_every"] == 0:
-                self.league.add(self.policy, self.n_updates)
+            self._league_step()                           # past copies, the champion (league.py)
             if log_interval and self.n_updates % log_interval == 0:
                 self._log({k: float(np.mean(v)) for k, v in stats.items()}, start)
                 stats = defaultdict(list)
@@ -733,7 +705,7 @@ class FleetDDQN:
             row["ep_rew_mean"] = float(np.mean([e["episode"]["r"] for e in eps]))
             row["ep_len_mean"] = float(np.mean([e["episode"]["l"] for e in eps]))
             gate = [e for e in eps if e.get("opponent", "rule") in ("rule", "passive")]
-            selfp = [e["won"] for e in eps if e.get("opponent") in ("latest", "past", "mirror")]
+            selfp = [e["won"] for e in eps if e.get("opponent") in ("latest", "past", "mirror", "champion", "rival")]
             if gate:
                 row["win_rate"] = float(np.mean([e["won"] for e in gate]))
                 row["pass_rate"] = float(np.mean([e.get("passed", e["won"]) for e in gate]))

@@ -55,7 +55,7 @@ pieces those systems relied on:
 | **Dual-clip PPO**, value normalisation + clipping | a very stale sample cannot blow up an update | Honor of Kings, MAPPO | W10-B PPO |
 | **Team spirit, zero-sum reward** | ship rewards blend into the fleet's average as training goes on; the enemy's combat reward is subtracted | OpenAI Five | W10-B reward normalisation |
 | **Imitation warm start + KL anchor** | the captains first copy the Elite rule AI; a fading KL penalty keeps them close at first | AlphaStar | **W9-A**: the same supervised loop |
-| **Self-play (both sides learn) + league** | from stage 3, mirror battles: the fleet flies both sides and both sides' experience trains it (twice the data, an opponent always as good as the fleet); stages 6-8 add past copies chosen by PFSP, with Elo ratings; the rule AI stays as the anchor | OpenAI Five, AlphaStar | W9-C/D target network (a frozen copy) |
+| **Self-play (both sides learn) + league** | from stage 3, mirror battles: the fleet flies both sides and both sides' experience trains it (twice the data, an opponent always as good as the fleet); plus its champion (replaced only when beaten in 55 % of 40 battles), past copies chosen by PFSP and the other method's fleet (cross-play), with Elo ratings; the rule AI stays as the anchor | OpenAI Five, AlphaStar | W9-C/D target network (a frozen copy) |
 | **Curriculum** | 9 stages, each passed at ≥ 70 % of its own goal; earlier stages replayed 10–15 % of the time | TiZero, OpenAI Five | — |
 | **Best-model checkpoint** | `model_best.pt` keeps the best rolling pass rate | — | W9/10 `SaveOnIntervalCallback` |
 
@@ -178,10 +178,10 @@ sailing back and forth.
 | 0 – Gunnery | `gunnery`, 7 km, open sea | 1 BB vs 1 CA | passive target (stop, hold fire) | target sunk within 150 s | 50 |
 | 1 – Capture | `capture`, one neutral circle | 1 CA | passive DD, far away | circle captured | 50 |
 | 2 – Defend | `defend`, neutral circle, enemy coming | 1 CA vs 1 CA | Recruit | won | 100 |
-| 3 – Duel | `bb_duel`, open sea | 1v1 BB | Recruit 70 % / **itself 30 %** | won vs Recruit | 100 |
-| 4 – King of the Hill | `koth_3v3`, one circle | 3v3 mixed, **commander**, τ 0.3 | Veteran 70 % / itself 30 % | won vs Veteran | 100 |
-| 5 – Archipelago | `archipelago_3v3`, 3 circles, islands | 3v3 mixed, commander, τ 0.5 | Veteran 70 % / itself 30 % | won vs Veteran | 150 |
-| 6 – Domination | procedural 6v6, random map and weather | 6v6, commander, τ 0.8 | **league**: Elite 40 % / itself 40 % / past selves 20 % | won vs Elite | 200 |
+| 3 – Duel | `bb_duel`, open sea | 1v1 BB | Recruit 60 % / **self-play 40 %** (mirror 15, champion 10, past 5, rival 10) | won vs Recruit | 100 |
+| 4 – King of the Hill | `koth_3v3`, one circle | 3v3 mixed, **commander**, τ 0.3 | Veteran 60 % / self-play 40 % | won vs Veteran | 100 |
+| 5 – Archipelago | `archipelago_3v3`, 3 circles, islands | 3v3 mixed, commander, τ 0.5 | Veteran 60 % / self-play 40 % | won vs Veteran | 150 |
+| 6 – Domination | procedural 6v6, random map and weather | 6v6, commander, τ 0.8 | **league**: Elite 40 % / mirror 25 / champion 10 / past 15 / rival 10 | won vs Elite | 200 |
 | 7 – Open | procedural 4–8 a side, random mode | commander, τ 1.0 | league | won vs Elite | 200 |
 | 8 – Archipelago 9v9 | `archipelago_9v9`: 5 circles (A B C across the middle, D up-left, E down-right), hand-placed islands | 9v9 — 2 BB, 3 CA, 2 DD, 2 SS a side — commander, τ 1.0 | league | final: won vs Elite in 200 evaluation battles | 200 |
 
@@ -196,11 +196,20 @@ sailing back and forth.
   the stages the fleet now does worst on most often (weight (1 − recent pass rate)², Prioritized
   Level Replay). The SageMaker run had forgotten Defend (4 %) and Duel (33 %) by stage 7 with
   uniform rehearsal.
-- **Self-play, both ways** ("itself"): in a mirror battle the current network flies **both** fleets
-  and both fleets' decisions are training data (the environment then has two rows per battle - our
-  fleet, then the enemy fleet - and the enemy's reward is computed from its own side). It doubles the
-  data from those battles and gives an opponent that is always as good as the fleet. Promotion counts
-  only the battles against the rule AI, so the 70 % gates mean the same as before.
+- **Self-play, both ways** ("mirror"): the current network flies **both** fleets and both fleets'
+  decisions are training data (the environment then has two rows per battle - our fleet, then the
+  enemy fleet - and the enemy's reward is computed from its own side). It doubles the data from those
+  battles and gives an opponent that is always as good as the fleet.
+- **The champion** (`league.py`): the strongest version of the fleet so far. It is replaced only when
+  the fleet beats it in 55 % of 40 battles (AlphaGo Zero's gating) - then the fleet becomes the new
+  champion and the old one stays as a past copy. So the fleet always has its best self to beat.
+- **Cross-play** ("rival"): the other method's fleet - MAPPO's in the Double DQN run's league and the
+  other way round (its champion, if it has one; `model.set_rival(other)`, done by the notebooks before
+  each method trains). Different training gives different habits to learn to beat, the way
+  AlphaStar's league mixes different kinds of agents.
+- **Past copies** are picked by PFSP, `(1 − win rate)²` (the ones we lose to); `pfsp="variance"`
+  picks the ones we beat about half the time instead. A champion or rival that does not exist yet
+  plays a mirror battle. Promotion counts only the battles against the rule AI.
 - **The stopping rule** (stage 8): every 100,000 timesteps, 40 battles against the Elite AI.
   Training stops once the last 200 reach 70 %.
 - **Room for 9 ships a side** (`env.py`, `MAX_SHIPS`): the networks read ships as tokens, so a model

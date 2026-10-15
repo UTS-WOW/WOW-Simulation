@@ -51,33 +51,40 @@ A battle is *passed* when the target is sunk within 150 seconds - just sinking i
          learns="""**Defend yourself while holding the circle.** A neutral circle lies 3 km ahead of our cruiser; an enemy cruiser flown by the rule AI comes for it from 8 km beyond. Winning means taking the circle and holding it *while staying afloat* - angling, dodging torpedoes, smoke, repair and fighting back. A per-second "survive" reward is switched on for this stage.""",
          measured="Measured: random play wins 12% of battles, sailing straight to the circle 0% - the cruiser has to fight smart."),
     dict(file="Stage3-Duel.ipynb", name="Duel", scenario="bb_duel", fleet="1v1 battleships",
-         opponent="Recruit rule AI 70% · itself 30% (both sides learn)", rule="won in ≥70% of the last 100 battles against the rule AI",
+         opponent="Recruit rule AI 60% · self-play 40%: itself 15%, its champion 10%, past selves 5%, the other method 10%", rule="won in ≥70% of the last 100 battles against the rule AI",
          session=300_000, script="broadside",
          learns="""**1v1.** Two battleships 13 km apart on open sea, both spotted and inside gun range from the first second. The duel is about **choosing and timing fire, angling the hull, and not throwing the ship away**. The circle reward is off here: the circle lies between the two battleships, so racing to it means sailing bow-on into the enemy's guns.
 
-**Self-play starts here.** 30% of battles are *mirror* battles: the fleet flies **both** battleships and **both sides learn** (OpenAI Five's self-play) - twice the training data from those battles, and an opponent that is always exactly as good as the fleet. Only the battles against the rule AI count for promotion.""",
+**Self-play starts here** (`league.py`) - 40% of battles are against the fleet itself, in four ways:
+
+* **mirror** (15%): the fleet flies **both** battleships and **both sides learn** (OpenAI Five's self-play) - twice the training data, and an opponent exactly as good as the fleet;
+* **its champion** (10%): the strongest version so far. It is replaced only when the fleet beats it in 55% of 40 battles (AlphaGo Zero's gating) - then the fleet becomes the new champion. So it always has its best self to beat;
+* **past selves** (5%): older copies, the ones it loses to most often first (AlphaStar's PFSP);
+* **the other method** (10%): MAPPO's fleet for the Double DQN run and the other way round - a differently trained opponent with different habits (cross-play, like AlphaStar's league of different agents).
+
+Only the battles against the rule AI count for promotion.""",
          measured="Measured earlier with this battle: random play wins 16-28%, the broadside script 70%, flat MAPPO from scratch 59% after 300,000 timesteps."),
     dict(file="Stage4-King-of-the-Hill.ipynb", name="King of the Hill", scenario="koth_3v3", fleet="3v3 mixed fleet",
-         opponent="Veteran rule AI 70% · itself 30% (both sides learn)", rule="won in ≥70% of the last 100 battles against the rule AI", session=500_000, script="circle",
+         opponent="Veteran rule AI 60% · self-play 40% (itself, champion, past selves, the other method)", rule="won in ≥70% of the last 100 battles against the rule AI", session=500_000, script="circle",
          learns="""**The first fleet battle - and the commander joins in.** A battleship, a cruiser and a destroyer a side, one capture circle in the middle of the open sea, 6 minutes. Every 10 seconds the **fleet commander** gives each ship an order - *free*, *engage* or *hold the circle* - and the captains carry it out (the circle reward follows the order). Team spirit 0.3: each ship's own reward is now partly shared with the fleet. 15% of battles replay earlier stages so the single-ship skills stay.""",
          measured="Measured earlier with this battle: random play wins about 18% against Veteran, flat MAPPO from scratch 25-33%, the circle script 67-88% (against Recruit), imitation alone (naval_rl) 58%."),
     dict(file="Stage5-Archipelago.ipynb", name="Archipelago", scenario="archipelago_3v3", fleet="3v3 mixed fleet",
-         opponent="Veteran rule AI 70% · itself 30% (both sides learn)", rule="won in ≥70% of the last 150 battles against the rule AI", session=500_000, script="circle",
+         opponent="Veteran rule AI 60% · self-play 40% (itself, champion, past selves, the other method)", rule="won in ≥70% of the last 150 battles against the rule AI", session=500_000, script="circle",
          learns="""The same three ships a side, now among islands with **three capture circles** (A, B, C) and 8 minutes. This is where the commander earns its place: **which ship holds which circle, and who hunts**. Islands break line of sight, so spotting, smoke, radar and cover matter. Team spirit 0.5.""",
          measured="Measured earlier: imitation alone (naval_rl) won 45%, flat MAPPO 27%."),
     dict(file="Stage6-Domination.ipynb", name="Domination", scenario="domination_6v6", fleet="6v6 fleet",
-         opponent="League: Elite rule AI 40% · itself 40% (both sides learn) · past selves 20%",
+         opponent="League: Elite rule AI 40% · itself 25% · its champion 10% · past selves 15% · the other method 10%",
          rule="won in ≥70% of the last 200 battles against the Elite AI", session=500_000, script="circle",
-         learns="""The full Domination game at 6v6, 15 minutes, on a **newly generated battlefield** every 8 battles (random preset, island density and weather). The enemy is drawn from a **league** (OpenAI Five / AlphaStar): the Elite rule AI, the fleet **itself** (a mirror battle - both sides learn), or an older copy picked by prioritised fictitious self-play - the ones we lose to come up most. Everyone gets an **Elo rating**. Only battles against the Elite AI count for promotion. Team spirit 0.8.""",
+         learns="""The full Domination game at 6v6, 15 minutes, on a **newly generated battlefield** every 8 battles (random preset, island density and weather). The enemy is drawn from a **league** (OpenAI Five / AlphaGo Zero / AlphaStar): the Elite rule AI 40%, the fleet **itself** 25% (a mirror battle - both sides learn), **its champion** 10% (the strongest version so far, replaced only when beaten in 55% of 40 battles), **past selves** 15% (the ones we lose to come up most) and **the other method's fleet** 10% (cross-play). Everyone gets an **Elo rating**. Only battles against the Elite AI count for promotion. Team spirit 0.8.""",
          measured=""),
     dict(file="Stage7-Open.ipynb", name="Open", scenario="open", fleet="Random 4–8 ships per side",
-         opponent="League: Elite rule AI 40% · itself 40% (both sides learn) · past selves 20%",
+         opponent="League: Elite rule AI 40% · itself 25% · its champion 10% · past selves 15% · the other method 10%",
          rule="won in ≥70% of the last 200 battles against the Elite AI", session=500_000,
          script="circle",
          learns="""Anything the game can produce: 4 to 8 ships a side, a random game mode (Domination, Skirmish, Fleet Battle, Capture and Control), map preset, density, weather and circle size, 20 minutes - against the league. Team spirit 1.0: every ship cares about the fleet as much as about itself. Passing it moves the fleet on to the biggest battle, stage 8.""",
          measured="Measured: the SageMaker MAPPO run (2.2 M timesteps) won 83% of 24 held-out battles against the Elite AI here."),
     dict(file="Stage8-Archipelago-9v9.ipynb", name="Archipelago 9v9", scenario="archipelago_9v9",
-         fleet="9v9, every class", opponent="League: Elite rule AI 40% · itself 40% (both sides learn) · past selves 20%",
+         fleet="9v9, every class", opponent="League: Elite rule AI 40% · itself 25% · its champion 10% · past selves 15% · the other method 10%",
          rule="Final stage: won in ≥70% of the last 200 evaluation battles against the Elite AI", session=500_000,
          script="circle",
          learns="""**The biggest battle: nine ships a side, every class that fights, five capture circles.** Three circles lie across the middle (A, B, C), D up-left near the enemy, E down-right near us - the layout of the game's own *Capture and Control* mode - among hand-placed islands that are the same for both sides (turned 180°). 12 minutes; the fleet that holds more circles scores faster.
@@ -212,7 +219,7 @@ Each run climbs the curriculum on its own (`runs_simple/fleet` and `runs_simple/
 | **Centralised critic** | sees the true battle (training only); one value per reward group + win probability | MAPPO, Honor of Kings multi-head value | W10-A/B actor-critic |
 | **Update** | PPO with dual clip, value normalisation and clipping | MAPPO, Honor of Kings | W10-B PPO |
 | **Warm start** | the captain first copies the Elite rule AI (StageP), then a fading KL penalty keeps it close | AlphaStar | W9-A supervised training loop |
-| **Self-play & league** | from stage 3: mirror battles - the fleet on **both** sides, **both** learning; stages 6-7 add past copies (PFSP) and Elo ratings; the rule AI stays as the anchor promotion is judged against | OpenAI Five, AlphaStar | W9-C/D frozen target network |
+| **Self-play & league** | from stage 3: mirror battles (the fleet on **both** sides, **both** learning), its **champion** (replaced only when beaten in 55% of 40 battles), past copies (PFSP), and the **other method's fleet** (cross-play), with Elo ratings; the rule AI stays as the anchor promotion is judged against | OpenAI Five, AlphaGo Zero, AlphaStar | W9-C/D frozen target network |
 | **Curriculum** | 8 stages, each passed at ≥70% of its own goal; earlier stages are replayed 10-15% of the time | TiZero, OpenAI Five | - |
 """
 
@@ -247,7 +254,7 @@ def notebook(k: int) -> nbf.NotebookNode:
     md = lambda s: cells.append(nbf.v4.new_markdown_cell(s.strip("\n")))
     code = lambda s: cells.append(nbf.v4.new_code_cell(s.strip("\n")))
     last = k == len(STAGES) - 1
-    league = "League" in st["opponent"]
+    league = k >= 3                  # self-play from stage 3: mirror, champion, past selves, the other method
 
     md(f"""
 # 43008: Reinforcement Learning - WOW Naval Fleet: MAPPO vs Double DQN
@@ -393,6 +400,7 @@ def callbacks_for(run_model, run_dir, models_dir, video_dir, run_storage):
     return callbacks, curriculum
 
 if TRAIN_MAPPO:
+    model.set_rival(dqn)             # cross-play: the Double DQN fleet joins MAPPO's league as "rival"
     callbacks, curriculum = callbacks_for(model, run_dir, models_dir, video_dir, storage)
     model.learn(total_timesteps=model.num_timesteps + config['n_timesteps'], callback=callbacks, log_interval=5)
     model.save(os.path.join(models_dir, "model_final"))
@@ -404,10 +412,13 @@ if TRAIN_MAPPO:
 
 The same battles, the same rewards, the same stopping rule - learned with Double DQN. The first `learning_starts` decisions only fill the replay buffer (it is not saved with the model, so every session refills it first); then every 32 decisions per battle bring `gradient_steps` updates on chunks sampled from it.
 
+Cross-play: before each method trains, the other one's fleet - its champion, if it has one - joins its league as the **rival** (`set_rival`), so each learns to beat a differently trained fleet too. A *new champion* message means the fleet just beat its best self.
+
 In the table: `q_loss` the TD error, `q_value` / `target_value` the Q-values and their targets (both should rise as the fleet starts winning), `epsilon` the exploration rate, `replay_decisions` how full the buffer is.
 """)
     code(r"""
 if TRAIN_DDQN:
+    dqn.set_rival(model)             # ... and the MAPPO fleet (just trained) joins Double DQN's
     callbacks, dqn_curriculum = callbacks_for(dqn, dqn_run_dir, dqn_models_dir, dqn_video_dir, dqn_storage)
     dqn.learn(total_timesteps=dqn.num_timesteps + config['n_timesteps'], callback=callbacks, log_interval=8)
     dqn.save(os.path.join(dqn_models_dir, "model_final"))
@@ -463,7 +474,8 @@ for name, d in (("MAPPO", log_dir), ("Double DQN", dqn_log_dir)):
 """)
     if league:
         code(r"""
-# the leagues: Elo ratings of each fleet, its past copies and the rule AI (chess-style; 400 points = 10:1 odds)
+# the leagues: Elo ratings of each fleet, its champion, past copies, the rival (the other method) and the
+# rule AI (chess-style; 400 points = 10:1 odds)
 for name, m in (("MAPPO", model), ("Double DQN", dqn)):
     if m is not None:
         print(name)

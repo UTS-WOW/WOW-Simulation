@@ -87,7 +87,7 @@ class Monitor:
 
     def _row(self, info: dict) -> str:
         ep, stats, terms = info["episode"], info.get("stats", {}), info.get("reward_terms", {})
-        # "rule" / "passive" / "latest" / "past": training battles (who flew the enemy);
+        # "rule" / "passive" / "mirror" / "latest" / "past" / "champion" / "rival": training battles (who flew the enemy);
         # "eval": evaluations; "eval-heldout": held-out evaluations
         kind = ("eval-heldout" if info.get("held_out") else "eval") if info.get("evaluation") else info.get("opponent", "rule")
         values = [ep["r"], ep["l"], ep["t"], int(info["won"]), int(info.get("passed", info["won"])),
