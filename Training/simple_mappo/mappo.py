@@ -58,7 +58,7 @@ import torch.nn.functional as F
 from .callbacks import BaseCallback, CallbackList
 from .league import OpponentPool
 from .networks import (CAPTAIN_KEYS, NEG_INF, CentralCritic, Commander, FleetPolicy, LocalCritic, Memory,
-                       kl_to, log_prob_entropy, to_tensors)
+                       kl_to, log_prob_entropy, same_heads, to_tensors)
 from .rewards import REWARD_GROUPS
 
 CRITIC_KEYS = ["critic_own", "own_mask", "critic_enemy", "critic_enemy_mask", "critic_zones", "critic_zone_mask",
@@ -738,7 +738,7 @@ class MAPPO:
         if ck.get("method") != "commander-mappo":
             raise ValueError(f"{path} was saved by the earlier flat MAPPO; this version cannot continue it - "
                              f"start a new run (a new RUN_NAME)")
-        if ck["dims"] != dict(env.dims) or [h["size"] for h in ck["heads"]] != list(env.head_sizes):
+        if ck["dims"] != dict(env.dims) or not same_heads(ck["heads"], env.heads):
             raise ValueError(f"{path} was trained on a different observation layout: {ck['dims']} vs {dict(env.dims)}")
         model = cls(env, device=device, **{"verbose": 0, **ck["hyperparameters"], **overrides})
         model.policy.load_state_dict(ck["policy"])

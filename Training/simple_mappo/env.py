@@ -70,6 +70,7 @@ import shutil
 import stat
 import tempfile
 import time
+from collections import deque
 
 import numpy as np
 
@@ -83,8 +84,10 @@ TRAINING_DIR = os.path.dirname(HERE)
 
 # The observation always has room for this many ships a side, capture circles and nearby obstacles,
 # whatever the battle. Smaller battles leave slots empty (zeros, with a mask), so ONE network - and
-# one checkpoint - trains through every curriculum stage, including stages added later.
-MAX_SHIPS = 8
+# one checkpoint - trains through every curriculum stage, including stages added later. The networks
+# read ships and circles as sets of tokens, so raising these does not change a single weight: a model
+# trained with room for 8 ships (the first runs) continues with room for 9 (stage 8 is 9v9).
+MAX_SHIPS = 9
 MAX_ZONES = 5          # Capture and Control has five circles, the most the game makes
 MAX_OBSTACLES = 4
 
@@ -233,8 +236,8 @@ class NavalEnv:
             own, enemy, zones = stage_sizes(st, self._scenario)
             if max(own, enemy) > MAX_SHIPS or zones > MAX_ZONES:
                 raise ValueError(f"stage '{st.get('name')}' has {max(own, enemy)} ships a side and {zones} circles; "
-                                 f"the network has room for {MAX_SHIPS} and {MAX_ZONES} (MAX_SHIPS / MAX_ZONES in env.py - "
-                                 f"raising them changes the network, so existing checkpoints would not load)")
+                                 f"the observation has room for {MAX_SHIPS} and {MAX_ZONES} - raise MAX_SHIPS / "
+                                 f"MAX_ZONES in env.py (the networks and checkpoints do not depend on them)")
         init = init_message(max_team=MAX_SHIPS, max_allies=MAX_SHIPS - 1, max_contacts=MAX_SHIPS, max_zones=MAX_ZONES,
                             action_mode="intent", decision_period=decision_period, sim_dt=sim_dt, reflexes=True,
                             max_obstacles=MAX_OBSTACLES)
@@ -269,6 +272,9 @@ class NavalEnv:
         self.head_names = [h["name"] for h in self.heads]
         self.head_sizes = [h["size"] for h in self.heads]
         self.zone_features = spec.features.get("zone")          # the mock environment has no names
+        critic_zone = spec.features.get("critic_zone") or []
+        self._owner_cols = ((critic_zone.index("owner_mine"), critic_zone.index("owner_theirs"))
+                            if "owner_mine" in critic_zone else None)
         self.team_components = spec.team_reward_components
         self.ship_components = spec.agent_reward_components
         # the sizes the networks are built from; the commander's views have the critic's sizes
@@ -309,6 +315,7 @@ class NavalEnv:
         self._ep_terms = [dict() for _ in range(E)]
         self._ep_len = np.zeros(E, dtype=np.int64)
         self._ep_captures = np.zeros(E, dtype=np.float64)  # circles our fleet captured in the battle
+        self._recent = {}                                  # stage -> its last 20 qualifying results (rehearsal)
         self._t_start = time.time()
         self.last_reward_groups = np.zeros((self.n_rows, N, len(REWARD_GROUPS)), dtype=np.float32)
         self.last_expert = None
@@ -400,6 +407,8 @@ class NavalEnv:
                 if self.two_sided:
                     dones[E + e] = True
                 infos[e] = self._result(e, o)
+                if not infos[e]["evaluation"] and infos[e]["opponent"] in ("rule", "passive"):
+                    self._recent.setdefault(infos[e]["stage"], deque(maxlen=20)).append(float(infos[e]["passed"]))
                 self._final[e] = o
                 w.reset_async(self._reset_message(e))
                 self._begin(e, w.recv())
@@ -415,6 +424,12 @@ class NavalEnv:
         arr, other = o.arrays, 1 - team
         facts = self._ship_facts(o, team)
         team_terms = dict(zip(self.team_components, arr["team_reward"][team].tolist()))
+        if self._owner_cols is not None:
+            # circles held: from the true circle states (the same for every ship, alive or not)
+            zones, real = arr["critic_zones"][team], arr["critic_zone_mask"][team] > 0.5
+            if real.any():
+                mine, theirs = zones[real, self._owner_cols[0]], zones[real, self._owner_cols[1]]
+                team_terms["circles_held"] = float(((mine > 0.5).sum() - (theirs > 0.5).sum()) / real.sum())
         ship = {k: arr["agent_reward"][team, :, i] for i, k in enumerate(self.ship_components)}
         their = {k: arr["agent_reward"][other, :, i] for i, k in enumerate(self.ship_components)}
         before = self._facts[e] if team == 0 else self._facts1[e]
@@ -486,7 +501,7 @@ class NavalEnv:
         stage = self.stages[stage_index]
         if (not self.evaluating and not self.record_expert and stage_index > 0
                 and self.rng.random() < float(stage.get("rehearsal", 0.0))):
-            stage_index = int(self.rng.integers(stage_index))     # replay an earlier stage, so its skills stay
+            stage_index = self._rehearsal_stage(stage_index)      # replay an earlier stage, so its skills stay
             stage = self.stages[stage_index]
         self._battle_stage[e] = stage_index
         self._weights[e] = {**self.reward_weights, **stage.get("reward_weights", {})}
@@ -521,6 +536,19 @@ class NavalEnv:
         if self.time_limit:
             msg["time_limit"] = float(self.time_limit)
         return msg
+
+    def _rehearsal_stage(self, below: int) -> int:
+        """Which earlier stage to replay. The ones the fleet now does worst on come up most:
+
+            weight = (1 - its recent pass rate) ** 2 + 0.05
+
+        the PFSP rule league.py uses for opponents, applied to levels (Prioritized Level Replay, Jiang
+        et al. 2021). A stage with no recent battles counts as 50 %. Without it, a fleet trained for
+        long on big battles forgets the single-ship stages and every earlier stage is replayed equally
+        rarely."""
+        rates = np.array([np.mean(self._recent[s]) if self._recent.get(s) else 0.5 for s in range(below)])
+        weight = (1.0 - rates) ** 2 + 0.05
+        return int(self.rng.choice(below, p=weight / weight.sum()))
 
     def _begin(self, e: int, o) -> None:
         self._raw[e] = o

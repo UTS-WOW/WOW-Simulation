@@ -15,11 +15,20 @@ asks for a 70 % win rate before moving on.
     5 Archipelago      archipelago_3v3 (3 circles)    3v3 mixed    Veteran 70 % / itself 30 %   on         0.5
     6 Domination       random map, random weather     6v6          Elite 40 / itself 40 / past  on         0.8
     7 Open             random mode, map, weather      4-8 a side   Elite 40 / itself 40 / past  on         1.0
+    8 Archipelago 9v9  archipelago_9v9 (5 circles)    9v9, every   Elite 40 / itself 40 / past  on         1.0
+                                                      class
 
   "itself" is a mirror battle: the current fleet flies BOTH sides and both sides' experience trains
   it - twice the data per battle, and an opponent that is always exactly as good as the fleet.
   Promotion only ever counts the battles against the rule AI.
-                                                                   stop: 70 % of 250 held-out battles vs Elite
+                                                                   stop: 70 % of 200 evaluation battles vs Elite
+
+  The ships of each stage (classes: DD destroyer, CA cruiser, BB battleship, SS submarine):
+    0  1 BB vs a passive CA      1  1 CA (+ a passive DD far away)   2  1 CA vs 1 CA     3  1 BB vs 1 BB
+    4-5  1 BB + 1 CA + 1 DD a side
+    6  the game's balanced 6-ship fleet: 1 BB, 2 CA, 2 DD, 1 SS a side
+    7  the game's balanced fleet for 4-8 ships (submarines from 6 ships up)
+    8  2 BB, 3 CA, 2 DD, 2 SS a side - every class that fights
 
 A stage is a dict:
 
@@ -58,8 +67,8 @@ A stage is a dict:
     promote_win_rate   move on once the share of passed battles over the last `window` qualifying
     window               battles (against the stage's own opponent: rule AI or passive target) reaches this
     stop_win_rate      final stage only: stop training once the win rate over the last
-    stop_window          `stop_window` held-out evaluation battles reaches this. Held-out battles
-                         are played on maps whose seeds training never uses.
+    stop_window          `stop_window` evaluation battles reaches this. On a generated (procedural)
+                         stage they are held-out battles, on maps whose seeds training never uses.
     eval_battles       held-out battles played each time the stopping rule is checked
     eval_every         timesteps between those checks
     reward_weights     optional overrides of rewards.py's weights for this stage only, e.g.
@@ -69,7 +78,7 @@ A stage is a dict:
 Add as many stages as you like. The last stage has no promotion, so training stays on it until its
 stopping rule is met or total_timesteps runs out - drop stop_win_rate to keep it going for good.
 
-One network - one method, one checkpoint - plays every stage: the observation always has room for 8
+One network - one method, one checkpoint - plays every stage: the observation always has room for 9
 ships a side and 5 circles (env.py, MAX_SHIPS / MAX_ZONES), and smaller battles fill the empty slots
 with zeros and a mask. Promotion just changes the battles; training carries on with the same model.
 """
@@ -84,7 +93,7 @@ import numpy as np
 
 from .callbacks import BaseCallback
 
-NO_CIRCLE = {"approach_circle": 0.0, "in_circle": 0.0}
+NO_CIRCLE = {"approach_circle": 0.0, "in_circle": 0.0, "circles_held": 0.0}
 LEAGUE = {"rule": 0.4, "mirror": 0.4, "past": 0.2}       # stages 6-7: the rule AI, itself (both sides learn), past selves
 SELF_PLAY = {"rule": 0.7, "mirror": 0.3}                  # stages 3-5: mostly the rule AI, some battles against itself
 
@@ -131,12 +140,19 @@ DEFAULT_CURRICULUM = [
      "opponent": "league", "opponents": LEAGUE, "difficulty": 2, "commander": True, "team_spirit": 0.8,
      "rehearsal": 0.1, "promote_win_rate": 0.70, "window": 200},
     {"name": "7 Open", "battle": "4-8 ships a side, random mode, map, weather and circle size",
-     "description": "Anything the game can produce - judged on maps training never saw.",
+     "description": "Anything the game can produce: modes, maps, weather and fleet sizes it has not seen.",
      "procedural": {"mode": "random", "preset": "random", "density": "random",
                                       "weather": "random", "ships": [4, 8], "time_limit": 1200,
                                       "capture_radius": [130, 200], "world_reuse": 4},
      "opponent": "league", "opponents": LEAGUE, "difficulty": 2, "commander": True, "team_spirit": 1.0,
-     "rehearsal": 0.1, "stop_win_rate": 0.70, "stop_window": 250, "eval_battles": 50, "eval_every": 100_000},
+     "rehearsal": 0.1, "promote_win_rate": 0.70, "window": 200},
+    # ---- the biggest battle: every class, five circles - the fleet has to split up
+    {"name": "8 Archipelago 9v9", "battle": "9v9, every ship class, five circles among islands",
+     "description": "Hold more circles than the enemy: three across the middle, one near each fleet. "
+                    "Split the fleet - do not crowd the centre.",
+     "scenario": "scenarios/stage8_archipelago_9v9.json", "opponent": "league", "opponents": LEAGUE, "difficulty": 2,
+     "commander": True, "team_spirit": 1.0, "rehearsal": 0.15,
+     "stop_win_rate": 0.70, "stop_window": 200, "eval_battles": 40, "eval_every": 100_000},
 ]
 
 RANDOM_CHOICES = {"mode": [0, 1, 2, 3], "preset": [0, 1, 2], "density": [0, 1, 2], "weather": [0, 1, 2, 3]}
@@ -302,12 +318,14 @@ class CurriculumCallback(BaseCallback):
             return True
         from .utils import evaluate
         self.last_eval = self.num_timesteps
+        # held_out: generated maps from seeds training never uses (a scenario stage keeps its own map);
+        # the battles are logged as "eval-heldout", apart from other evaluations such as the baselines
         r = evaluate(self.model, env, n_battles=int(stage.get("eval_battles", 50)), held_out=True, keep_results=True)
         self.held_out += [float(x.get("passed", x["won"])) for x in r["results"]]
         need = int(stage.get("stop_window", 250))
         self.held_out = self.held_out[-need:]
         rate = float(np.mean(self.held_out))
-        msg = (f"held-out evaluation: won {r['win_rate']:.0%} of {r['battles']} battles; "
+        msg = (f"evaluation for the stopping rule: won {r['win_rate']:.0%} of {r['battles']} battles; "
                f"{rate:.0%} over the last {len(self.held_out)}/{need}")
         self.history.append({"timesteps": self.num_timesteps, "event": msg})
         if self.verbose:
@@ -315,7 +333,7 @@ class CurriculumCallback(BaseCallback):
         self.model.reset_battles()                  # the evaluation interrupted the training battles
         if len(self.held_out) >= need and rate >= stage["stop_win_rate"]:
             if self.verbose:
-                print(f"*** stopping rule met: {rate:.0%} >= {stage['stop_win_rate']:.0%} over {need} held-out battles ***")
+                print(f"*** stopping rule met: {rate:.0%} >= {stage['stop_win_rate']:.0%} over {need} evaluation battles ***")
             self.finished = True
             return False
         return True

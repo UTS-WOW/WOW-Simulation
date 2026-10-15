@@ -23,7 +23,11 @@ Three ideas from OpenAI Five (Dota 2) and Honor of Kings:
   predictions instead of one hard one, and the logs show which group the fleet earns.
 
 The circle terms follow the commander's order: a ship ordered to hold circle k is paid for sailing
-to circle k, a ship ordered to engage gets no circle pay, a "free" ship is paid for the nearest one.
+to circle k, a ship ordered to engage gets no circle pay. A "free" ship is paid for the nearest circle
+that still NEEDS a ship - one the fleet does not own yet, and not already taken by enough closer
+allies - so a free fleet spreads over the circles instead of crowding the centre one. With every
+circle owned, a free ship guards its nearest one. And "circles_held" pays the whole fleet, every
+second, for holding more circles than the enemy (that is how Domination is scored).
 
 The numbers Unity reports are described in Assets/Scripts/RL/RLRewardTracker.cs.
 """
@@ -44,6 +48,7 @@ REWARD_WEIGHTS = OrderedDict([
     ("zone_captured", 1.0),       # team: our fleet captured a circle
     ("zone_lost", -1.0),          # team: the enemy took a circle from us
     ("survive", 0.0),             # ship: per second afloat (the "Defend" stage switches it on)
+    ("circles_held", 0.05),       # team: per second, (our circles - the enemy's) / all circles
     # ---- combat
     ("enemy_sunk", 1.0),          # team: per enemy ship sunk
     ("ship_lost", -1.0),          # team: per ship of ours sunk
@@ -57,7 +62,7 @@ REWARD_WEIGHTS = OrderedDict([
 ])
 
 REWARD_GROUPS = ["objective", "combat", "outcome"]
-TERM_GROUP = {"in_circle": 0, "approach_circle": 0, "zone_captured": 0, "zone_lost": 0, "survive": 0,
+TERM_GROUP = {"in_circle": 0, "approach_circle": 0, "zone_captured": 0, "zone_lost": 0, "survive": 0, "circles_held": 0,
               "enemy_sunk": 1, "ship_lost": 1, "damage_dealt": 1, "damage_taken": 1, "friendly_fire": 1,
               "zero_sum": 1, "win": 2, "loss": 2}
 SHIP_TERMS = ("in_circle", "approach_circle", "survive", "damage_dealt", "damage_taken", "friendly_fire")
@@ -72,36 +77,63 @@ def ship_facts(zones: np.ndarray, zone_mask: np.ndarray, alive: np.ndarray, zone
     """Where each ship is relative to every capture circle, read from its own observation.
 
     zones [N, Z, F] and zone_mask [N, Z] are one fleet's "zones" tokens; alive [N].
-    Returns dist_km [N, Z] (inf where the circle does not exist), inside [N, Z] and alive [N].
+    Returns dist_km [N, Z] (inf where the circle does not exist), inside [N, Z], alive [N] and
+    mine [Z] (1 = our fleet owns the circle; read from any ship still afloat).
     """
     i_dist = zone_features.index("dist")
     i_inside = zone_features.index("i_am_inside")
     valid = zone_mask > 0.5
     dist = np.where(valid, zones[..., i_dist] * ZONE_DIST_TO_KM, np.inf)
     inside = zones[..., i_inside] * valid
-    return {"dist_km": dist.astype(np.float32), "inside": inside.astype(np.float32), "alive": alive.astype(np.float32)}
+    afloat = (alive > 0.5)[:, None] & valid
+    mine = (zones[..., zone_features.index("owner_mine")] * afloat).max(axis=0) if "owner_mine" in zone_features \
+        else np.zeros(zones.shape[1])
+    return {"dist_km": dist.astype(np.float32), "inside": inside.astype(np.float32), "alive": alive.astype(np.float32),
+            "mine": (mine > 0.5).astype(np.float32)}
 
 
 def no_facts(alive: np.ndarray, n_zones: int = 1) -> dict:
     """ship_facts for an environment without circle features (the mock)."""
     N = alive.shape[0]
     return {"dist_km": np.full((N, n_zones), np.inf, np.float32), "inside": np.zeros((N, n_zones), np.float32),
-            "alive": alive.astype(np.float32)}
+            "alive": alive.astype(np.float32), "mine": np.zeros(n_zones, np.float32)}
 
 
-def circle_duty(facts: dict, orders: np.ndarray | None) -> tuple[np.ndarray, np.ndarray]:
-    """(distance to the ship's circle in km [N], inside it [N]) given its orders.
-    free -> the nearest circle; hold circle k -> circle k; engage -> no circle (distance 0, not inside)."""
-    N, Z = facts["dist_km"].shape
-    nearest = facts["dist_km"].argmin(axis=1)
-    if orders is None:
-        orders = np.zeros(N, dtype=np.int64)
-    circle = np.where(orders >= ORDER_CIRCLE, np.minimum(orders - ORDER_CIRCLE, Z - 1), nearest)
-    rows = np.arange(N)
-    dist = facts["dist_km"][rows, circle]
-    inside = facts["inside"][rows, circle]
-    duty = (orders != ORDER_ENGAGE) & np.isfinite(dist) & (facts["alive"] > 0.5)
-    return np.where(duty, dist, 0.0), np.where(duty, inside, 0.0)
+def circle_duty(facts: dict, orders: np.ndarray | None) -> np.ndarray:
+    """The circle each ship is paid for [N] (-1: none), given the commander's orders:
+
+        hold circle k  -> circle k
+        engage         -> no circle
+        free           -> the nearest circle that still needs a ship: one our fleet does not own yet,
+                          with room left. The free ships are handed out nearest pair first, and each
+                          needy circle takes at most its share (free ships / needy circles, rounded up;
+                          ships ordered to it count too) - so 9 free ships and 5 neutral circles become
+                          2-2-2-2-1 instead of 9 in the middle. With every circle ours: the nearest one.
+    """
+    dist = facts["dist_km"]
+    N, Z = dist.shape
+    orders = np.zeros(N, dtype=np.int64) if orders is None else np.asarray(orders, dtype=np.int64)
+    afloat = facts["alive"] > 0.5
+    exists = np.isfinite(dist).any(axis=0)                                      # circles of this battle
+    circle = np.where(orders >= ORDER_CIRCLE, np.minimum(orders - ORDER_CIRCLE, Z - 1), -1)
+    free = np.flatnonzero((orders == ORDER_FREE) & afloat & np.isfinite(dist).any(axis=1))
+    if len(free) == 0 or not exists.any():
+        return circle
+    needy = exists & (facts.get("mine", np.zeros(Z)) < 0.5)
+    if not needy.any():                                                          # all ours: guard the nearest
+        circle[free] = dist[free].argmin(axis=1)
+        return circle
+    share = int(np.ceil(len(free) / needy.sum()))
+    load = np.bincount(circle[(circle >= 0) & afloat], minlength=Z)[:Z]           # ships ordered to each circle
+    pairs = sorted((dist[i, c], i, c) for i in free for c in np.flatnonzero(needy))
+    for _, i, c in pairs:                                                        # nearest pair first
+        if circle[i] < 0 and load[c] < share:
+            circle[i] = c
+            load[c] += 1
+    left = free[circle[free] < 0]                                                # every needy circle is full
+    if len(left):
+        circle[left] = np.where(needy, dist[left], np.inf).argmin(axis=1)
+    return circle
 
 
 def compute_rewards(before: dict, after: dict, team: dict, ship: dict, enemy_ship: dict | None, n_own: int,
@@ -121,8 +153,13 @@ def compute_rewards(before: dict, after: dict, team: dict, ship: dict, enemy_shi
     N = before["alive"].shape[0]
     exists = (np.arange(N) < n_own).astype(np.float32)
     was_alive = before["alive"] * after["alive"]
-    dist_before, _ = circle_duty(before, orders)
-    dist_after, inside = circle_duty(after, orders)
+    # the circle each ship was sent to when it acted; progress is measured towards that same circle
+    circle = circle_duty(before, orders)
+    rows, k = np.arange(N), np.maximum(circle, 0)
+    duty = (circle >= 0) & np.isfinite(before["dist_km"][rows, k]) & np.isfinite(after["dist_km"][rows, k])
+    dist_before = np.where(duty, before["dist_km"][rows, k], 0.0)
+    dist_after = np.where(duty, after["dist_km"][rows, k], 0.0)
+    inside = np.where(duty, after["inside"][rows, k], 0.0) * after["alive"]
     # no ship sails 1 km in one decision: a jump that big is a new battle or a new order, not progress
     closer = dist_before - dist_after
     approach = np.where(np.abs(closer) <= 1.0, closer, 0.0) * was_alive
@@ -137,6 +174,7 @@ def compute_rewards(before: dict, after: dict, team: dict, ship: dict, enemy_shi
     team_value = {
         "zone_captured": team["zones_captured"],
         "zone_lost": team["zones_lost"],
+        "circles_held": team.get("circles_held", 0.0) * seconds,   # (ours - theirs) / circles, from env.py
         "enemy_sunk": team["kills"] * n_enemy,
         "ship_lost": team["losses"] * n_own,
         "zero_sum": -enemy_combat,

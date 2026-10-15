@@ -1,0 +1,240 @@
+{
+  "scenarioName": "RL Stage 8 - Archipelago 9v9, five circles",
+  "seed": 8808,
+  "preset": 0,
+  "weather": 0,
+  "density": 1,
+  "timeLimit": 720.0,
+  "scoreToWin": 1000.0,
+  "aiDifficulty": 2,
+  "fogOfWar": true,
+  "useCustomIslands": true,
+  "ships": [
+    {
+      "cls": 0,
+      "team": 0,
+      "x": -480.0,
+      "y": -620.0,
+      "heading": 0.0
+    },
+    {
+      "cls": 3,
+      "team": 0,
+      "x": -160.0,
+      "y": -620.0,
+      "heading": 0.0
+    },
+    {
+      "cls": 3,
+      "team": 0,
+      "x": 160.0,
+      "y": -620.0,
+      "heading": 0.0
+    },
+    {
+      "cls": 0,
+      "team": 0,
+      "x": 480.0,
+      "y": -620.0,
+      "heading": 0.0
+    },
+    {
+      "cls": 1,
+      "team": 0,
+      "x": -560.0,
+      "y": -730.0,
+      "heading": 0.0
+    },
+    {
+      "cls": 2,
+      "team": 0,
+      "x": -280.0,
+      "y": -730.0,
+      "heading": 0.0
+    },
+    {
+      "cls": 1,
+      "team": 0,
+      "x": 0.0,
+      "y": -730.0,
+      "heading": 0.0
+    },
+    {
+      "cls": 2,
+      "team": 0,
+      "x": 280.0,
+      "y": -730.0,
+      "heading": 0.0
+    },
+    {
+      "cls": 1,
+      "team": 0,
+      "x": 560.0,
+      "y": -730.0,
+      "heading": 0.0
+    },
+    {
+      "cls": 0,
+      "team": 1,
+      "x": 480.0,
+      "y": 620.0,
+      "heading": 180.0
+    },
+    {
+      "cls": 3,
+      "team": 1,
+      "x": 160.0,
+      "y": 620.0,
+      "heading": 180.0
+    },
+    {
+      "cls": 3,
+      "team": 1,
+      "x": -160.0,
+      "y": 620.0,
+      "heading": 180.0
+    },
+    {
+      "cls": 0,
+      "team": 1,
+      "x": -480.0,
+      "y": 620.0,
+      "heading": 180.0
+    },
+    {
+      "cls": 1,
+      "team": 1,
+      "x": 560.0,
+      "y": 730.0,
+      "heading": 180.0
+    },
+    {
+      "cls": 2,
+      "team": 1,
+      "x": 280.0,
+      "y": 730.0,
+      "heading": 180.0
+    },
+    {
+      "cls": 1,
+      "team": 1,
+      "x": 0.0,
+      "y": 730.0,
+      "heading": 180.0
+    },
+    {
+      "cls": 2,
+      "team": 1,
+      "x": -280.0,
+      "y": 730.0,
+      "heading": 180.0
+    },
+    {
+      "cls": 1,
+      "team": 1,
+      "x": -560.0,
+      "y": 730.0,
+      "heading": 180.0
+    }
+  ],
+  "zones": [
+    {
+      "name": "A",
+      "x": -560.0,
+      "y": 0.0,
+      "radius": 120.0,
+      "owner": 2
+    },
+    {
+      "name": "B",
+      "x": 0.0,
+      "y": 0.0,
+      "radius": 120.0,
+      "owner": 2
+    },
+    {
+      "name": "C",
+      "x": 560.0,
+      "y": 0.0,
+      "radius": 120.0,
+      "owner": 2
+    },
+    {
+      "name": "D",
+      "x": -280.0,
+      "y": 380.0,
+      "radius": 120.0,
+      "owner": 2
+    },
+    {
+      "name": "E",
+      "x": 280.0,
+      "y": -380.0,
+      "radius": 120.0,
+      "owner": 2
+    }
+  ],
+  "islands": [
+    {
+      "x": -280.0,
+      "y": -40.0,
+      "radius": 70.0,
+      "isRock": false
+    },
+    {
+      "x": 280.0,
+      "y": 40.0,
+      "radius": 70.0,
+      "isRock": false
+    },
+    {
+      "x": -820.0,
+      "y": -260.0,
+      "radius": 110.0,
+      "isRock": false
+    },
+    {
+      "x": 820.0,
+      "y": 260.0,
+      "radius": 110.0,
+      "isRock": false
+    },
+    {
+      "x": 700.0,
+      "y": -280.0,
+      "radius": 90.0,
+      "isRock": false
+    },
+    {
+      "x": -700.0,
+      "y": 280.0,
+      "radius": 90.0,
+      "isRock": false
+    },
+    {
+      "x": 440.0,
+      "y": -170.0,
+      "radius": 40.0,
+      "isRock": true
+    },
+    {
+      "x": -440.0,
+      "y": 170.0,
+      "radius": 40.0,
+      "isRock": true
+    },
+    {
+      "x": 0.0,
+      "y": -260.0,
+      "radius": 30.0,
+      "isRock": true
+    },
+    {
+      "x": 0.0,
+      "y": 260.0,
+      "radius": 30.0,
+      "isRock": true
+    }
+  ],
+  "_notes": "9v9, every fighting class a side (2 battleships, 3 cruisers, 2 destroyers, 2 submarines). Five circles: A B C across the middle, D up-left near the enemy, E down-right near us (the game's Capture and Control layout). Islands are placed by hand and point-symmetric, so both sides face the same map; none sits on a circle."
+}

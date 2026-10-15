@@ -202,9 +202,12 @@ class Captain(nn.Module):
         h = self.core(x, h) if self.recurrent else self.core(x)
         return self.heads(torch.cat([h, x], -1), ptr), h
 
-    def sequence(self, obs: dict, order: torch.Tensor, h0: torch.Tensor, starts: torch.Tensor) -> torch.Tensor:
+    def sequence(self, obs: dict, order: torch.Tensor, h0: torch.Tensor, starts: torch.Tensor,
+                 features: bool = False):
         """Training pass over chunks of consecutive decisions: obs [T, B, ...] -> logits [T, B, L].
-        The memory starts from h0 (what it was during the rollout) and is cleared where starts=1."""
+        The memory starts from h0 (what it was during the rollout) and is cleared where starts=1.
+        features=True also returns what the heads read ([T, B, hidden + d]: memory + current view) -
+        the Double DQN's value stream reads it too."""
         T, B = order.shape
         flat = {k: v.reshape(T * B, *v.shape[2:]) for k, v in obs.items()}
         x, ptr = self.encode(flat, order.reshape(T * B))
@@ -217,7 +220,9 @@ class Captain(nn.Module):
             z = torch.stack(hs).reshape(T * B, -1)
         else:
             z = self.core(x.reshape(T * B, -1))
-        return self.heads(torch.cat([z, x.reshape(T * B, -1)], -1), ptr).view(T, B, -1)
+        zx = torch.cat([z, x.reshape(T * B, -1)], -1)
+        logits = self.heads(zx, ptr).view(T, B, -1)
+        return (logits, zx.view(T, B, -1)) if features else logits
 
 
 # ---------------------------------------------------------------------------------------------- commander
@@ -348,6 +353,18 @@ def sample(logits: torch.Tensor, mask: torch.Tensor, sizes: list[int], determini
     return torch.stack(acts, dim=-1), logp
 
 
+def epsilon_greedy(scores: torch.Tensor, mask: torch.Tensor, sizes: list[int], epsilon: float) -> torch.Tensor:
+    """DQN's exploration: the best legal option on every head - except that with probability epsilon a
+    ship takes a uniformly random legal option on every head instead (scores [..., sum(sizes)])."""
+    greedy, random = [], []
+    for part, legal in zip(split_logits(scores, mask, sizes), torch.split(mask, sizes, dim=-1)):
+        greedy.append(part.argmax(-1))
+        random.append((torch.rand_like(legal) * (legal > 0.5)).argmax(-1))
+    greedy, random = torch.stack(greedy, -1), torch.stack(random, -1)
+    explore = torch.rand(greedy.shape[:-1], device=scores.device) < epsilon
+    return torch.where(explore.unsqueeze(-1), random, greedy)
+
+
 def log_prob_entropy(logits: torch.Tensor, mask: torch.Tensor, sizes: list[int], actions: torch.Tensor):
     """For the PPO update: log-probability of the taken actions and the entropy, summed over heads."""
     logp, ent = 0.0, 0.0
@@ -409,11 +426,17 @@ class FleetPolicy(nn.Module):
         return Memory(n_envs, n_agents, self.hidden, next(self.parameters()).device)
 
     @torch.no_grad()
-    def act(self, obs: dict, memory: Memory, deterministic: bool = False) -> dict:
+    def act(self, obs: dict, memory: Memory, deterministic: bool = False, epsilon: float | None = None,
+            commander_epsilon: float | None = None) -> dict:
         """One decision for every ship of every battle. obs: tensors [E, N, ...] / [E, ...].
 
         Returns actions [E, N, heads] and what training needs to remember (log-probabilities, the
-        memory before this step, the orders and the commander's decision)."""
+        memory before this step, the orders and the commander's decision).
+
+        epsilon (Double DQN, ddqn.py): the scores are Q-values - take the best option, or with
+        probability epsilon a random one (commander_epsilon for the commander's orders) - instead of
+        sampling the policy's probabilities (MAPPO)."""
+        q_mode = epsilon is not None
         E, N = obs["alive"].shape
         memory.reset(obs["starts"])
         out = {"h": memory.h.clone()}
@@ -427,10 +450,14 @@ class FleetPolicy(nn.Module):
                 sub = {k: v[decide] for k, v in obs.items()}
                 mask = Commander.order_mask(sub)
                 logits = self.commander(sub).masked_fill(mask < 0.5, NEG_INF)
-                dist = torch.distributions.Categorical(logits=logits)
-                orders = logits.argmax(-1) if deterministic else dist.sample()
-                live = sub["own_mask"] * sub["alive"]
-                out["cmd_logp"][decide] = (dist.log_prob(orders) * live).sum(-1)
+                if q_mode:
+                    eps = epsilon if commander_epsilon is None else commander_epsilon
+                    orders = epsilon_greedy(logits, mask, [logits.shape[-1]], 0.0 if deterministic else eps)[..., 0]
+                else:
+                    dist = torch.distributions.Categorical(logits=logits)
+                    orders = logits.argmax(-1) if deterministic else dist.sample()
+                    live = sub["own_mask"] * sub["alive"]
+                    out["cmd_logp"][decide] = (dist.log_prob(orders) * live).sum(-1)
                 memory.orders[decide] = orders
             # a battle without its commander (a 1-ship stage) keeps every ship "free"
             memory.orders[obs["commander_on"] < 0.5] = ORDER_FREE
@@ -446,7 +473,12 @@ class FleetPolicy(nn.Module):
         logits, h = self.captain.step(flat, memory.orders.reshape(E * N)[real], h_all[real])
         h_all[real] = h
         memory.h = h_all.view(E, N, -1)
-        acts, logp = sample(logits, obs["action_mask"].reshape(E * N, -1)[real], H, deterministic)
+        legal = obs["action_mask"].reshape(E * N, -1)[real]
+        if q_mode:
+            acts = epsilon_greedy(logits, legal, H, 0.0 if deterministic else epsilon)
+            logp = torch.zeros(acts.shape[0], device=acts.device)
+        else:
+            acts, logp = sample(logits, legal, H, deterministic)
         out["actions"] = torch.zeros(E * N, len(H), dtype=torch.long, device=acts.device)
         out["actions"][real] = acts
         out["actions"] = out["actions"].view(E, N, -1)
@@ -457,6 +489,14 @@ class FleetPolicy(nn.Module):
         out["logits"][real] = logits
         out["logits"] = out["logits"].view(E, N, -1)
         return out
+
+
+def same_heads(saved: list[dict], heads: list[dict]) -> bool:
+    """True when a checkpoint's action heads fit this environment. Only the fixed options and the
+    pointer kinds matter: a pointer head has one option per contact / circle token, so a checkpoint
+    from an observation with room for 8 ships plays (and trains) with room for 9."""
+    key = lambda hs: [(h["name"], h["fixed"], h["pointer"]) for h in hs]
+    return key(saved) == key(heads)
 
 
 def to_tensors(obs: dict, device) -> dict:
