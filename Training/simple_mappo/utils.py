@@ -12,18 +12,21 @@ naval environment.
 from __future__ import annotations
 
 import base64
+import csv
 import json
 import math
 import os
 import shutil
 import subprocess
 import time
+import contextlib
 from contextlib import contextmanager
 from pathlib import Path
 
 import numpy as np
 
 from .callbacks import BaseCallback
+from .rewards import REWARD_WEIGHTS
 
 REASON_KEYS = ["player_score", "enemy_score", "player_kills", "enemy_kills", "damage_dealt_hulls",
                "enemy_damage_dealt_hulls", "first_capture_time"]
@@ -52,10 +55,7 @@ class Monitor:
         self.terms = list(env.reward_weights)
         self.columns = (["r", "l", "t", "won", "passed", "stage", "opponent", "battle_time", "survived"] + REASON_KEYS
                         + ["term_" + k for k in self.terms] + ["reason"])
-        if not os.path.exists(self.path):
-            with open(self.path, "w") as f:
-                f.write("#" + json.dumps({"t_start": time.time(), "env_id": "WOW naval MAPPO"}) + "\n")
-                f.write(",".join(self.columns) + "\n")
+        self._fit_header()
 
     def __getattr__(self, name):
         return getattr(self.env, name)
@@ -81,9 +81,26 @@ class Monitor:
         obs, rewards, dones, infos = self.env.step(actions, orders)
         rows = [self._row(i) for i in infos if i]
         if rows:
+            self._fit_header()
             with open(self.path, "a") as f:
                 f.writelines(rows)
         return obs, rewards, dones, infos
+
+    def _fit_header(self) -> None:
+        """Makes sure monitor.csv has this Monitor's columns before rows are added. A log started by an
+        older version (fewer reward terms - e.g. before "circles_held" existed), or downloaded again
+        from the team folder, is rewritten in the new layout, every old row kept and matched by column
+        name (a term the old rows did not have stays empty)."""
+        if not os.path.exists(self.path):
+            with open(self.path, "w") as f:
+                f.write("#" + json.dumps({"t_start": time.time(), "env_id": "WOW naval MAPPO"}) + "\n")
+                f.write(",".join(self.columns) + "\n")
+            return
+        with open(self.path) as f:
+            f.readline()
+            header = f.readline().strip().split(",")
+        if header != self.columns:
+            migrate_monitor(self.path, self.columns)
 
     def _row(self, info: dict) -> str:
         ep, stats, terms = info["episode"], info.get("stats", {}), info.get("reward_terms", {})
@@ -99,12 +116,52 @@ class Monitor:
         return ",".join(f"{v:.4g}" if isinstance(v, float) else str(v) for v in values) + "\n"
 
 
+def _monitor_rows(path: str, columns: list[str] | None = None):
+    """(first line, header, rows as dicts) of a monitor.csv - also one that mixes two layouts: rows
+    written before a reward term was added have as many fields as the header, rows written after as
+    many as the current Monitor's columns (default: every term in rewards.REWARD_WEIGHTS)."""
+    if columns is None:
+        columns = (["r", "l", "t", "won", "passed", "stage", "opponent", "battle_time", "survived"] + REASON_KEYS
+                   + ["term_" + k for k in REWARD_WEIGHTS] + ["reason"])
+    with open(path, newline="") as f:
+        first = f.readline()
+        table = list(csv.reader(f))
+    if not table:
+        return first, [], []
+    header, rows = table[0], table[1:]
+    out = []
+    for row in rows:
+        names = header if len(row) == len(header) else columns if len(row) == len(columns) else header
+        out.append(dict(zip(names, row)))
+    return first, header, out
+
+
+def migrate_monitor(path: str, columns: list[str]) -> None:
+    """Rewrites a monitor.csv in the layout `columns`, keeping every row (see Monitor._fit_header)."""
+    first, header, rows = _monitor_rows(path, columns)
+    tmp = path + ".tmp"
+    with open(tmp, "w", newline="") as f:
+        f.write(first)
+        w = csv.writer(f)
+        w.writerow(columns)
+        w.writerows([[r.get(c, "") for c in columns] for r in rows])
+    os.replace(tmp, path)
+
+
 def load_results(log_dir: str, training_only: bool = True, stage: int | None = None):
     """monitor.csv as a DataFrame. opponent is "rule" (the rule AI), "self" (self-play), "eval" or
     "eval-heldout" (evaluation battles); training_only drops the evaluation battles, stage keeps one
     curriculum stage."""
     import pandas as pd
-    df = pd.read_csv(os.path.join(log_dir, "monitor.csv"), skiprows=1)
+    path = os.path.join(log_dir, "monitor.csv")
+    try:
+        df = pd.read_csv(path, skiprows=1)
+    except pd.errors.ParserError:                     # rows of two layouts (an older log): read them by name
+        _, _, rows = _monitor_rows(path)
+        df = pd.DataFrame(rows)
+        for col in df.columns:
+            if col not in ("opponent", "reason"):
+                df[col] = pd.to_numeric(df[col], errors="coerce")
     if training_only and "opponent" in df:
         df = df[~df.opponent.astype(str).str.startswith("eval")]
     if stage is not None and "stage" in df:
@@ -492,19 +549,21 @@ def save_video(frames: list, path: str, fps: int = 10) -> str:
 
 
 def record_battle(model, env, path: str, every: int = 2, deterministic: bool = False, dpi: int = 80,
-                  stage: int | None = None) -> str:
+                  stage: int | None = None, evaluation: bool = True) -> str:
     """Plays one battle against the rule AI (in the env's first battle slot) and writes a top-down
     replay to path (.mp4, or .gif where ffmpeg is missing). Returns the file written.
 
     model=None plays random legal actions. every: draw a frame every N decisions (seconds).
     stage: the curriculum stage to play (default: the current one).
+    evaluation=False: against the stage's own opponent mix instead of the rule AI (e.g. a "rival" -
+    the other method's fleet - in the versus notebook).
     The environment's battles are restarted for it; call model.reset_battles() before training on.
     """
     if stage is not None and stage != env.stage:
         previous = env.stage
         env.set_stage(stage)
         try:
-            return record_battle(model, env, path, every, deterministic, dpi)
+            return record_battle(model, env, path, every, deterministic, dpi, evaluation=evaluation)
         finally:
             env.set_stage(previous)
     from matplotlib.backends.backend_agg import FigureCanvasAgg
@@ -512,7 +571,8 @@ def record_battle(model, env, path: str, every: int = 2, deterministic: bool = F
     from PIL import Image
 
     own_c, enemy_c = _cols(env, "critic_own"), _cols(env, "critic_enemy")
-    with as_evaluation(env):                           # logged as "eval": replays never count for promotion
+    # logged as "eval": replays never count for promotion
+    with as_evaluation(env) if evaluation else contextlib.nullcontext():
         obs = env.reset()
         fig = Figure(figsize=(6, 6), dpi=dpi)          # off-screen, so the notebook's own plots still show
         FigureCanvasAgg(fig)

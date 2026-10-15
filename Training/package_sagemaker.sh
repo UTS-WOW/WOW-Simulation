@@ -45,7 +45,7 @@ fi
 rm -f "$OUT"
 zip -qr "$OUT" \
   Training/simple_mappo Training/naval_rl Training/scenarios \
-  Training/train_simple.py Training/watch_simple.py Training/export_simple.py Training/WOW-MAPPO-Simple.ipynb Training/Stage*.ipynb \
+  Training/train_simple.py Training/watch_simple.py Training/export_simple.py Training/WOW-MAPPO-Simple.ipynb Training/Stage*.ipynb Training/Versus-MAPPO-vs-DDQN.ipynb \
   Training/make_stage_notebooks.py Training/requirements.txt Training/BUNDLE_VERSION Training/tests \
   "${EXTRA[@]}" \
   Builds/NavalTrainer \

@@ -14,6 +14,7 @@
     team.py       TeamStorage: one shared S3 folder per run, so teammates continue each other's training
     stages.py     continue_training / open_run: one model per method, trained stage by stage (the
                   Stage<k> notebooks)
+    versus.py     MAPPO's fleet against Double DQN's: head to head, and training against each other
 
 The first research pipeline (naval_rl/) is unchanged; this package only borrows its TCP connection
 to Unity.
@@ -30,6 +31,7 @@ from .mappo import MAPPO
 from .networks import Captain, CentralCritic, Commander, FleetPolicy
 from .rewards import REWARD_GROUPS, REWARD_WEIGHTS, compute_rewards
 from .stages import continue_training, open_run
+from .versus import both_sides, elo_gap, head_to_head, versus_stages
 from .team import TeamStorage, TeamStorageBusy, TeamSyncCallback, training_status
 from .utils import (Monitor, VideoCallback, compare_stages, evaluate, load_results, plot_comparison, plot_curriculum,
                     plot_progress, plot_results, plot_reward_terms, record_battle, record_unity_video, show_videos,
@@ -43,4 +45,5 @@ __all__ = ["BaseCallback", "BestModelCallback", "CallbackList", "SaveOnIntervalC
            "plot_progress", "plot_results", "plot_reward_terms", "record_battle", "record_unity_video",
            "VideoCallback", "show_videos", "ts2xy", "view", "TeamStorage", "TeamStorageBusy", "TeamSyncCallback",
            "training_status", "continue_training", "open_run", "FleetDDQN", "QMixer", "SequenceReplay",
-           "plot_comparison", "compare_stages", "stage_fleets", "fleet_text", "balanced_fleet"]
+           "plot_comparison", "compare_stages", "stage_fleets", "fleet_text", "balanced_fleet", "head_to_head",
+           "both_sides", "versus_stages", "elo_gap"]

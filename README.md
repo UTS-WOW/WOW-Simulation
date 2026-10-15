@@ -561,12 +561,29 @@ What a learned ship perceives works on **any battlefield**:
 Training draws a random battlefield, weather, mode and fleet size, so the policy learns the game
 rather than one map.
 
-`Training/` contains the MAPPO trainer: a recurrent actor, a critic that sees the true game state, a
-curriculum and a self-play league.
+`Training/simple_mappo/` trains the learned fleets, with **two methods built from the same parts** so
+they can be compared stage by stage:
 
-- **[Training/README.md](Training/README.md)** — how to build the headless player, train, evaluate and
-  watch a policy, share checkpoints so the whole team can train it, plus results so far.
-- **[RL_README.md](RL_README.md)** — how the whole system works, file by file, with diagrams.
+- **MAPPO** (Multi-Agent PPO, policy gradient) — every ship runs one shared *captain* network
+  (a transformer over ships, circles and islands, a GRU memory, pointer heads for targets and circles)
+  on what its team can see; a centralised critic that sees the true battle trains it;
+- **Double DQN** (value-based) — the same captain's outputs as dueling Q-values per action head,
+  Double Q-learning with n-step returns from a replay buffer of whole sequences (R2D2).
+
+In both, a **fleet commander** gives every ship an order every 10 seconds (free, engage, or hold
+circle k); both start by imitating the game's Elite AI, and climb a **nine-stage curriculum** — from
+sinking a passive target to a 9v9 battle over five capture circles with every ship class — against
+the rule AI, against themselves (mirror battles, a champion, past copies) and against each other. The
+trained fleets are exported to `StreamingAssets/RL/` and flown in the game by `RLPolicyDriver`; the
+**TRAINING STAGES** screen (on BATTLE SETUP) plays any stage with either fleet.
+
+- **[Training/simple_mappo/README.md](Training/simple_mappo/README.md)** — **how it works, in
+  detail**: the environment, the reward, the networks, MAPPO and Double DQN step by step, the
+  curriculum, the league, training it (notebooks, SageMaker, team checkpoints), playing it in Unity,
+  results.
+- **[Training/README.md](Training/README.md)** and **[RL_README.md](RL_README.md)** — the original
+  research pipeline (`Training/naval_rl/`), and the Unity side (protocol, observations, actions) it
+  shares with the current one.
 
 ---
 
@@ -590,5 +607,6 @@ and the package assemblies in `Library/ScriptAssemblies`.
 |---|---|
 | [SHIPS.md](SHIPS.md) | How each real ship's statistics were converted into game values |
 | [ENVIRONMENT.md](ENVIRONMENT.md) | Terrain, draft and grounding, deployment, weather, fog of war, objective rules |
-| [RL_README.md](RL_README.md) | The reinforcement-learning system in depth |
-| [Training/README.md](Training/README.md) | Building the training player, training, evaluation, sharing checkpoints with the team, and results |
+| [Training/simple_mappo/README.md](Training/simple_mappo/README.md) | **The learned fleets: MAPPO and Double DQN, how they work and how to train and play them** |
+| [RL_README.md](RL_README.md) | The original reinforcement-learning pipeline in depth (and the Unity side both share) |
+| [Training/README.md](Training/README.md) | Running the original pipeline: training player, training, evaluation, team checkpoints, results |

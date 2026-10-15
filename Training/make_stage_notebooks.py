@@ -227,6 +227,7 @@ Each run climbs the curriculum on its own (`runs_simple/fleet` and `runs_simple/
 def nav(current: str) -> str:
     items = [f"**Imitation**" if current == "P" else f"[Imitation]({IMITATION_FILE})"]
     items += [f"**Stage {i}**" if str(i) == current else f"[Stage {i}]({s['file']})" for i, s in enumerate(STAGES)]
+    items.append("**MAPPO vs Double DQN**" if current == "V" else "[MAPPO vs Double DQN](Versus-MAPPO-vs-DDQN.ipynb)")
     return " · ".join(items) + " · [the full walkthrough](WOW-MAPPO-Simple.ipynb)"
 
 
@@ -669,6 +670,324 @@ pd.DataFrame(rows).T
     return _finish(cells)
 
 
+VERSUS_FILE = "Versus-MAPPO-vs-DDQN.ipynb"
+
+VERSUS_METHODS_MD = r"""
+## 1. The two methods, in detail
+
+### 1.1 What they share
+
+Both fleets are built from **the same parts** — only the learning rule differs, so a difference in the result is a difference of the method:
+
+| Shared part | What it is | File |
+|---|---|---|
+| The environment | the real Unity game, headless, one battle per process; a decision every 1 s of game time | `env.py` |
+| What a ship sees | tokens: itself (200 numbers), up to 8 allies, up to 9 spotted enemies (fog of war), 5 circles, 4 islands | `env.py`, `RLObservation.cs` |
+| What a ship does | 6 heads: move (15 + sail to circle k), speed, target (auto or enemy k), fire, torpedo, ability | `RLActions.cs` |
+| The **captain** | one network for every ship: an embedding per token kind → 2 attention layers → pooling → GRU memory → 6 heads; target and circle are *pointer* heads | `networks.py` |
+| The **commander** | every 10 s an order per ship: free / engage / hold circle k | `networks.py` |
+| The reward | circles (spread over the circles that need a ship), circles held, damage, kills, the result; team spirit, zero-sum | `rewards.py` |
+| The start | a copy of the Elite rule AI (supervised learning, StageP), kept close by a fading penalty | `imitation.py` |
+| Self-play | mirror battles, a champion, past copies, and the other method as rival | `league.py` |
+
+What differs is **what the captain's head outputs mean** and **how they are trained**:
+
+```
+                         the captain's 6 heads output scores for every option
+                                          │
+              ┌───────────────────────────┴───────────────────────────┐
+         MAPPO: logits                                         Double DQN: advantages A_d
+   probabilities = softmax(logits)                   Q_d = V + A_d − mean(A_d)  (dueling)
+   act: SAMPLE an option                             act: take the BEST option (ε-greedy in training)
+   learn: make good options likelier                 learn: make Q match the reward that followed
+```
+
+### 1.2 MAPPO — policy gradient (Week 10's PPO, for a team)
+
+**Idea.** The captain outputs a probability for every option. After playing, options that turned out *better than expected* become more likely, worse ones less likely. "Expected" comes from a **critic** that predicts the return; MAPPO's critic is **centralised** — during training it sees the *true* battle (every enemy, even unspotted), so its predictions are much better, while the ships themselves still act only on what they can see (centralised training, decentralised execution).
+
+**One update** (`mappo.py`):
+
+1. **Collect** 256 decisions in every battle with the current policy (sampling). Store observations, actions, log-probabilities, the GRU memory, the critic's values and the rewards (per reward group: objective, combat, outcome).
+2. **Advantages** with GAE, per ship and reward group, backwards in time (γ = 0.995, λ = 0.95):
+   ```
+   δ_t = r_t + γ V(s_t+1) − V(s_t)          A_t = δ_t + γλ A_t+1          A = A_objective + A_combat + A_outcome
+   ```
+   The commander's step lasts 10 decisions, so its reward is the fleet's reward summed over those 10 (a semi-Markov step).
+3. **Update** — 5 epochs × 4 minibatches:
+   - **captains** — PPO's clipped objective on chunks of 32 decisions (the GRU replays them):
+     ```
+     ratio = π_new(a|s) / π_old(a|s)
+     loss  = − min(ratio·A, clip(ratio, 0.8, 1.2)·A)        (and ≥ 3·A when A < 0: Honor of Kings' dual clip)
+             − 0.01 × entropy                                 (explore; fades to 0.002)
+             + 0.1 × KL(Elite clone ‖ policy)                 (stay near the clone at first; fades to 0.01)
+     ```
+   - **critic** — predict the returns (normalised, clipped), the commander's value and the chance of winning;
+   - **commander** — the same PPO on its orders (one joint decision for the fleet).
+4. Throw the data away and collect again (**on-policy**: every decision is used for one update only).
+
+### 1.3 Double DQN — value-based (Week 9's DQN, for a team)
+
+**Idea.** Learn **Q(s, a)** — the return to expect after choosing a in state s — and always take the option with the highest Q. Learning makes Q match what actually followed: the rewards plus the value of where the ship ended up.
+
+**Six heads at once.** One Q per *complete* action would need 20 × 5 × 10 × 2 × 2 × 15 = 60,000 outputs. Instead every head has its own Q, sharing one state value (**dueling + branching** DQN):
+```
+Q_d(s, a_d) = V(s) + A_d(s, a_d) − mean of A_d over the legal options
+```
+The advantages A_d are the captain's head outputs; V is one extra layer. So **the Q-network is the captain** — which is why the game can fly it with the same C# code (it just takes the best option).
+
+**One round** (`ddqn.py`):
+
+1. **Play** 32 decisions in every battle, ε-greedy: the best option, or with probability ε a random legal one (ε 0.3 → 0.05 when starting from the clone).
+2. **Store** one **chunk** per fleet in the **replay buffer**: 33 observations, the actions, orders, rewards, battle ends — and the GRU memory at the chunk's start, so training can replay the chunk through the memory (**R2D2**). The buffer holds 40,000 decisions; old ones drop out.
+3. Once the buffer holds 4,000 decisions: **4 gradient steps**, each on 32 chunks sampled from it (**off-policy**: a decision is reused many times). For every decision:
+   ```
+   a*_d = argmax Q_online,d(s_t+5, ·)                       the ONLINE network picks the next option (per head)…
+   next = mean over heads of Q_target,d(s_t+5, a*_d)        …the TARGET network scores it  (Double DQN)
+   y    = r_t + γ r_t+1 + … + γ⁴ r_t+4 + γ⁵ · next          5-step return, γ = 0.99 (stops at the battle's end)
+   loss = mean over heads of Huber(Q_online,d(s_t, a_t,d) − y)   every head trained to the same y (BDQ)
+   ```
+   Plain DQN uses the target network for both picking and scoring and **over-estimates** (it takes the max of noisy numbers); Double DQN splits the two jobs.
+4. Every 250 gradient steps, copy the online network into the **target network** (Week 9 C/D).
+5. **Commander**: its scores for (ship, order) are Q-values too; a set of orders is worth the sum. Between its decisions an order stays in force, so it learns at every step: the next value is Q(next state, *the same* orders), or the best orders at its next decision (h-DQN, intra-option Q-learning).
+6. **Starting from the clone** ("kickstarting"): the clone's scores × 0.1 become the first advantages (the same best options, at the size of Q-values), and a fading penalty KL(clone ‖ softmax(A / 0.1)) keeps it close while the Q-values are still meaningless — without it the first updates erased the clone.
+
+### 1.4 Side by side
+
+| | MAPPO | Double DQN |
+|---|---|---|
+| Family | policy gradient | value-based |
+| Acts by | **sampling** its probabilities | taking the **best** Q (ε-greedy while training) |
+| Learns from | the battles it just played (on-policy) | a replay buffer of past chunks (off-policy) |
+| Learning signal | advantage from a centralised critic (GAE) | Double-Q target with 5-step returns |
+| Exploration | entropy bonus | ε-greedy |
+| Stability tricks | clip, dual clip, value normalisation | target network, Huber loss, n-step returns |
+| Commander | PPO at a 10 s clock | Q-learning on (ship, order) |
+| Strength (in theory) | copes well with an opponent that keeps changing; what OpenAI Five and Honor of Kings used | reuses its data many times; the StarCraft micro-management classic (QMIX) |
+"""
+
+VERSUS_TEST_MD = r"""
+## 2. What this notebook tests
+
+The stage notebooks compare the methods **side by side** — each against the rule AI. Here they meet **head to head**: MAPPO's fleet on one side of the battle, Double DQN's on the other.
+
+**Head to head, from both sides.** A battle is played with MAPPO's fleet as *blue* (our side) and Double DQN's as *red* (the enemy), and again the other way round — the maps are symmetric, but spawning first or second, north or south, could still favour one side, so both seats are played and added up. Each fleet plays the way it plays in the game: MAPPO samples, Double DQN takes its best option (2 % random). Technically the enemy is the **rival** of `league.py`: `blue.set_rival(red)` puts red's network in blue's league, and the head-to-head stage sends every battle's enemy to it.
+
+**Training each other** (`TRAIN_EACH_OTHER = True`). Rounds of *iterated best response*: MAPPO trains against Double DQN's current fleet, then Double DQN trains against MAPPO's improved one, and so on — after every round both are measured again: head to head, and each against the rule AI. Things to watch for:
+
+* **Who adapts faster.** Off-policy Double DQN reuses every battle many times; on-policy MAPPO needs fresh battles. The head-to-head win rate over the rounds shows which one learns to counter the other first.
+* **Exploitation.** Two fleets that only meet each other can learn tricks that only work on each other. That is why `RIVAL_SHARE` keeps the stage's rule AI in the training mix (30 % by default) — and why the rule-AI win rates are measured every round: if a fleet beats its rival more but the rule AI less, it is exploiting, not improving.
+* **Cycles.** A beats B, B adapts and beats A, A adapts back... — rock-paper-scissors. The league's champion and past copies exist to break such cycles in the main training.
+
+Nothing here touches the main runs: the fleets are loaded from `runs_simple/fleet` and `runs_simple/fleet_ddqn` (or the team folder), and what they learn here is saved under `runs_simple/versus/`.
+"""
+
+
+def versus_notebook() -> nbf.NotebookNode:
+    cells = []
+    md = lambda s: cells.append(nbf.v4.new_markdown_cell(s.strip("\n")))
+    code = lambda s: cells.append(nbf.v4.new_code_cell(s.strip("\n")))
+    md(f"""
+# 43008: Reinforcement Learning - WOW Naval Fleet: MAPPO vs Double DQN, fleet against fleet
+
+{nav("V")}
+
+What happens when the two methods **fight each other**? This notebook loads the team's MAPPO fleet and Double DQN fleet, puts them on opposite sides of the same battle (both ways round), and — if you like — lets them **train against each other** in rounds, measuring after every round who is winning and whether either got better or just learned to exploit the other.
+
+It starts with a detailed explanation of both methods (section 1) and of the test (section 2).
+""")
+    md(VERSUS_METHODS_MD)
+    md(VERSUS_TEST_MD)
+    md("## 3. Setup\n\nOn SageMaker, run this from the unzipped bundle (`<folder>/Training/`); on your computer, from the repository's `Training/` folder. The battles are the real Unity game.")
+    code(SETUP)
+    code(INSTALL)
+    code(r"""
+import os
+from collections import OrderedDict
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+from simple_mappo import (NavalEnv, MAPPO, FleetDDQN, Monitor, TeamStorage, DEFAULT_CURRICULUM, versus_stages,
+                          head_to_head, both_sides, elo_gap, evaluate, record_battle, show_videos, stage_fleets)
+from simple_mappo.env import load_scenario
+from simple_mappo.export import pick_checkpoint
+from simple_mappo.versus import FIGHT, TRAIN
+""")
+    md("""
+## 4. Where the fleets come from
+
+The latest MAPPO run (`RUN_NAME`) and Double DQN run (`RUN_NAME + "_ddqn"`) — pulled from the team folder if there is one (read only: nothing is pushed or locked), otherwise from this machine. A run with no checkpoint yet starts from the imitation clone (the Elite AI's copy), so the notebook always runs.
+""")
+    code(r"""
+RUN_NAME = "fleet"                   # the stage notebooks' run; the Double DQN run is RUN_NAME + "_ddqn"
+if ON_SAGEMAKER:
+    from simple_mappo.aws import team_storage_uri
+    TEAM_STORAGE = team_storage_uri()
+else:
+    TEAM_STORAGE = None              # e.g. "s3://<team-bucket>/wow-mappo"
+
+runs = {"MAPPO": f"runs_simple/{RUN_NAME}", "Double DQN": f"runs_simple/{RUN_NAME}_ddqn"}
+if TEAM_STORAGE:
+    for name, run in (("MAPPO", RUN_NAME), ("Double DQN", RUN_NAME + "_ddqn")):
+        TeamStorage(TEAM_STORAGE, run, user="versus-notebook").pull(runs[name])     # read only
+imitation = os.path.join(runs["MAPPO"], "models", "imitation.pt")
+versus_dir = "runs_simple/versus"     # what the fleets learn here goes here, never into the main runs
+""")
+    md("""
+## 5. Configuration
+
+`STAGE` picks the battle from the curriculum (its map, fleets, commander and team spirit) — 4 (King of the Hill 3v3, 6 minutes) is quick; 8 (9v9, five circles, 12 minutes) is the big one. `N_BATTLES` per seat (so twice that per measurement).
+""")
+    code(r"""
+STAGE = 4                            # the battle: a curriculum stage (3 duel, 4 King of the Hill, 5 archipelago, 8 9v9)
+N_BATTLES = 24                       # battles per seat, per measurement
+TRAIN_EACH_OTHER = True              # False: only the head-to-head
+ROUNDS = 3                           # rounds of training each other
+TIMESTEPS_PER_ROUND = 50_000         # per method, per round
+RIVAL_SHARE = 0.7                    # while training: the other fleet in 70 % of battles, the rule AI in 30 %
+
+config = OrderedDict([
+    ('n_envs', max(1, min(16, os.cpu_count() // 2))),     # battles in parallel, one Unity process each
+    ('decision_period', 1.0),
+    ('sim_dt', 0.08),
+])
+stage = DEFAULT_CURRICULUM[STAGE]
+print(f"Stage {stage['name']}: {stage['battle']}")
+print("Ships:", stage_fleets(stage, load_scenario)["text"])
+""")
+    md("## 6. Environment\n\nTwo stages made from the chosen one: **head to head** (every enemy is the other method's fleet) and **training each other** (the other fleet in `RIVAL_SHARE` of the battles, the rule AI in the rest). One set of game players, a battle log for each fleet.")
+    code(r"""
+battles = NavalEnv(stages=versus_stages(STAGE, RIVAL_SHARE), n_envs=config['n_envs'],
+                   decision_period=config['decision_period'], sim_dt=config['sim_dt'],
+                   unity_log_dir=os.path.join(versus_dir, "unity_logs"))
+env_mappo = Monitor(battles, os.path.join(versus_dir, "mappo", "logs"))
+env_dqn = Monitor(battles, os.path.join(versus_dir, "ddqn", "logs"))
+pd.DataFrame(battles.stages)[["name", "opponents", "commander", "team_spirit"]]
+""")
+    md("## 7. Load the two fleets")
+    code(r"""
+def load_fleet(cls, run_dir, env, name):
+    checkpoint = pick_checkpoint(os.path.join(run_dir, "models"), verbose=False)
+    log_dir = os.path.join(versus_dir, "mappo" if cls is MAPPO else "ddqn", "logs")
+    if checkpoint and not checkpoint.endswith("imitation.pt"):
+        model = cls.load(checkpoint, env=env, log_dir=log_dir, verbose=1)
+        print(f"{name}: {checkpoint}, {model.num_timesteps:,} timesteps")
+    else:
+        model = cls(env, log_dir=log_dir, verbose=1)
+        model.init_from_imitation(imitation)
+        print(f"{name}: no checkpoint yet - the Elite AI clone, untrained")
+    env.set_stage(FIGHT)
+    return model
+
+mappo = load_fleet(MAPPO, runs["MAPPO"], env_mappo, "MAPPO")
+dqn = load_fleet(FleetDDQN, runs["Double DQN"], env_dqn, "Double DQN")
+""")
+    md("""
+## 8. Head to head
+
+Both seats: MAPPO as blue against Double DQN as red, then the other way round. `win_rate` is **blue's**. The overall MAPPO win rate adds both seats up; the Elo gap is the rating difference that would predict it (+200 ≈ 76 %, +400 ≈ 91 %).
+""")
+    code(r"""
+def measure(label):
+    r = both_sides(mappo, dqn, env_mappo, env_dqn, n_battles=N_BATTLES)
+    table = pd.DataFrame({k: r[k] for k in ("MAPPO as blue", "Double DQN as blue")}).T
+    print(f"{label}: MAPPO wins {r['mappo_win_rate']:.0%} of {r['battles']} battles against Double DQN "
+          f"(Elo gap {elo_gap(r['mappo_win_rate']):+.0f})")
+    return r, table
+
+result, table = measure("Before training each other")
+table[["battles", "win_rate", "win_rate_stderr", "enemy_ships_sunk", "own_ships_lost", "points", "enemy_points"]]
+""")
+    md("### For reference: each against the rule AI\n\nThe same battle against the stage's rule AI — so a head-to-head result can be read against how good each fleet is in general.")
+    code(r"""
+def vs_rule():
+    return {"MAPPO": evaluate(mappo, env_mappo, n_battles=N_BATTLES, stage=TRAIN),
+            "Double DQN": evaluate(dqn, env_dqn, n_battles=N_BATTLES, stage=TRAIN)}
+
+rule = vs_rule()
+pd.DataFrame(rule).T[["battles", "win_rate", "win_rate_stderr", "enemy_ships_sunk", "own_ships_lost"]]
+""")
+    md("### Watch them fight\n\nOne battle, MAPPO's fleet in blue (cyan trails) against Double DQN's in red - a 2D map drawn from the game's data.")
+    code(r"""
+video_dir = os.path.join(versus_dir, "videos")
+os.makedirs(video_dir, exist_ok=True)
+mappo.set_rival(dqn, champion=False)
+battles.set_opponent_policy(mappo._opponent_act, mappo.league.sample)
+path = record_battle(mappo, env_mappo, os.path.join(video_dir, "mappo_blue_vs_ddqn_red_round0.mp4"), stage=FIGHT,
+                     evaluation=False)
+show_videos(video_dir, contains="round0", newest=1)
+""")
+    md("""
+## 9. Train each other
+
+Each round: **MAPPO trains** against Double DQN's current fleet (`set_rival`), then **Double DQN trains** against MAPPO's improved fleet; then both are measured head to head and against the rule AI. The progress tables are the usual ones (`win_rate` there is against the rule AI, `win_rate_self_play` against the rival). Every round's fleets are saved to `runs_simple/versus/<method>/models/round_<k>.pt`.
+""")
+    code(r"""
+history = [{"round": 0, "mappo_vs_ddqn": result["mappo_win_rate"],
+            "mappo_vs_rule": rule["MAPPO"]["win_rate"], "ddqn_vs_rule": rule["Double DQN"]["win_rate"]}]
+if TRAIN_EACH_OTHER:
+    for k in range(1, ROUNDS + 1):
+        print(f"===== round {k}: MAPPO trains against Double DQN =====")
+        env_mappo.set_stage(TRAIN)
+        mappo.set_rival(dqn, champion=False)
+        mappo.learn(total_timesteps=mappo.num_timesteps + TIMESTEPS_PER_ROUND, log_interval=5)
+        print(f"===== round {k}: Double DQN trains against MAPPO =====")
+        env_dqn.set_stage(TRAIN)
+        dqn.set_rival(mappo, champion=False)
+        dqn.learn(total_timesteps=dqn.num_timesteps + TIMESTEPS_PER_ROUND, log_interval=8)
+        mappo.save(os.path.join(versus_dir, "mappo", "models", f"round_{k}"))
+        dqn.save(os.path.join(versus_dir, "ddqn", "models", f"round_{k}"))
+
+        result, table = measure(f"After round {k}")
+        rule = vs_rule()
+        history.append({"round": k, "mappo_vs_ddqn": result["mappo_win_rate"],
+                        "mappo_vs_rule": rule["MAPPO"]["win_rate"], "ddqn_vs_rule": rule["Double DQN"]["win_rate"]})
+        display(pd.DataFrame(history).set_index("round"))
+""")
+    md("## 10. What happened")
+    code(r"""
+h = pd.DataFrame(history).set_index("round")
+fig, (left, right) = plt.subplots(1, 2, figsize=(14, 4.5))
+left.plot(h.index, h.mappo_vs_ddqn, "o-", label="MAPPO's win rate against Double DQN")
+left.plot(h.index, 1 - h.mappo_vs_ddqn, "o-", label="Double DQN's win rate against MAPPO")
+left.axhline(0.5, color="gray", lw=0.8, ls="--")
+left.set_title("Head to head (both seats)")
+right.plot(h.index, h.mappo_vs_rule, "o-", label="MAPPO vs rule AI")
+right.plot(h.index, h.ddqn_vs_rule, "o-", label="Double DQN vs rule AI")
+right.set_title(f"Against the rule AI ({DEFAULT_CURRICULUM[STAGE]['name']})")
+for ax in (left, right):
+    ax.set_ylim(0, 1)
+    ax.set_xlabel("round of training each other")
+    ax.set_ylabel("win rate")
+    ax.legend()
+plt.tight_layout()
+plt.show()
+h
+""")
+    md("""
+**Reading it**
+
+* **Left, above 0.5**: MAPPO's fleet is the stronger one in this battle; the gap from 0.5 is the size of the edge (±0.1 is within the noise of 48 battles).
+* **Left, moving**: whoever trained last against the other should gain — if the line swings back and forth round after round, the two are chasing each other (a cycle); if one side keeps winning, it adapts better.
+* **Right**: if a fleet's win rate against the rule AI falls while it beats its rival more, it is learning tricks that only work on the rival (exploitation) — raise the rule AI's share (`RIVAL_SHARE` lower). If both rise, training each other made both genuinely better.
+""")
+    md("### The last battle, after training each other")
+    code(r"""
+mappo.set_rival(dqn, champion=False)
+battles.set_opponent_policy(mappo._opponent_act, mappo.league.sample)
+k = len(history) - 1
+path = record_battle(mappo, env_mappo, os.path.join(video_dir, f"mappo_blue_vs_ddqn_red_round{k}.mp4"), stage=FIGHT,
+                     evaluation=False)
+show_videos(video_dir, contains=f"round{k}", newest=1)
+""")
+    code(r"""
+battles.close()
+""")
+    return _finish(cells)
+
+
 def _finish(cells) -> nbf.NotebookNode:
     nb = nbf.v4.new_notebook()
     nb["cells"] = cells
@@ -679,6 +998,8 @@ def _finish(cells) -> nbf.NotebookNode:
 
 if __name__ == "__main__":
     keep = {IMITATION_FILE} | {st["file"] for st in STAGES}
+    nbf.write(versus_notebook(), os.path.join(HERE, VERSUS_FILE))
+    print("wrote", os.path.join(HERE, VERSUS_FILE))
     for old in glob.glob(os.path.join(HERE, "Stage*.ipynb")):
         if os.path.basename(old) not in keep:          # notebooks of an earlier curriculum
             os.remove(old)

@@ -403,3 +403,46 @@ def test_a_missing_champion_or_rival_plays_a_mirror_battle():
         assert env._pick_opponent(env.stages[0]) == ("rival", 7)
     finally:
         env.close()
+
+
+# ---------------------------------------------------------------------------------------------- logs, versus
+
+def test_a_log_with_an_older_layout_is_read_and_rewritten(tmp_path):
+    """A battle log started before a reward term existed, with rows of the new layout appended (what a
+    session that pulled an old log from the team folder produced) - read by name, then migrated."""
+    import pandas as pd
+    from simple_mappo.rewards import REWARD_WEIGHTS
+    from simple_mappo.utils import REASON_KEYS, load_results, migrate_monitor
+    base = ["r", "l", "t", "won", "passed", "stage", "opponent", "battle_time", "survived"] + REASON_KEYS
+    old_terms = [k for k in REWARD_WEIGHTS if k != "circles_held"]
+    old = base + ["term_" + k for k in old_terms] + ["reason"]
+    new = base + ["term_" + k for k in REWARD_WEIGHTS] + ["reason"]
+    path = tmp_path / "monitor.csv"
+    with open(path, "w") as f:
+        f.write("#{}\n" + ",".join(old) + "\n")
+        f.write(",".join(["1", "300", "1", "1", "1", "7", "rule", "300", "1"] + ["5"] * len(REASON_KEYS)
+                         + ["0.1"] * len(old_terms) + ['"old, row"']) + "\n")
+        f.write(",".join(["2", "400", "2", "0", "0", "7", "rival", "400", "0"] + ["6"] * len(REASON_KEYS)
+                         + ["0.2"] * len(REWARD_WEIGHTS) + ['"new row"']) + "\n")
+    df = load_results(str(tmp_path))
+    assert df.opponent.tolist() == ["rule", "rival"] and np.isnan(df.term_circles_held[0])
+    assert df.term_circles_held[1] == pytest.approx(0.2) and df.term_win.tolist() == pytest.approx([0.1, 0.2])
+    migrate_monitor(str(path), new)
+    assert list(pd.read_csv(path, skiprows=1).columns) == new
+
+
+def test_head_to_head_puts_the_other_fleet_in_the_enemy_seat(tmp_path):
+    from simple_mappo.ddqn import FleetDDQN
+    from simple_mappo.utils import Monitor, load_results
+    from simple_mappo.versus import both_sides, versus_stages
+    battles = NavalEnv(stages=versus_stages(4), n_envs=2, mock=True)
+    try:
+        env_m, env_d = Monitor(battles, str(tmp_path / "m")), Monitor(battles, str(tmp_path / "d"))
+        mappo = MAPPO(env_m, d_model=32, attn_layers=1, hidden_size=32, verbose=0)
+        dqn = FleetDDQN(env_d, d_model=32, attn_layers=1, hidden_size=32, verbose=0)
+        r = both_sides(mappo, dqn, env_m, env_d, n_battles=2)
+        assert r["battles"] == 4 and 0.0 <= r["mappo_win_rate"] <= 1.0
+        assert set(load_results(str(tmp_path / "m")).opponent) == {"rival"}
+        assert mappo.league.greedy(mappo.league.sample("rival"))           # Double DQN plays greedily
+    finally:
+        battles.close()

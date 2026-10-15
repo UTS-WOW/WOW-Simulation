@@ -1,691 +1,991 @@
-# MAPPO with a fleet commander — the version to learn from
+# The fleet's AI — MAPPO and Double DQN with a fleet commander
 
-A readable multi-agent RL method that trains a fleet in the Unity naval simulation, through a
-nine-stage curriculum from sinking a target to a 9v9 battle over five circles - and, built from the
-same parts, a **Double DQN** fleet to compare it with, stage by stage. It combines what the
-game-playing AIs that beat professionals did — **OpenAI Five** (Dota 2), **AlphaStar** (StarCraft II),
-**Honor of Kings** — with MAPPO, and it is laid out like the course's Week 9 and 10 notebooks
-(config `OrderedDict`, `Monitor`, `SaveOnIntervalCallback`, `model.learn()`, learning curve,
-beginning/middle/end replays). It trains on your machine or on Amazon SageMaker, and keeps the
-team's checkpoints in one shared S3 folder so teammates continue each other's training.
+This package trains the warships of the Unity naval game to fight as a fleet, with two
+reinforcement-learning methods built from the **same parts**, so they can be compared stage by stage:
 
-**Start with the notebooks: [`StageP-Imitation.ipynb`](../StageP-Imitation.ipynb), then
-[`Stage0-Gunnery.ipynb`](../Stage0-Gunnery.ipynb) … [`Stage8-Archipelago-9v9.ipynb`](../Stage8-Archipelago-9v9.ipynb).**
-Each stage notebook trains the MAPPO run and the Double DQN run on that stage and compares them.
+- **MAPPO** — Multi-Agent PPO, a *policy-gradient* method (the PPO of Week 10, for a team);
+- **Double DQN** — a *value-based* method (the DQN of Week 9, for a team).
 
-The original research pipeline in `naval_rl/` is unchanged; this package only borrows its TCP
-connection to Unity.
+Every ship is steered by the same **captain** network, a **fleet commander** gives the ships orders
+every 10 seconds, and both learn through a **nine-stage curriculum** — from sinking a target that
+does not shoot back to a 9v9 battle over five capture circles — against the game's rule-based AI,
+against themselves, and against each other. The trained fleets are exported to the game, which runs
+them in plain C# with no Python.
+
+**Start here:** the notebooks [`StageP-Imitation.ipynb`](../StageP-Imitation.ipynb), then
+[`Stage0-Gunnery.ipynb`](../Stage0-Gunnery.ipynb) … [`Stage8-Archipelago-9v9.ipynb`](../Stage8-Archipelago-9v9.ipynb).
+Each stage notebook trains both methods on its stage and compares them.
 
 ---
 
-## What the agents learn
+## Contents
 
-Every ship of the Player fleet is an agent; a fleet commander gives them orders. The enemy is the
-game's rule-based AI, a passive target (the first stages), or a copy of our own fleet (the league).
-The objective is the game's own:
+1. [The short version](#1-the-short-version)
+2. [The game as a reinforcement-learning problem](#2-the-game-as-a-reinforcement-learning-problem)
+3. [The reward](#3-the-reward)
+4. [The networks (shared by both methods)](#4-the-networks-shared-by-both-methods)
+5. [Imitation: the warm start both methods share](#5-imitation-the-warm-start-both-methods-share)
+6. [MAPPO — how it learns](#6-mappo--how-it-learns)
+7. [Double DQN — how it learns](#7-double-dqn--how-it-learns)
+8. [MAPPO and Double DQN side by side](#8-mappo-and-double-dqn-side-by-side)
+9. [The curriculum](#9-the-curriculum)
+10. [Self-play and the league](#10-self-play-and-the-league)
+11. [Training it](#11-training-it)
+12. [Playing it in Unity](#12-playing-it-in-unity)
+13. [Files](#13-files)
+14. [Results so far](#14-results-so-far)
+15. [Speed](#15-speed)
+16. [Troubleshooting](#16-troubleshooting)
+17. [References and course links](#17-references-and-course-links)
 
-- **get to the capture circles and hold them** (each one scores points every second - so hold
-  several, not just the centre one: a ship without orders is paid for the nearest circle that still
-  needs a ship, and the fleet is paid every second for holding more circles than the enemy),
-- **sink enemy ships**,
-- **do not lose your own**,
-- and win the battle (first to 1000 points, or sink the whole enemy fleet; level at the clock goes to
-  overtime, so there are no draws).
+> Diagrams use [Mermaid](https://mermaid.js.org/); they render on GitHub and in VS Code (with a
+> Mermaid preview extension).
 
-## Why this method (and not plain IPPO or MAPPO)
+---
 
-Every AI that beat human professionals at a team strategy game used the same family of method: an
-**actor-critic policy gradient (PPO or close to it), self-play, memory, attention over units and
-action masks** — OpenAI Five, AlphaStar, Tencent's Honor of Kings AI, and TiZero for 11-a-side
-football. None of them used value-decomposition methods such as QMIX (built for purely cooperative
-tasks, and awkward with six action heads and a changing opponent). Newer sequence models (MAT,
-Sable) top cooperative benchmarks, but need a fixed order of agents and decode the team's actions
-one by one — hard to explain and a poor fit for fleets of 1 to 8 ships against a learning opponent.
+## 1. The short version
 
-So the base stays MAPPO (PPO, a shared actor, a centralised critic), and the improvements are the
-pieces those systems relied on:
-
-| Piece | What it does | Paper | Course link |
-|---|---|---|---|
-| **Entity encoder** | every ship, contact, circle and island is a token; a small transformer lets them attend to each other; mean + max pooling | AlphaStar (transformer), OpenAI Five (max-pool) | W10-C custom CNN feature extractor — for a set instead of a picture |
-| **GRU memory** | each ship remembers what it has seen (fog of war: an enemy out of sight is still somewhere) | OpenAI Five (LSTM), recurrent MAPPO | W10-C frame stacking, learned |
-| **Pointer heads** | *which target* and *which circle* are scored against the contact / circle tokens, so 2 or 8 enemies use the same layer | AlphaStar pointer network, Honor of Kings target attention | W9-A softmax classifier over things present |
-| **Fleet commander** | every 10 s an order per ship: *free*, *engage* or *hold circle k*; the captain sees its order, and the circle reward follows it | Honor of Kings' Hierarchical Macro Strategy (macro decides where, micro decides how) | PPO at a slower clock |
-| **Centralised critic, multi-head value** | sees the true battle (training only); predicts the objective, combat and outcome rewards separately, plus the chance of winning | MAPPO, Honor of Kings | W10-A/B actor-critic |
-| **Dual-clip PPO**, value normalisation + clipping | a very stale sample cannot blow up an update | Honor of Kings, MAPPO | W10-B PPO |
-| **Team spirit, zero-sum reward** | ship rewards blend into the fleet's average as training goes on; the enemy's combat reward is subtracted | OpenAI Five | W10-B reward normalisation |
-| **Imitation warm start + KL anchor** | the captains first copy the Elite rule AI; a fading KL penalty keeps them close at first | AlphaStar | **W9-A**: the same supervised loop |
-| **Self-play (both sides learn) + league** | from stage 3, mirror battles: the fleet flies both sides and both sides' experience trains it (twice the data, an opponent always as good as the fleet); plus its champion (replaced only when beaten in 55 % of 40 battles), past copies chosen by PFSP and the other method's fleet (cross-play), with Elo ratings; the rule AI stays as the anchor | OpenAI Five, AlphaStar | W9-C/D target network (a frozen copy) |
-| **Curriculum** | 9 stages, each passed at ≥ 70 % of its own goal; earlier stages replayed 10–15 % of the time | TiZero, OpenAI Five | — |
-| **Best-model checkpoint** | `model_best.pt` keeps the best rolling pass rate | — | W9/10 `SaveOnIntervalCallback` |
-
-Each piece is a switch, so the report can show what it adds (`train_simple.py --no-commander`,
-`--no-memory`, `--attn-layers 0`, `--ippo`, `--imitation-battles 0`, `--dual-clip 0`).
-
-References: Yu et al., *The Surprising Effectiveness of PPO in Cooperative Multi-Agent Games*
-(NeurIPS 2022); OpenAI, *Dota 2 with Large Scale Deep Reinforcement Learning* (2019); Vinyals et al.,
-*Grandmaster level in StarCraft II using multi-agent reinforcement learning* (Nature 2019); Ye et al.,
-*Towards Playing Full MOBA Games with Deep Reinforcement Learning* (NeurIPS 2020) and *Mastering
-Complex Control in MOBA Games with Deep RL* (AAAI 2020); Wu et al., *Hierarchical Macro Strategy Model
-for MOBA Game AI* (AAAI 2019); Lin et al., *TiZero* (AAMAS 2023); Wen et al., *Multi-Agent RL is a
-Sequence Modeling Problem* (MAT, NeurIPS 2022); Mahjoub et al., *Sable* (ICML 2025).
-
-## Files
-
-| File | What it does |
+| | |
 |---|---|
-| [`rewards.py`](rewards.py) | **The reward.** Every term and its weight in `REWARD_WEIGHTS`, its group, team spirit, zero-sum, order-aware circle pay |
-| [`curriculum.py`](curriculum.py) | **The stages** (`DEFAULT_CURRICULUM`), random battle generation, `CurriculumCallback` (promotion, stopping rule) |
-| [`env.py`](env.py) | `NavalEnv`: `n_envs` Unity battles behind `reset()` / `step()`; token observations; passive and league opponents; the imitation recorder |
-| [`networks.py`](networks.py) | `EntityEncoder`, `Captain`, `Commander`, `CentralCritic`, `FleetPolicy` |
-| [`mappo.py`](mappo.py) | Rollouts, GAE (per reward group, and for the commander's longer steps), the PPO update; `learn` / `save` / `load` / `predict` |
-| [`ddqn.py`](ddqn.py) | `FleetDDQN`: Double DQN with the same captain and commander - dueling branching Q-heads, R2D2 sequence replay, n-step targets, kickstarting from the clone, h-DQN commander, optional QMIX mixer; the same interface |
-| [`league.py`](league.py) | `OpponentPool`: past copies, PFSP, Elo |
-| [`imitation.py`](imitation.py) | `collect_expert`, `behaviour_cloning` (the W9-A loop), `save_imitation`, `plot_imitation` |
-| [`callbacks.py`](callbacks.py) | `BaseCallback`, `SaveOnIntervalCallback`, `BestModelCallback` |
-| [`utils.py`](utils.py) | `Monitor`, plots, `evaluate`, battle replays |
-| [`team.py`](team.py) | `TeamStorage`: the shared S3 folder per run, with a lock and live status; `TeamSyncCallback` |
-| [`aws.py`](aws.py) | SageMaker with boto3 only: the account's bucket, launching and watching training jobs |
-| [`stages.py`](stages.py) | `continue_training` / `open_run`: the model (per method) a stage notebook trains, and its imitation start |
-| [`../train_simple.py`](../train_simple.py) | Command-line training (imitation first for a new run); the SageMaker training-job entry point |
-| [`../watch_simple.py`](../watch_simple.py) | A trained model in the real game's graphics, driven from Python |
-| [`export.py`](export.py), [`../export_simple.py`](../export_simple.py) | Exports a trained fleet to the Unity game (`naval_policy.bin` v2), which runs it in C# |
-| `../StageP-Imitation.ipynb`, `../Stage0-Gunnery.ipynb` … `../Stage8-Archipelago-9v9.ipynb` | One notebook per step; each trains both runs (MAPPO, Double DQN) on its stage and compares them |
-| [`../make_stage_notebooks.py`](../make_stage_notebooks.py) | Writes those notebooks; edit it, not the notebooks |
-| [`../tests/test_simple_mappo.py`](../tests/test_simple_mappo.py) | Tests on the mock environment (no Unity): `python -m pytest tests` |
+| **Environment** | the real Unity game (this project), built as a headless Linux player — one process per battle, many battles in parallel |
+| **Agents** | every ship of our fleet (1 to 9), plus one fleet commander |
+| **Decision** | every ship, every 1 s of game time: six choices (move, speed, target, fire, torpedo, ability) |
+| **Commander** | every 10 s: an order for every ship — *free*, *engage*, or *hold circle k* |
+| **What a ship knows** | only what its team can legally know under fog of war, as a set of *tokens* (itself, allies, spotted enemies, circles, islands) |
+| **Networks** | one captain network shared by all ships: entity transformer + GRU memory + pointer heads; one commander network |
+| **Method 1: MAPPO** | PPO with a centralised critic (sees the true battle, training only), GAE per reward group, dual clip |
+| **Method 2: Double DQN** | dueling, branching Q-heads; Double Q-learning with n-step returns; sequence replay (R2D2); the commander as a Q-learning meta-controller |
+| **Warm start** | both start from a copy of the game's Elite AI (supervised learning), kept close by a fading KL penalty |
+| **Curriculum** | 9 stages, each passed at ≥ 70 % of its own goal against the rule AI |
+| **Self-play** | mirror battles (both sides learn), a champion (its best self so far), past copies, and the other method's fleet (cross-play) |
+| **In the game** | `naval_policy.bin` (MAPPO) and `naval_policy_ddqn.bin` (Double DQN), run by `RLPolicy.cs` |
 
-## How one update works
-
-```
-         ┌──────────── n_envs Unity battles (headless, ~400x real time each) ────────────┐
-         └────▲─────────┬──────────────────────────────────────────────────▲─────────┬─┘
-   actions,   │         │ obs: each ship's view, the true battle (critic),   │         │
-   orders     │         ▼ the fleet's view (commander)                       │         ▼
-         ┌────┴────────────────────────────────────────────────────────────────────────┐
- collect │ commander (every 10 s): fleet view -> an order per ship                       │ x n_steps
-         │ captain (every ship, every 1 s): own view + order + GRU memory -> 6 heads      │
-         │ critic: true battle -> value per ship and reward group, commander value, P(win)│
-         │ rewards.py -> reward per ship and group (team spirit, zero-sum, orders)        │
-         └──────────────────────────────────┬─────────────────────────────────────────┘
-                                            ▼
- GAE        per ship and reward group (summed for the captains); per order for the commander
-                                            ▼
- update     n_epochs x n_minibatches:
-              critic     value loss (normalised, clipped) + commander value + win probability
-              captains   dual-clip PPO on chunks of 32 decisions (the GRU replays them)
-                         - entropy bonus + KL to the imitation policy (fading)
-              commander  dual-clip PPO on its orders (one joint decision per fleet)
+```mermaid
+flowchart LR
+    subgraph PY["Python - Training/simple_mappo"]
+        NB["Stage notebooks<br/>train_simple.py"]
+        M["MAPPO<br/>mappo.py"]
+        D["Double DQN<br/>ddqn.py"]
+        NET["networks.py<br/>captain, commander, critic"]
+        ENV["NavalEnv<br/>env.py + rewards.py"]
+        LG["league.py<br/>champion, past, rival, Elo"]
+        CK[("runs_simple/run/models<br/>checkpoints")]
+    end
+    subgraph U["Headless Unity players - one battle each"]
+        RLE["RLEnvironment.cs<br/>observations, masks,<br/>raw reward parts"]
+        GAME["the game:<br/>ships, guns, spotting,<br/>circles, rule AI"]
+    end
+    subgraph G["The game you play"]
+        BIN[("StreamingAssets/RL/<br/>naval_policy.bin<br/>naval_policy_ddqn.bin")]
+        DRV["RLPolicyDriver.cs<br/>+ RLPolicy.cs (C#)"]
+    end
+    NB --> M & D
+    M & D --> NET
+    M & D --> LG
+    M & D <--> ENV
+    ENV <-->|"TCP, every 1 s<br/>of game time"| RLE
+    RLE <--> GAME
+    M & D --> CK -->|"export_simple.py"| BIN --> DRV
 ```
 
-## How this is still MAPPO
+---
 
-MAPPO (Yu et al. 2022) is PPO for a cooperative team, built on **centralised training with
-decentralised execution**: one actor shared by every ship, which acts only on what it can see,
-and a critic that sees the true state of the battle during training. The paper's recommendations
-are all here — value normalisation (`ValueNorm`), agent-specific global state (the critic reads each
-ship's own token next to the whole battle), a few minibatches with several epochs, PPO clip 0.2,
-death masking (a sunk ship stops training the actor; its critic keeps learning the team's value).
+## 2. The game as a reinforcement-learning problem
 
-The commander adds one level above the ships. It only uses what the team could know (own ships,
-the contacts it has spotted, the circles, the score), so the trained fleet still plays fair.
-`MAPPO(env, centralised_critic=False, commander=False)` (`--ippo --no-commander`) is IPPO, the
-baseline the paper compares MAPPO against.
+### 2.1 How Python and Unity talk
 
-## One method for every stage
+`NavalEnv` (`env.py`) starts `n_envs` headless copies of the game (`Builds/NavalTrainer`, built from
+this project by `Training/build_player.sh`) and talks to each over TCP (`naval_rl/env.py`). It is the
+same idea as `make_atari_env(n_envs=4)` in the Atari notebooks: several environments stepped together.
 
-Every stage — and any stage you add later — is trained by the **same model**: the same networks,
-the same hyperparameters and the same reward function. The observation always has room for 8 ships
-a side and 5 circles (`MAX_SHIPS` / `MAX_ZONES` in `env.py`); a duel simply leaves seven ship slots
-empty, and the attention masks them out. Promotion only changes which battles are played.
+1. **Init** — Python tells Unity the observation sizes (room for 9 ships a side, 5 circles, 4
+   obstacles), the decision period (1 s) and the simulation step (`sim_dt` = 0.08 s).
+2. **Reset** — a battle: a scenario file (`Training/scenarios/*.json`: ships, circles, islands) or
+   the settings of a generated map; who flies each fleet (Python, the rule AI, or the Elite AI being
+   recorded for imitation); a random seed.
+3. **Step** — Python sends six numbers for every ship of both fleets; Unity carries them out for 1 s
+   of game time (12 physics frames of 0.08 s), then returns every ship's observation, the action masks and the
+   raw reward parts (damage done, circles captured, ...). When a battle ends, the next one starts at
+   once, like Stable-Baselines3's vector environments.
 
-## The observation, actions and reward
+The battle runs as fast as the CPU allows — a 1v1 runs about 400× faster than real time — with the
+game's own ships, gunnery, spotting, PhysX physics, capture rules and rule-based AI. Nothing is
+simplified for training.
 
-**Observation** (see the top of `env.py`). Each ship's view is a set of tokens: itself, its allies,
-the enemy contacts its team has spotted (last known positions), the capture circles and the nearest
-islands. The critic gets the true battle; the commander gets the same with the enemy's hidden
-state zeroed. Unity sends the name of every feature (`env.spec.features`).
+### 2.2 What a ship sees
 
-**Actions.** Six heads, one option each per decision; illegal options are masked:
-move (incl. **sail to circle k**), speed, target, fire, torpedo, ability. The commander's orders:
-free / engage / hold circle k, for every ship.
+A battle is a **set of things**, so each ship's observation is a set of **tokens**. Every token is a
+row of numbers (positions are relative to the ship and turned to its heading):
 
-**Reward** (`rewards.py`):
-
-| Term | Weight | Kind | Group |
+| Token | How many | Numbers each | What is in it |
 |---|---|---|---|
-| `in_circle` | +0.05 per second inside its circle | ship | objective |
-| `approach_circle` | +1 per km closer to its circle's centre (− when moving away) | ship | objective |
-| `zone_captured` / `zone_lost` | +1 / −1 | team | objective |
-| `survive` | per second afloat (0; 0.02 in the Defend stage) | ship | objective |
-| `enemy_sunk` / `ship_lost` | +1 / −1 per ship | team | combat |
-| `damage_dealt` / `damage_taken` | +0.5 / −0.25 per whole hull | ship | combat |
-| `friendly_fire` | −1 per whole hull | ship | combat |
-| `zero_sum` | − the enemy ships' average damage terms | team | combat |
-| `win` / `loss` | +5 / −5 | team | outcome |
+| `self` | 1 | 200 | its class, health, systems, speed, guns and reloads, every consumable (charges, cooldown), terrain rays, the score and time, the kind of battle |
+| `allies` | up to 8 | 22 | each squadron mate: where, heading, health, class, what it is doing |
+| `contacts` | up to 9 | 33 | each enemy **its team has spotted** — last known position, how long ago, class, threat |
+| `zones` | up to 5 | 12 | each capture circle: where, how far, radius, owner (mine / theirs / neutral), capture progress, contested, am I inside |
+| `obstacles` | up to 4 | 14 | the nearest islands, rocks and smoke screens: where, how big, whether they hide it from its target or from the biggest gun aimed at it |
 
-"Its circle" is the commander's: a ship ordered to hold circle k is paid for circle k, a ship
-ordered to engage gets no circle pay, a free ship is paid for the nearest circle.
-`approach_circle` is *potential-based* shaping (the change in distance), so a ship cannot farm it by
-sailing back and forth.
+Each kind comes with a **mask** (1 = a real token, 0 = an empty slot), so a 1v1 and a 9v9 use the
+same network. Under fog of war a ship never sees what its team has not spotted. Unity sends the name
+of every number (`env.spec.features`).
 
-## The curriculum
+Two more views exist for **training only**:
 
-`curriculum.py`, `DEFAULT_CURRICULUM`. Every stage is passed at **≥ 70 %** of its own goal:
+- **the true battle** (`critic_own` 173, `critic_enemy` 53, `critic_zones` 10, `critic_match` 31
+  numbers per token) — every ship and every enemy as they really are. MAPPO's critic reads it, and so
+  does Double DQN's optional QMIX mixer;
+- **the commander's view** (`fleet_enemy`, `fleet_match`) — the same with everything the team could
+  not know set to zero (the enemy's true positions and strength), so the commander plays fair.
 
-| Stage | Battle | Fleet | Opponent | Passed when | Window |
+### 2.3 What a ship can do
+
+Each decision a ship picks one option on each of six **action heads**:
+
+| Head | Options | Meaning |
+|---|---|---|
+| `move` | 15 + one per circle (20) | 0 keep course · 1–8 sail a 1.5 km leg towards a compass point · 9 close in · 10 broadside · 11 open the range · 12 regroup · 13 take cover (behind land or smoke) · 14 return to port · 15 + k **sail to circle k** |
+| `speed` | 5 | full · ⅔ · ⅓ · stop · astern |
+| `target` | 1 + one per contact (10) | automatic, or **focus enemy contact k** |
+| `fire` | 2 | fire at will · hold fire |
+| `torpedo` | 2 | none · launch at the target |
+| `ability` | 15 | none · one of 12 consumables (shell type, smoke, radar, hydro, repair, engine boost, ...) · dive · surface |
+
+Illegal options are **masked** (Unity sends a mask every step): no "close in" with no enemy spotted,
+no compass leg into land, no torpedo without a firing solution, no consumable that is reloading. A
+masked option can never be chosen, by either method.
+
+The game carries the choices out with its own systems — path-finding, gun lead and turret aiming,
+consumables — so the network decides *what to do*, not how to steer the rudder.
+
+### 2.4 The commander's orders
+
+Every 10 decisions (`commander_period`) the commander gives every ship an order:
+
+| Order | Meaning for the ship | What the reward pays it for (section 3) |
+|---|---|---|
+| 0 **free** | decide alone | the nearest circle that still needs a ship |
+| 1 **engage** | fight; no circle duty | no circle pay |
+| 2 + k **hold circle k** | go to and hold circle k | circle k |
+
+The order reaches the captain as part of its observation: a one-hot of the order type added to its
+`self` token and a "this is my circle" flag on the ordered circle's token. One-ship stages have no
+commander (every ship is free).
+
+### 2.5 Who flies the enemy
+
+Each battle's enemy fleet is chosen by the curriculum stage (sections 9 and 10): the game's
+**rule-based AI** (Recruit, Veteran or Elite), a **passive target** (Python orders it to stop and hold
+fire — the first two stages), or a copy of a learned fleet (**mirror**, **champion**, **past**,
+**rival**). In a *mirror* battle our own network flies both fleets and both fleets' experience is
+used for training — the environment then returns two rows per battle (our fleet, then the enemy's).
+
+---
+
+## 3. The reward
+
+`rewards.py` turns Unity's raw reward parts into one reward per ship per decision. It is the same for
+both methods. Every term and its weight is in `REWARD_WEIGHTS` — the one place to change what the
+fleet is paid for.
+
+### 3.1 The terms
+
+| Term | Weight | Who gets it | Group | Paid for |
+|---|---|---|---|---|
+| `in_circle` | +0.05 / s | the ship | objective | each second inside its circle |
+| `approach_circle` | +1 / km | the ship | objective | each km sailed towards its circle (− when sailing away) |
+| `zone_captured` / `zone_lost` | +1 / −1 | the fleet | objective | a circle taken / lost |
+| `circles_held` | +0.05 / s | the fleet | objective | × (our circles − the enemy's) / all circles |
+| `survive` | 0 (0.02 / s in Defend) | the ship | objective | each second afloat |
+| `enemy_sunk` / `ship_lost` | +1 / −1 | the fleet | combat | per ship |
+| `damage_dealt` / `damage_taken` | +0.5 / −0.25 | the ship | combat | per whole hull of damage |
+| `friendly_fire` | −1 | the ship | combat | per whole hull done to our own side |
+| `zero_sum` | 1 | the fleet | combat | minus the enemy ships' average damage terms |
+| `win` / `loss` | +5 / −5 | the fleet | outcome | the result, on the last step |
+
+`approach_circle` pays for the *change* in distance (potential-based shaping), so a ship cannot farm
+it by sailing back and forth. In the Gunnery and Duel stages the circle terms are switched off — in the
+duel the circle lies between the two battleships, and racing to it means sailing bow-on into the
+enemy's guns.
+
+### 3.2 Which circle a ship is paid for — spreading out
+
+A ship ordered to hold circle k is paid for circle k; a ship ordered to engage gets no circle pay. A
+**free** ship is paid for the nearest circle that **still needs a ship**: one the fleet does not own
+yet, with room left. The free ships are handed out nearest pair first, and each needy circle takes at
+most its share (free ships ÷ needy circles, rounded up; ships ordered there count too). With every
+circle already ours, a free ship guards its nearest one.
+
+Measured on the real start of stage 8 (9 free ships, 5 neutral circles):
+
+| | A | B | C | D | E |
 |---|---|---|---|---|---|
-| P – Imitation | Elite AI vs Elite AI, stages 2–6 | — | — | (supervised: copy the Elite AI) | — |
-| 0 – Gunnery | `gunnery`, 7 km, open sea | 1 BB vs 1 CA | passive target (stop, hold fire) | target sunk within 150 s | 50 |
-| 1 – Capture | `capture`, one neutral circle | 1 CA | passive DD, far away | circle captured | 50 |
-| 2 – Defend | `defend`, neutral circle, enemy coming | 1 CA vs 1 CA | Recruit | won | 100 |
-| 3 – Duel | `bb_duel`, open sea | 1v1 BB | Recruit 60 % / **self-play 40 %** (mirror 15, champion 10, past 5, rival 10) | won vs Recruit | 100 |
-| 4 – King of the Hill | `koth_3v3`, one circle | 3v3 mixed, **commander**, τ 0.3 | Veteran 60 % / self-play 40 % | won vs Veteran | 100 |
-| 5 – Archipelago | `archipelago_3v3`, 3 circles, islands | 3v3 mixed, commander, τ 0.5 | Veteran 60 % / self-play 40 % | won vs Veteran | 150 |
-| 6 – Domination | procedural 6v6, random map and weather | 6v6, commander, τ 0.8 | **league**: Elite 40 % / mirror 25 / champion 10 / past 15 / rival 10 | won vs Elite | 200 |
-| 7 – Open | procedural 4–8 a side, random mode | commander, τ 1.0 | league | won vs Elite | 200 |
-| 8 – Archipelago 9v9 | `archipelago_9v9`: 5 circles (A B C across the middle, D up-left, E down-right), hand-placed islands | 9v9 — 2 BB, 3 CA, 2 DD, 2 SS a side — commander, τ 1.0 | league | final: won vs Elite in 200 evaluation battles | 200 |
+| paid for the *nearest* circle (before) | 2 | 0 | 0 | 0 | **7** |
+| paid for the nearest circle that *needs* a ship (now) | 2 | 2 | 2 | 1 | 2 |
+
+Together with `circles_held` — paid every second for holding more circles than the enemy, which is
+how the game scores Domination — this teaches the fleet to take several circles instead of crowding
+one. The commander can still send any ship anywhere.
+
+### 3.3 Team spirit, zero-sum, reward groups
+
+- **Team spirit** τ (OpenAI Five): each ship's own terms are blended with the fleet's average,
+  `own' = (1 − τ) · own + τ · fleet average`. τ is 0 in the single-ship stages and rises
+  0.3 → 0.5 → 0.8 → 1.0 from stage 4 to stage 7–8: first learn your own job, then care about the
+  fleet as much as about yourself.
+- **Zero-sum** (OpenAI Five): what the enemy ships earn in combat is subtracted, so dealing damage and
+  not taking it count the same.
+- **Reward groups** (Honor of Kings): the terms fall into three groups — objective, combat, outcome.
+  MAPPO's critic predicts each group's return separately (three easier predictions instead of one hard
+  one); the logs show what the fleet is actually earning (`plot_reward_terms`).
+
+---
+
+## 4. The networks (shared by both methods)
+
+`networks.py`. MAPPO and Double DQN use the **same captain and commander networks**; only what their
+outputs mean, and how they are trained, differ.
+
+### 4.1 The entity encoder
+
+Each kind of token gets its own small MLP (embedding, width 64); then **two transformer layers**
+(4 attention heads) let every token look at every other real token — padding is masked out; then the
+tokens are **pooled** (mean and max over the real ones). It is the job the custom CNN feature
+extractor did for Atari frames in Week 10, done for a set of things instead of a picture
+(AlphaStar: transformer over units; OpenAI Five: max-pooling over units).
+
+### 4.2 The captain — every ship, one shared network
+
+```mermaid
+flowchart LR
+    O["order<br/>(free / engage / hold k)"] --> S
+    S["self token<br/>200 + order"] --> E
+    A["allies x8 (22)"] --> E
+    C["contacts x9 (33)"] --> E
+    Z["circles x5 (12 + 'mine')"] --> E
+    I["islands x4 (14)"] --> E
+    E["embed<br/>(one MLP per kind)"] --> T["2 attention layers<br/>tokens look at each other"]
+    T --> P["pool:<br/>own token + mean + max"]
+    P --> G["GRU memory<br/>128"]
+    G --> H["heads read<br/>memory + current view"]
+    P --> H
+    H --> M1["move: 15 fixed"]
+    H --> M2["speed 5 · fire 2<br/>torpedo 2 · ability 15"]
+    H --> M3["target: auto"]
+    T -. "pointer: score each<br/>circle token" .-> M1
+    T -. "pointer: score each<br/>contact token" .-> M3
+```
+
+- **Memory (GRU, 128)**: under fog of war an enemy that slipped out of sight is still somewhere. The
+  GRU is a learned version of Atari's frame stacking (OpenAI Five uses an LSTM). It is cleared at the
+  start of every battle.
+- **Heads read the memory *and* the current view**, so reacting to what is in front of the ship does
+  not have to pass through the memory first.
+- **Pointer heads** (AlphaStar; Honor of Kings' target attention): "which enemy to target" and "which
+  circle to sail to" are scored directly against the contact and circle tokens, so 1 or 9 enemies use
+  the same layer, and the network does not depend on how many slots the observation has.
+- What the outputs **mean**: for MAPPO they are *logits* (probabilities after a softmax); for Double
+  DQN they are *advantages* of a Q-function (section 7.3).
+
+### 4.3 The commander
+
+It reads the fleet's view — its own ships (true state), the enemies as the team believes them to be,
+the circles and the match — with its own entity encoder, then scores, for every ship, *free*,
+*engage* and *hold circle k* (a pointer over the circle tokens). It starts out biased towards
+"free", so the captains decide until the commander has learned something better. This is the
+macro/micro split of Tencent's Hierarchical Macro Strategy model: the commander decides **where** the
+fleet should be, the captains decide **how** to fight there.
+
+### 4.4 Method-specific parts
+
+| | MAPPO | Double DQN |
+|---|---|---|
+| Extra network | **centralised critic**: the true battle → for every ship a value per reward group, the commander's value and the chance of winning | **value stream** V(s) for every ship (one number), and an optional **QMIX mixer** |
+| Used in the game? | no (training only) | no (training only) |
+
+### 4.5 Sizes
+
+| Network | Parameters |
+|---|---|
+| captain (shared by all ships) | 234,024 |
+| commander | 126,018 |
+| MAPPO critic | 121,989 |
+| Double DQN value stream | 193 |
+
+All of it runs on a CPU; no GPU is needed for training or in the game.
+
+---
+
+## 5. Imitation: the warm start both methods share
+
+A random policy almost never wins a naval battle, so RL from scratch spends most of its time
+discovering "sail, aim, shoot". AlphaStar solved this by first copying human players with supervised
+learning, then improving with RL. We copy the game's **Elite rule-based AI** (`imitation.py`, the
+`StageP-Imitation` notebook):
+
+1. **Record** — the Elite AI flies both fleets in battles of stages 2–6; for every decision of every
+   one of our ships the game reports the option it chose on each head (`RLExpertLabels.cs`). That is a
+   labelled dataset: observation → action (~100k decisions in 60–70 battles).
+2. **Clone** — train the captain to predict those labels: Week 9 Part A again — a `DataLoader`, one
+   `CrossEntropyLoss` per head, `Adam`, loss and accuracy curves — on windows of 32 consecutive
+   decisions so the GRU learns too. Held-out accuracy: move 0.72, speed 0.89, target 0.91, fire 0.95.
+3. **Hand over** — `models/imitation.pt` starts **both** methods (section 6.6 and 7.9), each with a
+   fading penalty that keeps it close to the clone while its own learning signal is still weak.
+
+The clone alone already passes Capture (100 %) and King of the Hill against Veteran (83 %).
+
+---
+
+## 6. MAPPO — how it learns
+
+`mappo.py`, class `MAPPO`. It is the PPO of Week 10 — collect experience with the current policy,
+compute advantages, a few epochs of clipped updates, repeat — for a team, with a commander.
+
+### 6.1 The idea
+
+- **Policy gradient**: the captain outputs a probability for every option; options that turned out
+  *better than expected* become more likely, worse ones less likely.
+- **"Better than expected"** needs an expectation: a **critic** predicts the return from each state.
+- **Centralised training, decentralised execution** (MAPPO): every ship acts on its own fogged view
+  with the shared captain; the critic, used only in training, sees the **true** battle, so its
+  predictions — and so the learning signal — are much less noisy. The trained fleet never needs the
+  critic, so it still plays fair.
+
+### 6.2 One update, step by step
+
+```mermaid
+flowchart TB
+    A["Collect: n_steps = 256 decisions in every battle<br/>(both fleets in mirror battles)"] --> B
+    B["For every step store: observation, actions, orders,<br/>log-probabilities, GRU memory, critic values,<br/>rewards per group, done"] --> C
+    C["Advantages: GAE per ship and reward group<br/>(the commander: per 10-decision step)"] --> D
+    D["Update, 5 epochs x 4 minibatches:<br/>critic - value loss<br/>captains - PPO on 32-decision chunks<br/>commander - PPO on its orders"] --> E
+    E["After the update: refresh the frozen copy, league step<br/>(past copies, champion), log, callbacks"] --> A
+```
+
+1. **Collect.** For `n_steps` = 256 decisions in every battle, the commander (every 10 decisions)
+   and every ship's captain act; the critic scores every state; `rewards.py` computes each ship's
+   reward per group. With 8 battles that is 2,048 battle-decisions per update.
+2. **Advantages** (6.3, 6.4).
+3. **Update** — 5 epochs over the data, each split into 4 minibatches (a fixed *count*, so a 1v1 and a
+   9v9 get the same number of gradient steps): the critic (6.5), the captains (6.4), the commander.
+4. **Between updates** — the frozen "latest" copy is refreshed every 10 updates, past copies and the
+   champion are handled by the league (section 10), a row is written to `logs/progress.csv`, and the
+   callbacks run (promotion, checkpoints, best model, replays, team sync).
+
+### 6.3 Advantages: GAE, per reward group
+
+Generalised Advantage Estimation (Week 10), computed backwards in time for every ship slot and every
+reward group g:
+
+```
+delta_t     = r_t(g) + gamma * V_g(s_t+1) * (1 - done_t) - V_g(s_t)
+A_t(g)      = delta_t + gamma * lambda * (1 - done_t) * A_t+1(g)          gamma 0.995, lambda 0.95
+return_t(g) = A_t(g) + V_g(s_t)                                           the critic's target
+A_t         = A_t(objective) + A_t(combat) + A_t(outcome)                 what the captain learns from
+```
+
+γ = 0.995 looks about 200 decisions (200 s) ahead — battles are long. The advantages are normalised
+(mean 0, std 1) over the live ship-decisions of the update.
+
+**The commander's advantage** — its step lasts 10 decisions, so it is a semi-Markov decision: its
+reward is the fleet's average reward summed (discounted) over those 10 decisions, and it bootstraps
+from the critic's *commander value* 10 decisions later:
+
+```
+R_k   = sum_{j<10} gamma^j * (fleet's average reward at t_k + j)
+A_k   = R_k + gamma^10 * V_cmd(s_t_k+1) - V_cmd(s_t_k) + gamma^10 * lambda * A_k+1
+```
+
+### 6.4 The captain's loss: clipped PPO with a dual clip
+
+For every ship-decision, with `ratio = pi_new(a|s) / pi_old(a|s)` (the product over the six heads):
+
+```
+surrogate = min( ratio * A,  clip(ratio, 1 - 0.2, 1 + 0.2) * A )                  PPO (Week 10)
+if A < 0:  surrogate = max( surrogate, 3 * A )                                    dual clip (Honor of Kings)
+loss      = - mean(surrogate) - ent_coef * entropy + kl_coef * KL(clone || pi)
+```
+
+- **The clip** keeps one update from moving the policy too far.
+- **The dual clip**: with a negative advantage and a huge ratio, PPO's objective has no lower bound;
+  bounding it at 3·A means one very stale sample cannot blow up an update.
+- **Entropy bonus**: 0.01, fading to 0.002 over 1,500 updates — explore early, commit later
+  (`ent_coef="auto"` tunes it like SAC's, Week 10).
+- **KL anchor**: after the imitation start, `0.1 · KL(clone ‖ policy)`, fading to 0.01 over 1,000
+  updates (AlphaStar). For the first 10 updates only the critic trains, so it catches up before the
+  policy moves.
+- **Death masking** (MAPPO): a sunk ship's decisions no longer train the captain.
+
+The commander is trained the same way on its orders, with the fleet's orders as **one joint decision**
+(its ratio is the product over the fleet's ships, like TiZero's joint-ratio policy optimisation).
+
+### 6.5 The critic's loss
+
+```
+loss = 0.5 * [ mean over ships and groups of max( (V - y)^2, (V_clipped - y)^2 )     value clipping 0.2
+             + (V_cmd - y_cmd)^2  on the commander's decisions
+             + 0.25 * BCE(win logit, battle won) ]                                    win probability
+```
+
+The targets y are **normalised** (MAPPO's value normalisation: a running mean and std per reward group,
+with the paper's slow β = 0.99999 — a fast one moved the targets every update and stalled learning).
+A sunk ship's critic keeps learning, because team rewards keep arriving until the battle ends.
+
+### 6.6 Memory: training on chunks
+
+The captain has a GRU, so it is trained on **chunks of 32 consecutive decisions** of one ship: each
+chunk starts from the memory the ship had at that point of the rollout (stored during collection) and
+replays the chunk through the GRU, clearing it where a new battle starts (recurrent MAPPO).
+
+### 6.7 MAPPO settings (the notebooks' `mappo_settings`)
+
+| Setting | Value | What it does |
+|---|---|---|
+| `learning_rate` / `critic_learning_rate` / `commander_learning_rate` | 3e-4 / 5e-4 / 1e-4 | Adam step sizes |
+| `n_steps` | 256 | decisions per battle per update |
+| `n_minibatches` × `n_epochs` | 4 × 5 | gradient steps per update |
+| `gamma`, `gae_lambda` | 0.995, 0.95 | discount, GAE |
+| `clip_range`, `dual_clip`, `value_clip` | 0.2, 3.0, 0.2 | PPO clips |
+| `ent_coef` | 0.01 → 0.002 | exploration bonus |
+| `kl_bc_coef` | 0.1 → 0.01 | the pull towards the imitation clone |
+| `chunk_len` | 32 | decisions per training chunk (GRU) |
+| `d_model`, `attn_layers`, `hidden_size` | 64, 2, 128 | network sizes |
+| `commander_period` | 10 | decisions between the commander's orders |
+| `opponent_refresh`, `snapshot_every` | 10, 25 updates | the frozen copy, past copies |
+
+Ablations for a report: `centralised_critic=False` + `commander=False` is IPPO (the baseline the MAPPO
+paper compares against); `recurrent=False`, `attn_layers=0`, `dual_clip=None` switch the other pieces
+off (`train_simple.py --ippo --no-commander --no-memory --attn-layers 0 --dual-clip 0`).
+
+---
+
+## 7. Double DQN — how it learns
+
+`ddqn.py`, class `FleetDDQN`. It is the DQN of Week 9 — a Q-network, a frozen target network, a
+replay buffer, ε-greedy exploration — for a fleet with six action heads and a commander.
+
+### 7.1 The idea
+
+- **Q-learning**: learn Q(s, a) — the return to expect after action a in state s — and act by taking
+  the action with the highest Q. No probabilities; the policy is "take the best".
+- **Off-policy**: it learns from a **replay buffer** of past experience, so every decision is used
+  many times (MAPPO uses each decision for one update and throws it away).
+- **Bootstrapping**: the target for Q(s, a) is the reward plus the (discounted) value of the next
+  state, read from a slowly updated **target network** (Week 9 C/D).
+
+### 7.2 One round, step by step
+
+```mermaid
+flowchart TB
+    A["Play 32 decisions in every battle with epsilon-greedy actions<br/>(both fleets in mirror battles)"] --> B
+    B["One chunk per fleet into the replay buffer:<br/>33 observations, actions, orders, rewards, dones,<br/>the GRU memory at the start (+ the clone's)"] --> C
+    C{"buffer has<br/>4,000 decisions?"} -->|no| A
+    C -->|yes| D["4 gradient steps, each on 32 sampled chunks:<br/>Q-network - Double DQN loss on every head<br/>(+ kickstarting penalty)<br/>commander - intra-option Q-learning"]
+    D --> E["every 250 gradient steps: copy online -> target<br/>league step, log, callbacks"] --> A
+```
+
+### 7.3 Q-values for six heads: dueling and branching
+
+One Q-value per *complete* action would need 20 × 5 × 10 × 2 × 2 × 15 = 60,000 outputs. Instead
+every head d gets its own **advantages**, sharing one **state value** (Dueling DQN + Branching DQN):
+
+```
+Q_d(s, a_d) = V(s) + A_d(s, a_d) - mean over the legal options of A_d(s, .)
+```
+
+The advantages A_d are exactly the captain network's head outputs (pointer heads included); V(s) is
+the value stream (one linear layer on the same features the heads read). So **the Q-network is the
+captain**, plus V. Illegal options get −∞, so the best option is always legal. Because V is the same
+for every option, the best action of each head is simply the highest advantage — which is why the
+game can run a Double DQN fleet with the same C# code as a MAPPO one ("greedy" in the file header).
+
+### 7.4 The target: Double Q-learning with n-step returns, one target for all heads
+
+**Double DQN** (van Hasselt et al.): plain DQN takes the max over the target network's own noisy
+estimates and so over-estimates. Double DQN lets the **online** network *choose* the next action and
+the **target** network *score* it:
+
+```
+a*_d   = argmax_a Q_online,d(s_t+n, a)                          per head d, legal options only
+next   = mean over heads d of Q_target,d(s_t+n, a*_d)            one value for the next state (BDQ)
+y_t    = r_t + gamma r_t+1 + ... + gamma^(n-1) r_t+n-1 + gamma^n * next * (1 - battle ended)
+loss   = mean over heads d of Huber( Q_online,d(s_t, a_t,d) - y_t )
+```
+
+- **n-step returns** (n = 5, as R2D2): rewards of the next 5 decisions plus the bootstrap, so a
+  reward reaches the Q-values of earlier decisions faster. The sum stops at the end of a battle; at the
+  end of a chunk the bootstrap comes earlier.
+- **One target for every head** (Branching DQN): every head is trained towards the same y, so each
+  head gets a full-sized learning signal. (An earlier version trained the *average* of the heads'
+  Q-values: each head then got a sixth of the signal and learned far more slowly.)
+- **Huber loss** and gradient clipping at 10, as in DQN.
+- γ = 0.99 (DQN's usual; MAPPO uses 0.995 with GAE).
+
+### 7.5 Sequence replay (R2D2)
+
+The captain has a GRU, so the buffer stores **sequences**, not single transitions (R2D2,
+Kapturowski et al.): every 32 decisions each fleet adds a **chunk** of 33 observations (the last is
+only there to bootstrap from, and is also the first of the next chunk), the actions, orders, rewards
+and battle ends, and the **GRU memory the ships had at the chunk's start**. Training replays a chunk
+through the GRU from that memory, exactly as MAPPO does with its rollout.
+
+- Capacity: 40,000 decisions (1,250 chunks), oldest first out; sampled uniformly.
+- Stored compactly: numbers as float16, masks as bytes, and only the ship slots the battle uses (a 1v1
+  chunk is a ninth of a 9v9 one). About 0.6 MB per 9v9 chunk — up to ~0.8 GB when full of 9v9 battles.
+- A gradient step samples 32 chunks, but at most 4,096 ship-decisions, so a 9v9 batch costs about the
+  same as a 1v1 one.
+- The buffer is **not saved** with the model (it would be gigabytes, and SB3 does not save it
+  either); a continued session first refills it for `learning_starts` decisions.
+
+### 7.6 Exploration: ε-greedy
+
+While training, each ship takes its best action — or, with probability ε, a uniformly random *legal*
+option on every head. ε falls linearly from 1.0 to 0.05 over 300,000 timesteps (Week 9's
+`exploration_fraction`); starting from the imitation clone it starts at 0.3 instead, since random
+play would only throw the clone's skill away. The commander explores with ε / 2. Evaluations,
+replays and frozen opponents use ε = 0.02 (a fully greedy fleet can get stuck repeating one move);
+the game uses 0.
+
+### 7.7 The target network
+
+A frozen copy of the Q-network (captain, value stream, commander, mixer) scores the next states, and
+is overwritten with the online network every **250 gradient steps** — the target network of Week 9 C/D,
+which keeps the targets from chasing themselves.
+
+### 7.8 The commander as a Q-learner (h-DQN, intra-option learning)
+
+The commander's scores for (ship, order) are Q-values; the value of a set of orders is their sum over
+the live ships. It acts every 10 decisions, but its orders stay **in force** in between, so it learns
+from every decision with **intra-option Q-learning** (Sutton, Precup & Singh; the meta-controller of
+h-DQN, Kulkarni et al.):
+
+```
+Q_cmd(s, orders) = sum over live ships i of q(s, i, order_i)
+U(s')            = Q_target(s', the same orders)                        if the orders stay in force
+                   Q_target(s', argmax over orders of Q_online(s', .))  at the commander's next decision
+y                = fleet's average reward + gamma * U(s') * (1 - battle ended)
+loss             = Huber( Q_cmd(s, orders) - y )
+```
+
+### 7.9 Starting from the clone: kickstarting
+
+The clone's head outputs reach ±10, while a decision's reward is about 1. Used as advantages
+directly, the first TD updates would flatten them and erase the clone. Two things prevent it:
+
+1. **Temperature** τ = 0.1: the starting advantages are `0.1 × the clone's scores` — the same best
+   options, at the size of Q-values.
+2. **Kickstarting** (Schmitt et al. 2018): a penalty `KL(clone ‖ softmax(A / τ))` on the ships' own
+   replayed decisions, weight 0.5 fading to 0.05 over 20,000 gradient steps — the same idea as MAPPO's
+   KL anchor.
+
+Measured on real gunnery: without them, Double DQN fell from the clone's level to a 0.33 pass rate
+within 2,400 timesteps (MAPPO with its anchor: 0.78). With them the gap to the clone stays ~0.01–0.07
+nats while the Q-values form, and the pass rate went 0.50 → 0.58 in 30,000 timesteps.
+
+### 7.10 Many ships: independent, VDN or QMIX
+
+All ships share the Q-network. What they learn from is set by `mixer`:
+
+| `mixer` | Each ship learns from | Fleet value |
+|---|---|---|
+| **`"none"` (default)** | **its own reward** (the same per-ship reward MAPPO learns from) | — |
+| `"vdn"` | the fleet's average reward | Q_fleet = sum of the ships' Q |
+| `"qmix"` | the fleet's average reward | Q_fleet = mix(Q_1 … Q_N, true battle) |
+
+**QMIX** (Rashid et al.; the method of the StarCraft multi-agent challenge, still the one to beat
+there once tuned — Hu et al.'s pymarl2) mixes the ships' Q-values with weights produced by small
+*hypernetworks* that read the true battle. The weights are kept positive, so the fleet's value only
+rises when a ship's value rises: every ship taking its own best action is also the fleet's best joint
+action. It is implemented and works per head.
+
+Why the default is `"none"`: on the mock task (rewards per ship), after 6,000 timesteps with 3 ships,
+independent learning reached 0.28 accuracy and VDN 0.08 — mixing first has to work out which ship
+earned the fleet's reward. It pays off only when the reward is truly shared; with team spirit 1.0
+(stages 7–8) every ship's reward is the fleet's anyway, so `"qmix"` is worth an ablation there.
+
+### 7.11 Double DQN settings (the notebooks' `ddqn_settings`)
+
+| Setting | Value | What it does |
+|---|---|---|
+| `learning_rate` / `commander_learning_rate` | 2.5e-4 / 1e-4 | Adam step sizes |
+| `buffer_size`, `learning_starts` | 40,000, 4,000 | replay capacity and warm-up (decisions) |
+| `batch_size`, `chunk_len`, `gradient_steps` | 32, 32, 4 | chunks per step, decisions per chunk, steps per round |
+| `gamma`, `n_step` | 0.99, 5 | discount, n-step return |
+| `target_update_interval` | 250 | gradient steps between target-network copies |
+| `exploration_*` | 1.0 → 0.05 over 300k (0.3 from the clone) | ε |
+| `kl_bc_coef`, `imitation_temperature` | 0.5 → 0.05, 0.1 | kickstarting |
+| `mixer` | `"none"` | `"qmix"`, `"vdn"` for comparison |
+| `d_model`, `attn_layers`, `hidden_size`, `commander_period` | 64, 2, 128, 10 | the same networks as MAPPO |
+| `opponent_refresh`, `snapshot_every` | 80, 200 rounds | the frozen copy, past copies (≈ MAPPO's 10, 25 updates) |
+
+---
+
+## 8. MAPPO and Double DQN side by side
+
+| | MAPPO | Double DQN |
+|---|---|---|
+| Family | policy gradient — PPO (Week 10) | value-based — DQN (Week 9) |
+| The captain's head outputs | logits: **sample** an option | advantages of a dueling Q: **take the best**, ε-greedy while training |
+| Data | the battles just played (on-policy), used for 5 epochs | a replay buffer of 32-decision chunks (off-policy), each reused many times |
+| Learning signal | GAE advantages from a centralised critic | Double Q targets with 5-step returns from a target network |
+| Six heads | one probability per head, product for the ratio | one Q per head, every head trained to one shared target |
+| Memory (GRU) | rollout replayed in 32-decision chunks | replay chunks with stored memory (R2D2) |
+| Commander | PPO at a 10 s clock (semi-MDP GAE) | Q-learning on (ship, order), intra-option |
+| True-battle information | the critic (training only) | optional QMIX mixer (training only) |
+| Imitation start | captain = clone; KL anchor 0.1 → 0.01 | advantages = 0.1 × clone; kickstarting 0.5 → 0.05 |
+| In the game | samples from the probabilities | takes the best option ("greedy") |
+| Everything else | the same networks, environment, rewards, curriculum, league, callbacks, checkpoints, export | ← same |
+
+What to expect: PPO-style methods won the big team games (OpenAI Five, Honor of Kings) and cope well
+with an opponent that keeps changing; value-based methods reuse their data more and are the classic
+choice for StarCraft micro-management (QMIX). Training both on identical stages is what lets the
+notebooks say which one suits this game.
+
+---
+
+## 9. The curriculum
+
+`curriculum.py`, `DEFAULT_CURRICULUM`. A stage is passed at **≥ 70 %** of its own goal; then the
+battles change and the **same model** keeps training.
+
+| Stage | Battle | Ships a side | Opponent | Passed when | Window |
+|---|---|---|---|---|---|
+| P – Imitation | Elite AI vs Elite AI, stages 2–6 | — | — | supervised: copy the Elite AI | — |
+| 0 – Gunnery | 7 km, open sea | 1 BB vs 1 CA | passive target | target sunk within 150 s | 50 |
+| 1 – Capture | one neutral circle | 1 CA (+ a passive DD far away) | passive | circle captured | 50 |
+| 2 – Defend | neutral circle, enemy coming | 1 CA vs 1 CA | Recruit | won | 100 |
+| 3 – Duel | 13 km, open sea | 1 BB | Recruit 60 % · self-play 40 % | won vs Recruit | 100 |
+| 4 – King of the Hill | one circle, open sea, **commander**, τ 0.3 | 1 BB · 1 CA · 1 DD | Veteran 60 % · self-play 40 % | won vs Veteran | 100 |
+| 5 – Archipelago | 3 circles among islands, τ 0.5 | 1 BB · 1 CA · 1 DD | Veteran 60 % · self-play 40 % | won vs Veteran | 150 |
+| 6 – Domination | new random map and weather every 8 battles, τ 0.8 | 1 BB · 2 CA · 2 DD · 1 SS | Elite 40 % · self-play 60 % | won vs Elite | 200 |
+| 7 – Open | random mode, map, weather, 4–8 ships, τ 1.0 | the game's balanced mix | Elite 40 % · self-play 60 % | won vs Elite | 200 |
+| 8 – Archipelago 9v9 | **5 circles**: A B C across the middle, D up-left, E down-right; hand-placed islands; 12 min; τ 1.0 | **2 BB · 3 CA · 2 DD · 2 SS** — every class that fights | Elite 40 % · self-play 60 % | **final**: won in 70 % of 200 evaluation battles vs Elite | 200 |
+
+Classes: BB battleship (biggest guns and armour, slow), CA cruiser (fast-firing guns, radar / hydro /
+smoke support), DD destroyer (fastest, torpedoes, smoke, hardest to spot — the circle capper), SS
+submarine (dives, torpedoes, very hard to spot). Every notebook lists its stage's ships by class.
 
 - **Why the first stages are not judged on "won"**: a passive target never scores, so the game's
   tiebreak hands the win to anyone — random play "won" 100 % of them. Measured (32 battles each):
   gunnery, sunk within 150 s — random 52 %, "close in, fire, torpedoes" 76 %; capture — random 0 %,
   "sail to circle A" 100 %; defend — random 12 %, "sail to the circle" 0 %.
-- **Qualifying battles** are battles that started on the current stage against the stage's own
-  opponent (rule AI or passive target). Self-play and rehearsal battles never count, and the window
-  starts empty on every new stage.
-- **Rehearsal**: from stage 3 on, 10–15 % of battles replay an earlier stage so its skills stay -
-  the stages the fleet now does worst on most often (weight (1 − recent pass rate)², Prioritized
-  Level Replay). The SageMaker run had forgotten Defend (4 %) and Duel (33 %) by stage 7 with
-  uniform rehearsal.
-- **Self-play, both ways** ("mirror"): the current network flies **both** fleets and both fleets'
-  decisions are training data (the environment then has two rows per battle - our fleet, then the
-  enemy fleet - and the enemy's reward is computed from its own side). It doubles the data from those
-  battles and gives an opponent that is always as good as the fleet.
-- **The champion** (`league.py`): the strongest version of the fleet so far. It is replaced only when
-  the fleet beats it in 55 % of 40 battles (AlphaGo Zero's gating) - then the fleet becomes the new
-  champion and the old one stays as a past copy. So the fleet always has its best self to beat.
-- **Cross-play** ("rival"): the other method's fleet - MAPPO's in the Double DQN run's league and the
-  other way round (its champion, if it has one; `model.set_rival(other)`, done by the notebooks before
-  each method trains). Different training gives different habits to learn to beat, the way
-  AlphaStar's league mixes different kinds of agents.
-- **Past copies** are picked by PFSP, `(1 − win rate)²` (the ones we lose to); `pfsp="variance"`
-  picks the ones we beat about half the time instead. A champion or rival that does not exist yet
-  plays a mirror battle. Promotion counts only the battles against the rule AI.
-- **The stopping rule** (stage 8): every 100,000 timesteps, 40 battles against the Elite AI.
-  Training stops once the last 200 reach 70 %.
-- **Room for 9 ships a side** (`env.py`, `MAX_SHIPS`): the networks read ships as tokens, so a model
-  trained with room for 8 (the first runs) loads and continues unchanged.
-- **Any number of stages**: a stage is a dict (see the docstring in `curriculum.py`).
-- A saved model remembers its stage, so `MAPPO.load` (and the team checkpoints) carry on where the
-  curriculum was.
+- **Qualifying battles** count for promotion: battles that started on the current stage against the
+  stage's own opponent (the rule AI or the passive target). Self-play and rehearsal battles never
+  count, and the window starts empty on every new stage. The window is rebuilt from
+  `logs/monitor.csv` at the start of every session, so it carries over between sessions.
+- **Rehearsal** (stages 3–8, 10–15 % of battles): an earlier stage is replayed so its skills stay —
+  the stages the fleet now does worst on most often, weight `(1 − recent pass rate)² + 0.05`
+  (Prioritized Level Replay). With uniform rehearsal the SageMaker run had forgotten Defend (4 %) and
+  Duel (33 %) by stage 7.
+- **The stopping rule** (stage 8): every 100,000 timesteps the fleet plays 40 battles against the Elite
+  AI; training stops once the last 200 reach 70 %.
+- **Room for 9 ships a side, 5 circles** (`MAX_SHIPS`, `MAX_ZONES` in `env.py`): a 1v1 leaves the other
+  slots empty and the masks hide them. The networks read ships as tokens, so raising these limits does
+  not change a single weight — the first runs had room for 8 and continue unchanged.
+- **Add stages** freely: a stage is a dict (see the docstring of `curriculum.py`), e.g. a scenario file
+  or generated-map settings, an opponent mix, team spirit, a pass rule.
 
-### One notebook per step
+---
 
-`StageP-Imitation.ipynb` and `Stage0-Gunnery.ipynb` … `Stage8-Archipelago-9v9.ipynb` train one model
-per method: the MAPPO run (`RUN_NAME = "fleet"`) and the Double DQN run (`"fleet_ddqn"`), each
-climbing the stages on its own. A notebook trains a run only while that run is on its stage (the
-other is still evaluated there, for the comparison); `TRAIN_MAPPO` / `TRAIN_DDQN` switch them off.
-For each run:
+## 10. Self-play and the league
 
-1. Run `StageP` once: it records the Elite AI, clones it, and saves `models/imitation.pt`.
-2. `Stage0` creates the model from that checkpoint. After that, every run of a stage notebook
-   continues the run's latest checkpoint — from the team folder, or from `runs_simple/fleet`.
-3. A session trains for `n_timesteps`, saves, and pushes. If the stage is not passed yet, run the
-   notebook again (you or a teammate): the promotion window carries on where it stopped.
-4. When the stage's requirement is met, training stops, saves the model (now marked with the next
-   stage), and tells you which notebook to open next. The next notebook loads it with **all its
-   training memory**: the networks, the optimisers, the value normalisers, the league, the counters,
-   the stage, and every battle so far in `logs/monitor.csv`.
+`league.py`. Against one fixed opponent a policy learns to beat *that* opponent; against only its
+latest self it can go round in circles (rock beats scissors beats paper beats rock). The fix used by
+OpenAI Five, AlphaGo Zero and AlphaStar is a **league**:
 
-Opening the wrong notebook stops with a message naming the right one; `FORCE_STAGE = True` jumps
-ahead or goes back. To change the notebooks, edit `make_stage_notebooks.py` and run it.
-
-## Double DQN: the value-based method, to compare
-
-[`ddqn.py`](ddqn.py) trains the same fleet with **Double DQN**, from the same parts: the captain
-network, the commander, the environment, the rewards, the curriculum, self-play and the imitation
-start. Only the learning rule differs, so the comparison is about the method:
-
-| | MAPPO | Double DQN |
+| Opponent | Who flies the enemy | Why |
 |---|---|---|
-| Family | policy gradient (PPO, Week 10) | Q-learning (DQN, Week 9) |
-| The captain's head scores | logits — sample | dueling Q-values `V + A − mean A` — best option, ε-greedy while training |
-| Data | the battles just played (on-policy) | replay buffer of 32-decision chunks with the GRU memory (R2D2) |
-| Target | GAE from a centralised critic | Double Q: online picks, target network scores; 5-step returns; every head to one shared target (BDQ) |
-| Commander | PPO every 10 s | Q-learning on (ship, order), intra-option (h-DQN) |
-| Imitation | captain = clone + fading KL anchor | Q-network = 0.1 × clone's scores + fading KL anchor ("kickstarting") |
-| Many ships | shared weights, centralised critic | shared weights, each ship on its own reward (`mixer="qmix"`: QMIX, the StarCraft method) |
+| `rule` | the game's rule AI at the stage's difficulty | the anchor: the **only** battles that count for promotion |
+| `mirror` | the current network, on **both** sides, both learning | twice the data; an opponent exactly as good as the fleet (OpenAI Five) |
+| `champion` | the strongest version so far | always its best self to beat (AlphaGo Zero) |
+| `past` | an older copy, picked by PFSP | do not forget how to beat old strategies (AlphaStar) |
+| `rival` | **the other method's fleet** (its champion, if it has one) | different training, different habits (AlphaStar's mixed league) |
 
-    from simple_mappo import FleetDDQN
-    model = FleetDDQN(env, learning_rate=2.5e-4, buffer_size=40_000, batch_size=32)
-    model.init_from_imitation("runs_simple/fleet/models/imitation.pt")
-    model.learn(total_timesteps=200_000, callback=[...])
+| Stages | rule | mirror | champion | past | rival |
+|---|---|---|---|---|---|
+| 3–5 | 60 % | 15 % | 10 % | 5 % | 10 % |
+| 6–8 | 40 % | 25 % | 10 % | 15 % | 10 % |
 
-    python train_simple.py --algo ddqn --total-timesteps 2000000     # run "fleet_ddqn"
-    python export_simple.py --run-name fleet_ddqn                    # -> naval_policy_ddqn.bin
+```mermaid
+flowchart LR
+    L["learner<br/>(training)"] -->|"every 25 updates"| P[("past copies<br/>up to 20")]
+    L -->|"beats the champion in<br/>55% of 40 battles"| C["champion"]
+    C -->|"replaced: stays on as"| P
+    O["the other method's<br/>champion"] -->|"set_rival()"| R["rival"]
+    P & C & R & M["mirror (itself)"] & RA["rule AI"] -->|"enemy fleet"| L
+```
 
-Measured while building it: on the mock task (rewards per ship) each ship on its own reward learned
-fastest (0.08 → 0.48 move accuracy in 8,000 timesteps; VDN / QMIX mixing barely moved — they must first
-work out which ship earned the fleet's reward). On real gunnery, without the kickstarting anchor the
-first TD updates erased the clone (0.33 pass rate after 2,400 timesteps, MAPPO 0.78); with it the
-clone is kept while the Q-values form.
+- **Champion** (AlphaGo Zero's gating): the champion is replaced only when the learner has beaten it in
+  at least 55 % of its last 40 battles against it; the learner then becomes the new champion and the
+  old one stays as a past copy. The first champion is the learner itself when a stage first uses one.
+  A "new champion" message appears in the training output.
+- **Past copies**: a frozen copy every 25 updates (MAPPO) / 200 rounds (Double DQN), up to 20 kept,
+  the very first kept as a reference. **PFSP** picks them: weight `(1 − win rate against it)²`, so the
+  ones we lose to come up most; `pfsp="variance"` uses `win rate × (1 − win rate)` instead — the ones we
+  beat about half the time, better when the fleet is far behind.
+- **Rival — cross-play**: `model.set_rival(other)` puts the other method's fleet into this run's
+  league; the notebooks do it before each method trains (`train_simple.py --rival <checkpoint>` from the
+  command line). A Double DQN rival plays greedily, a MAPPO rival samples.
+- A champion or rival that does not exist yet is replaced by a mirror battle.
+- **Elo ratings** (chess-style, 400 points = 10 : 1 odds) for the learner, every copy and the rule AI at
+  each difficulty; the notebooks print the table.
 
-In the game, **TRAINING STAGES > TRAINED FLEET: MAPPO / DOUBLE DQN** switches which exported fleet
-WATCH AI and FIGHT AI use. A Double DQN file is marked "greedy": the game takes its best action
-instead of sampling.
+---
 
-## Run the trained fleet in your Unity game
+## 11. Training it
 
-The game runs a trained fleet itself, in plain C# (`Assets/Scripts/RL/RLPolicy.cs`, driven by
-`RLPolicyDriver.cs`) - no Python while it plays. Export a checkpoint into the game's policy file:
+### 11.1 The notebooks — one per stage, both methods
+
+`StageP-Imitation.ipynb` (once) and `Stage0-Gunnery.ipynb` … `Stage8-Archipelago-9v9.ipynb`. Each stage
+notebook, in the course's notebook layout (config `OrderedDict`, `Monitor`, callbacks, `learn`, save,
+plots, evaluation, replays):
+
+1. starts `n_envs` headless game players, shared by both methods; each method has its own battle log
+   and its own curriculum stage (two `Monitor`s on one `NavalEnv`);
+2. opens both runs (`open_run`): **`runs_simple/fleet`** (MAPPO) and **`runs_simple/fleet_ddqn`**
+   (Double DQN). A run is trained only while it is on the notebook's stage; otherwise it is loaded for
+   the comparison only. Stage 0 creates new models from `models/imitation.pt`;
+3. measures random play and a simple scripted tactic on the stage;
+4. trains MAPPO, then Double DQN (`TRAIN_MAPPO` / `TRAIN_DDQN` switch either off), each with the other
+   as its rival;
+5. compares them: pass rate and reward against the timesteps each spent **on this stage**
+   (`plot_comparison`), an evaluation table (random, script, MAPPO latest / best, Double DQN latest /
+   best), and every stage so far (`compare_stages`: timesteps until passed, final pass rate, passed);
+6. exports both fleets to the game, and shows the replays recorded while training.
+
+**Training is continuous**: every session continues each run's `models/model_latest.pt` (refreshed
+every `save_interval`), with its optimiser state, league, counters and stage, and its battle log.
+Not passed yet? Run the notebook again. `KEEP_GOING = True` carries on into the next stages in the same
+session; `FORCE_STAGE = True` trains a run on this stage even if it is elsewhere. To change the
+notebooks, edit `make_stage_notebooks.py` and run it.
+
+### 11.2 MAPPO against Double DQN — `Versus-MAPPO-vs-DDQN.ipynb`
+
+The stage notebooks compare the methods *side by side*, each against the rule AI. This notebook puts
+them **head to head**: it loads the latest MAPPO and Double DQN fleets (`runs_simple/fleet`,
+`runs_simple/fleet_ddqn`, or the team folder — read only), picks a curriculum battle (`STAGE`, default
+4: King of the Hill), and
+
+1. plays **MAPPO's fleet against Double DQN's from both seats** (each once as blue) and reports
+   MAPPO's overall win rate, ships sunk and lost, points, and the Elo gap that win rate implies — next
+   to each fleet's results against the rule AI, and a replay of one battle;
+2. optionally lets them **train against each other** (`TRAIN_EACH_OTHER`): rounds of MAPPO training
+   against Double DQN's current fleet, then Double DQN against MAPPO's — iterated best response — with
+   the rule AI kept in 30 % of the battles (`RIVAL_SHARE`) so neither only learns tricks that work on
+   the other; after every round both are measured again (head to head and against the rule AI) and
+   plotted. What they learn here is saved under `runs_simple/versus/`, never into the main runs.
+
+It opens with a detailed explanation of both methods. Under the hood: `simple_mappo/versus.py`
+(`versus_stages`, `head_to_head`, `both_sides`); the enemy seat is the league's *rival*.
+
+### 11.3 From the command line
 
 ```bash
 cd Training
-python export_simple.py                                   # runs_simple/fleet: model_best.pt, else model_latest.pt
-python export_simple.py --model runs_simple/fleet/models/model_latest.pt
-python export_simple.py --team-storage s3://<bucket>/wow-mappo --run-name fleet   # a run trained on SageMaker
+python train_simple.py --total-timesteps 5000000                  # MAPPO: imitation, then the curriculum (run "fleet")
+python train_simple.py --algo ddqn --total-timesteps 5000000      # Double DQN (run "fleet_ddqn")
+python train_simple.py --rival runs_simple/fleet_ddqn/models/model_latest.pt   # cross-play with that fleet
+python train_simple.py --start-stage 3                            # begin at a later stage
+python train_simple.py --mixer qmix --algo ddqn --run-name ddqn_qmix          # an ablation
+python train_simple.py --ports 5005                               # train in the open Unity editor and watch it
+python -m pytest tests -q                                         # the tests (mock environment + C# parity)
 ```
 
-It writes `Assets/StreamingAssets/RL/naval_policy.bin` (the previous one is kept as
-`naval_policy.bin.bak`). In Unity press **Play**, and on the setup screen set **ENEMY AI: LEARNED**
-(fight against it) or **YOUR FLEET: LEARNED** (watch it fight); the line under those buttons says
-"commander MAPPO with fleet commander" when the new policy is loaded. The file is read when the game
-starts, so press Play again after exporting. Every stage notebook (and the walkthrough) has the same
-export as its last training cell; on SageMaker it writes `runs_simple/<run>/naval_policy.bin` to download.
+Running the same command again continues the run (Ctrl+C saves first). Everything goes to
+`runs_simple/<run>/`: `logs/monitor.csv` (one line per battle), `logs/progress.csv` (one line per
+update), `models/model_<timesteps>.pt`, `model_latest.pt`, `model_best.pt` (the best rolling pass rate),
+`videos/`.
 
-What runs in the game is exactly what trained: every learned ship runs the captain on its own view
-with its GRU memory, and in fleets of two or more the commander gives orders every 10 decisions.
-The file format is version 2 of `naval_policy.bin` (`simple_mappo/export.py`); version-1 files from
-`naval_rl` still load. `tests/test_policy_parity.py` checks the C# forward pass against PyTorch
-(captain logits, GRU memory over two decisions, commander orders: max error ~1e-6 on the real
-trained models), and a headless check flew a 6v6 with the exported fleet on both sides:
+### 11.4 As a team, and on SageMaker
+
+- **Team checkpoints** (`team.py`): with `TEAM_STORAGE` (an S3 folder) every run lives in
+  `s3://<bucket>/wow-mappo/runs/<run>/` — the latest checkpoint, the logs, replays, `run.json` (who,
+  when, stage, progress, speed, recent win rate) and a lock so two people never train the same run at
+  once. Every session pulls the latest, pushes status every 10,000 timesteps and checkpoints every
+  `save_interval`. `storage.show_status()` shows a run's state from anywhere.
+- **SageMaker**: upload `wow_sagemaker.zip` (`Training/package_sagemaker.sh`: the code, notebooks, the
+  headless player, the Unity project, the imitation clone and a trained MAPPO checkpoint), unzip it
+  into a **new** folder, open a notebook. Use a CPU instance with many cores (e.g. `ml.c5.4xlarge`);
+  no GPU is needed. The player needs glibc 2.35+ (Ubuntu 22.04 or newer); the code checks.
+- **Training jobs** (if the account allows them): the walkthrough notebook's last section launches
+  `train_simple.py` as a SageMaker training job on the same team run (`aws.py`, boto3 only).
+
+---
+
+## 12. Playing it in Unity
+
+The game runs a trained fleet itself, in plain C# (`Assets/Scripts/RL/RLPolicy.cs`, driven by
+`RLPolicyDriver.cs`) — no Python while it plays.
 
 ```bash
-Builds/NavalTrainer/NavalTrainer.x86_64 -batchmode -nographics -rlDemo both -rlDemoSeconds 120 -logFile demo.log
-# [RL] trained policy is flying 12 ships (trained policy loaded (commander MAPPO with fleet commander, ...))
+cd Training
+python export_simple.py                          # MAPPO (run "fleet") -> Assets/StreamingAssets/RL/naval_policy.bin
+python export_simple.py --run-name fleet_ddqn    # Double DQN -> naval_policy_ddqn.bin
+python export_simple.py --model <checkpoint.pt>  # any checkpoint (the file name follows its method)
 ```
 
-(The headless player reads `Builds/NavalTrainer/NavalTrainer_Data/StreamingAssets/RL/naval_policy.bin`;
-export there with `--out` for this check.)
+Each export picks the run's `model_best.pt` — or `model_latest.pt` if that has reached a later stage —
+and keeps the previous file as `.bak`. The stage notebooks export both as their last training cell.
 
-### A fleet trained on SageMaker -> your Unity project
+In Unity press **Play** → BATTLE SETUP → **TRAINING STAGES**:
 
-1. On SageMaker, run the **"Put the fleet into your Unity game"** cell of the stage notebook you trained
-   last (re-run it after more training: it exports `model_best.pt`, else `model_latest.pt`). It writes
-   `<bundle folder>/Assets/StreamingAssets/RL/naval_policy.bin` (about 1.5 MB).
-2. In the SageMaker file browser go to `Assets/StreamingAssets/RL/`, right-click `naval_policy.bin` >
-   **Download**.
-3. Copy it into your project as `Assets/StreamingAssets/RL/naval_policy.bin` (replace the old one).
-4. Unity: **Play** > BATTLE SETUP > **TRAINING STAGES** > **WATCH AI** on any stage (or ENEMY AI: LEARNED in
-   a normal battle). The status line must say "commander MAPPO with fleet commander".
+- the nine stages, each with its battle, **SHIPS** (by class), opponent and pass rule;
+- **WATCH AI** (the trained fleet vs the stage's opponent), **FIGHT AI** (you vs the trained fleet),
+  **PLAY IT** (you vs the stage's opponent);
+- **TRAINED FLEET: MAPPO / DOUBLE DQN** — which exported fleet WATCH AI and FIGHT AI use (greyed out
+  until that file exists). A Double DQN file is marked *greedy*: the game takes the best option.
 
-Alternatively download the checkpoint (`Training/runs_simple/fleet/models/model_best.pt`) into the same
-place in your copy of the project and run `python export_simple.py` there.
+Or in a normal battle: **YOUR FLEET: LEARNED** / **ENEMY AI: LEARNED**. What runs is exactly what
+trained: every learned ship runs the captain on its own view with its GRU memory, and in fleets of two
+or more the commander gives orders every 10 decisions. `tests/test_policy_parity.py` checks the C#
+forward pass against PyTorch (logits, GRU memory over two decisions, commander orders: errors of 1e-7 to 1e-6).
 
-### Train in the Unity editor (watch it learn)
-
-The open editor can be the training environment instead of the headless players: select
-**GameBootstrap** in the scene, tick **Rl Training Server** (port 5005), press **Play** - the game waits -
-then run
-
-```bash
-python train_simple.py --ports 5005 --run-name editor_test
-```
-
-The fleet trains while you watch the battle in the Game view. It is one battle at a time and the
-editor renders every frame, so it is much slower than headless training - use it to see what the
-fleet does, and SageMaker or `train_simple.py` without `--ports` for real training. When the trainer
-stops, the editor leaves Play mode. The run continues next time like any other (`--run-name`).
-
-### Watch (and play) the training stages in the game
-
-The game's **BATTLE SETUP** screen has a **TRAINING STAGES** button. It lists the curriculum - the same
-eight stages the fleet trains on, from `Assets/StreamingAssets/RL/stages.json` - and starts any of them
-exactly as training does (the same scenario or generated-map settings, the same opponent: rule AI at
-the stage's difficulty, or the passive target of stages 0-1):
-
-| Button | Your fleet | Enemy fleet |
-|---|---|---|
-| **WATCH AI** | the trained fleet (captains + commander) | the stage's opponent |
-| **FIGHT AI** | you | the trained fleet |
-| **PLAY IT** | you | the stage's opponent |
-
-`stages.json` is written by `python export_simple.py` (every export) or `python export_simple.py
---stages-only`, from `simple_mappo/curriculum.py` - edit the curriculum, export, and the game shows the
-new stages. From the command line (also works with the built player in `Builds/NavalTrainer/`):
+From the command line (also the built player in `Builds/NavalTrainer/`):
 
 ```bash
 NavalTrainer.x86_64 -rlStages                                  # open on the TRAINING STAGES screen
-NavalTrainer.x86_64 -rlDemo player -rlStage 4                  # straight into stage 4, the trained fleet playing
-NavalTrainer.x86_64 -rlStages -rlScreenshot stages.png         # a picture of the screen (for the report), then quit
+NavalTrainer.x86_64 -rlDemo player -rlStage 8                  # straight into stage 8, the trained fleet playing
+NavalTrainer.x86_64 -rlStages -rlScreenshot stages.png         # a picture of the screen, then quit
+python watch_simple.py --model <checkpoint.pt>                 # a video rendered by Unity (MAPPO or Double DQN)
 ```
 
-### The Unity project in the zip
+---
 
-`wow_sagemaker.zip` holds the whole Unity project (`Assets/`, `Packages/`, `ProjectSettings/`; the
-screenshots are left out) next to `Training/` and `Builds/`. Unzip it and open the folder in Unity Hub
-(Unity 6000.5.1f1); the first open rebuilds Unity's `Library/` folder, which takes a few minutes. To
-build a new Linux player after changing the game: `Training/build_player.sh`.
+## 13. Files
 
-## Team checkpoints
+### Python — `Training/`
 
-Everyone trains the same line of training in turns, from a notebook, a SageMaker training job or
-their own computer. Each run is one folder:
-
-```
-s3://<bucket>/wow-mappo/runs/<run-name>/
-    run.json                   who pushed last, when, timesteps, curriculum stage
-    LOCK.json                  who is training it right now
-    config.json
-    logs/monitor.csv           every battle from every session: the team's learning curve
-    logs/progress.csv
-    models/model_latest.pt     the checkpoint to continue from (+ model_<n>.pt, model_final.pt)
-    videos/battle_<timesteps>_stage<k>.mp4     replays recorded while training
-```
-
-**Status while training.** Every 10,000 timesteps the trainer pushes a quick status update (logs,
-new videos, and live figures in `run.json`: stage, progress, speed, time left, recent win rate), and
-every `save_interval` a checkpoint too. Anyone can watch, also a training job:
-
-```python
-storage = TeamStorage("s3://<bucket>/wow-mappo", "fleet", user="me")
-storage.show_status()                     # state, stage, progress / ETA, win rate, newest video
-storage.pull_view("team_view")            # logs + newest videos, to plot and play in the notebook
-```
-
-**Videos.** `VideoCallback` records one battle as a top-down replay every so often while training
-(MP4 where ffmpeg is installed, GIF otherwise); `record_battle` and `view` do it on demand.
-
-## It is the real game — and how to see it
-
-Training runs the real Unity game: `Builds/NavalTrainer` is a build of this project, with the same
-ships, gunnery, detection, PhysX physics and rule-based AI, and Python only sends each ship's orders
-each second. It runs **without graphics** (`-batchmode -nographics`, and SDL's dummy video driver,
-because the Unity 6 player otherwise crashes on machines with no window system), so the training
-replays are a 2D map drawn from the game's data. To see a trained model in the game's own graphics,
-on a computer with a screen:
-
-```bash
-python watch_simple.py --model model_final.pt            # a video rendered by Unity (fog lifted)
-python watch_simple.py --model model_final.pt --live     # play it in the editor (tick GameBootstrap > Rl Training Server, press Play)
-```
-
-- **Start**: pull `model_latest.pt` and the logs, continue from them (stage and timesteps included).
-- **During training**: a new checkpoint and the logs are pushed every `save_interval` timesteps.
-- **End** (or after stopping early): push once more and release the lock.
-- **Two people at once?** `lock()` refuses while someone else holds the run and has pushed within
-  the last 30 minutes, and `push()` refuses if someone else pushed after you pulled, so nobody
-  overwrites a teammate's progress. Train in parallel under different run names instead (e.g. a
-  reward experiment).
-- Everyone must use the same bucket. SageMaker's default bucket belongs to one AWS account: if
-  teammates log in to different accounts, create one bucket and give everyone access.
-
-```bash
-python train_simple.py --team-storage s3://<bucket>/wow-mappo --run-name fleet --user Lukita
-```
-
-In the notebook, set `YOUR_NAME`, `RUN_NAME` and `TEAM_STORAGE` in the "Team checkpoints" cell.
-A plain folder path also works in place of `s3://` (a shared drive, or for testing).
-
-## Running it
-
-### On your computer
-
-From the repository, or from `wow_sagemaker.zip` unzipped anywhere (it holds the code, the
-notebooks, the headless Linux player and the imitation checkpoint):
-
-```bash
-cd Training                                              # (or <unzipped folder>/Training)
-pip install -r requirements.txt jupyter
-jupyter lab                                              # open StageP-Imitation.ipynb, then Stage0-Gunnery.ipynb ...
-python train_simple.py --total-timesteps 5000000         # or headless: imitation, then the curriculum
-python train_simple.py --scenario scenarios/stage1_koth_3v3.json --run-name koth   # one battle only
-python -m pytest tests -q                                # checks the code on the mock environment (no Unity)
-```
-
-- The notebooks and `train_simple.py` use the run folder `runs_simple/fleet/` (`RUN_NAME` /
-  `--run-name`). If `runs_simple/fleet/models/imitation.pt` is already there (the zip ships one),
-  Stage 0 starts from it and StageP can be skipped; running StageP again replaces it.
-- **Training is continuous.** Every session - notebook or `train_simple.py` - continues the run's
-  `models/model_latest.pt`, which is refreshed every `save_interval` (and on Ctrl+C in the script),
-  so a crash loses little. Stop whenever you like (in a notebook: Kernel > Interrupt, then run the
-  "Save and hand over" cell) and continue another day. `train_simple.py` and the walkthrough go
-  through the stages by themselves; a stage notebook stops at its promotion unless `KEEP_GOING = True`.
-  Use a new `RUN_NAME` for a fresh run.
-- **Replays** are recorded while training (`VideoCallback`) into `runs_simple/<run>/videos/` - `.mp4`
-  where ffmpeg exists, `.gif` otherwise (SageMaker) - and in the notebooks they are shown right under
-  the training table as they are recorded. A one-off replay: `record_battle(model, env, "x.mp4")`; the
-  real game's graphics: `python watch_simple.py --model <checkpoint>` on a computer with a screen.
-- `n_envs` defaults to half the CPU cores; each battle is one Unity process.
-- Linux needs nothing else. The headless player is a Linux build: on Windows / macOS build your own
-  with `Training/build_player.sh` (or use WSL / SageMaker).
-
-Needs Python 3.10+, PyTorch, NumPy, pandas, matplotlib, Pillow (and Jupyter for the notebooks).
-
-### On Amazon SageMaker
-
-1. Locally: `Training/build_player.sh`, then `Training/package_sagemaker.sh` → `wow_sagemaker.zip`
-   (≈40 MB: code, scenarios, the Linux player).
-2. Upload the zip to SageMaker Studio, open `Training/WOW-MAPPO-Simple.ipynb` (the whole
-   walkthrough) or `Training/StageP-Imitation.ipynb`, then `Training/Stage0-Gunnery.ipynb` (one stage at a time) from it, run the
-   first cell (it unzips to `~/wow`), and fill in the "Team checkpoints" cell.
-3. Use a JupyterLab space with many CPUs and memory (e.g. `ml.c5.4xlarge`: 16 vCPU, 32 GB). No GPU
-   is needed. The default `ml.t3.medium` (2 vCPU, 4 GB) can only run one battle and is too small for
-   the 8-ship stages.
-4. The whole curriculum takes millions of timesteps. Train it in the notebook in sessions, taking
-   turns through the team folder. If your account allows SageMaker training jobs (course accounts
-   often do not - an "explicit deny" error), the notebook's last section starts
-   a **SageMaker training job** (`aws.launch_training_job`: `train_simple.py` in AWS's PyTorch CPU
-   container, the player as its `unity` input) that trains the same team run — it pulls the latest
-   checkpoint and pushes status, videos and checkpoints while it runs. `job_status(job)` shows the
-   job's state and newest log lines; its console page charts the win rate and reward.
-
-All of this uses boto3 only. SageMaker Distribution 4.x ships the SageMaker Python SDK v3, where
-`sagemaker.Session`, `sagemaker.get_execution_role` and the `PyTorch` estimator no longer exist as
-before; nothing here depends on them.
-
-**Requirements the code checks for you:**
-
-- **glibc 2.35+ (Ubuntu 22.04 or newer).** The Unity 6 player needs it. Training jobs use AWS's
-  `pytorch-training:2.9.0-cpu-py312-ubuntu22.04-sagemaker` image; images older than PyTorch 2.4 are
-  Ubuntu 20.04 and the player cannot start there. The code stops with this explanation if the system
-  is too old.
-- **S3 access.** The SageMaker execution role needs `s3:GetObject`, `s3:PutObject` and
-  `s3:ListBucket` on the team bucket. The default `sagemaker-<region>-<account>` bucket already has
-  them; for your own bucket, name it with "sagemaker" in it or add the permissions.
-- The player's other libraries are only libc, libm and libgcc (`ldd`), and the execute permission
-  that zip files and S3 drop is restored automatically.
-
-Tested here without AWS: the bundle unzipped into an empty folder and trained with the SageMaker
-environment variables (`SM_MODEL_DIR`, `SM_CHANNEL_UNITY`, ...) set and the player's execute bit
-stripped; and two "teammates" taking turns on one shared run (a local folder standing in for S3),
-including the lock and the stale-push refusal. The S3 calls themselves (boto3) and a real SageMaker
-job could not be run here.
-
-### Speed
-
-Training never runs at ×1. Each frame is a fixed `sim_dt` of game time and frames run as fast as
-the CPU allows. Measured on one battle (King of the Hill 3v3, random actions):
-
-| `sim_dt` | Speed of one battle | 24 battles on 8 cores | Battle results |
-|---|---|---|---|
-| 0.02 (the game's normal step) | ×90 real time | 60 s | win 13%, damage dealt / taken 2.40 / 3.21 hulls |
-| **0.08 (default)** | **×260 real time** | **31 s** | win 4%, damage dealt / taken 2.19 / 3.30 hulls |
-| 0.10 (the environment's maximum) | ×265 real time | — | — |
-
-0.08 is the physics step the game itself uses at ×8 time compression; the battle statistics match
-the normal step within their error bars, and larger steps buy almost nothing more.
-
-Training speed of the commander method, 12 parallel battles on a 16-core desktop (CPU only):
-about **265 timesteps per second** on the one-ship stages and **150** on 3v3. Two settings matter:
-
-- `torch_threads=4` (the default): PyTorch's own threads otherwise fight the 12 Unity players for
-  the cores, which cost 2-3x.
-- Padding is trimmed before the networks (`networks.trim`): a 1v1 battle does not pay for the 8
-  ship slots, 8 contacts and 5 circles the observation has room for. Pointer options whose token is
-  empty are never chosen (Unity's action masks agree exactly - checked on 100k recorded decisions).
-
-Most of the remaining time is the Unity simulation itself (~25-40 ms per step for 12 battles).
-
-## Results
-
-The sections below were measured with the **previous version** of this package (flat MLP MAPPO,
-no memory, no commander, no imitation, the 5-stage curriculum). They are kept because they explain
-choices the new method still uses (the circle reward weights, minibatching, value normalisation).
-Results of the new method are added in "Results of the commander method" below.
-
-All numbers are win rates against the rule-based AI with sampled actions, measured on this machine
-(16 CPU cores, no GPU) with the current game rules (no draws).
-
-### King of the Hill 3v3 vs Recruit — the reward matters
-
-| Policy | Win rate | Battles |
-|---|---|---|
-| Random legal actions | 0.10 ± 0.05 | 48 |
-| Scripted: every ship sails to the circle and fires at will | 0.67 ± 0.10, 0.88 ± 0.08 | 24, 16 |
-| MAPPO, first reward weights (circle 0.02 / 0.2, kills ±2), 90k timesteps | 0.14 in training; never entered the circle | 253 |
-| **MAPPO, circle-focused weights (the defaults), 600k timesteps, 67 min** | **0.33 ± 0.07** | 48 |
-
-With the circle-focused weights the ships went from about 2 seconds inside the circle per battle
-(first 150 battles) to about half a minute each (last 300), captured it in about one battle in eight,
-and sank twice as many enemies as random play (1.9 vs 0.9 per battle). It still loses the circle to the AI on
-points more often than not — an hour of training is not enough to beat the simple scripted tactic.
-A 2-second `decision_period` ran twice as many battles per hour but learned less per battle; 1 s
-stays the default.
-
-### Battleship duel (curriculum stage 0) vs Recruit — what made it learn
-
-**The shipped configuration wins 0.59 ± 0.06 after 300k timesteps** (random play 0.16 ± 0.05 in the
-same evaluation, 63 duels each; it sinks the enemy in 35% of duels vs 8%, and loses its own ship in
-38% vs 60%). Its training win rate per 50k timesteps: 0.23 → 0.32 → 0.38 → 0.44 → 0.43 → 0.46.
-
-How it got there — each row changes one thing:
-
-| Version | Duel win rate |
+| File | What it does |
 |---|---|
-| Random legal actions | 0.16 – 0.28 |
-| Scripted: sail to the circle / broadside and fire at will | 0.33 / 0.70 |
-| 1 minibatch per epoch (5 gradient steps per update), circle reward on | 0.21 – 0.31 for 600k timesteps: no learning |
-| 4 minibatches × 10 epochs, circle reward off (duel-sized network) | 0.25 → 0.44, 0.41 ± 0.06 at 400k |
-| Same, one network for all stages, LayerNorm on the raw input, fast value normalisation | 0.16 – 0.24 for 250k: stalled |
-| LayerNorm after the first layer, no value normalisation | 0.28 → 0.31 at 150k |
-| **LayerNorm after the first layer, MAPPO's value normalisation (beta 0.99999)** | **0.23 → 0.46; 0.59 ± 0.06 at 300k** |
+| [`simple_mappo/env.py`](env.py) | `NavalEnv`: the Unity battles behind `reset()` / `step()`; token observations; opponents; mirror rows; rehearsal; the imitation recorder |
+| [`simple_mappo/rewards.py`](rewards.py) | **The reward**: every term and weight, circle duty (spreading), team spirit, zero-sum, groups |
+| [`simple_mappo/curriculum.py`](curriculum.py) | **The stages**, generated battles, ships per class, `CurriculumCallback` (promotion, stopping rule) |
+| [`simple_mappo/networks.py`](networks.py) | `EntityEncoder`, `Captain`, `Commander`, `CentralCritic`, `FleetPolicy` (acting: sampling or ε-greedy) |
+| [`simple_mappo/mappo.py`](mappo.py) | **MAPPO**: rollouts, GAE, the PPO update, imitation start; `learn` / `predict` / `save` / `load` |
+| [`simple_mappo/ddqn.py`](ddqn.py) | **Double DQN**: `SequenceReplay`, dueling branching Q, Double Q n-step targets, `QMixer`, commander Q-learning, kickstarting; the same interface |
+| [`simple_mappo/league.py`](league.py) | `OpponentPool` (past copies, PFSP, champion, rival, Elo) and what both methods share about it |
+| [`simple_mappo/imitation.py`](imitation.py) | record the Elite AI, `behaviour_cloning` (the W9-A loop) |
+| [`simple_mappo/callbacks.py`](callbacks.py) | `BaseCallback`, `SaveOnIntervalCallback`, `BestModelCallback` (as SB3) |
+| [`simple_mappo/utils.py`](utils.py) | `Monitor`, plots (incl. `plot_comparison`, `compare_stages`), `evaluate`, replays |
+| [`simple_mappo/stages.py`](stages.py) | `continue_training` / `open_run`: the model (per method) a notebook trains |
+| [`simple_mappo/versus.py`](versus.py) | MAPPO's fleet against Double DQN's: `versus_stages`, `head_to_head`, `both_sides` |
+| [`simple_mappo/team.py`](team.py), [`aws.py`](aws.py) | the shared S3 run folder; SageMaker jobs |
+| [`simple_mappo/export.py`](export.py) | `naval_policy.bin` (v2) for the game, `stages.json` for the TRAINING STAGES screen |
+| `scenarios/*.json` | the hand-made battles (ships, circles, islands) |
+| `train_simple.py`, `export_simple.py`, `watch_simple.py` | command-line training, export, watching |
+| `make_stage_notebooks.py` | writes the stage notebooks and `Versus-MAPPO-vs-DDQN.ipynb` |
+| `tests/` | tests on the mock environment, and the C# parity test |
+| `naval_rl/` | the original research pipeline; this package borrows its TCP connection to Unity |
 
-What came out of it, all now in the code:
+### Unity — `Assets/Scripts/RL/`
 
-1. **A fixed number of minibatches** (4 × 10 epochs = 40 gradient steps per update). With a fixed
-   minibatch *size*, a duel's single ship gave 5 steps per update and an 8v8 battle over 100.
-2. **No circle reward in the duel.** Its circle lies between the two battleships; paying for it
-   pulls the ship bow-on into the enemy's guns. The only stage setting that changes the reward.
-3. **LayerNorm after the first layer**, not on the raw input: the empty slots of a padded battle
-   (80% of the input in a duel) would otherwise change the normalisation from stage to stage.
-4. **MAPPO's value normalisation with the paper's slow statistics** (beta 0.99999). A fast version
-   (0.99) moved the critic's targets every update and stalled learning.
+| File | What it does |
+|---|---|
+| `RLEnvironment.cs`, `RLWire.cs` | the training server: one battle per process, the lockstep TCP protocol |
+| `RLObservation.cs`, `RLLayout.cs` | the tokens every ship sees (and the critic's true view); their sizes and feature names |
+| `RLActions.cs` | the six heads → orders on the ship's systems; the action masks |
+| `RLRewardTracker.cs`, `RLMetrics.cs` | raw reward parts and end-of-battle statistics |
+| `RLExpertLabels.cs` | what the rule AI chose, as labels for imitation |
+| `RLPolicy.cs`, `RLPolicyDriver.cs` | the trained networks in C#; flying Learned ships (MAPPO or Double DQN file) |
+| `RLStages.cs`, `RLDemo.cs`, `RLScreenshot.cs` | the TRAINING STAGES screen's stages, command-line demos and screenshots |
 
-### What was checked end to end
+---
 
-- **Multi-agent learning, 3v3 King of the Hill vs Veteran (stage 1), shipped configuration, 400k
-  timesteps from scratch**: 0.25 ± 0.06 vs random 0.18 ± 0.05 (63 battles each); training win rate
-  0.18 → 0.28, more enemies sunk (1.7 vs 1.25 a battle) and fewer ships lost (1.6 vs 1.8). It learns,
-  but beating the Veteran AI needs far more training — on SageMaker, and starting from the duel as
-  the curriculum does.
-- **Multi-agent mechanics, in real 3v3 and 6v6 battles**: every ship gets its own observation and
-  makes its own choices from the one shared actor; the critic's input is the same battle for every
-  ship plus that ship's own view and id; ships earn different ship rewards (7.7 / 10.2 / 8.5 in one
-  battle) and the same team rewards (3 enemies sunk, 1 ship lost, the win); a ship that sinks leaves
-  actor training while its teammates carry on; and a 6v6 battle runs on the same network.
-- Every curriculum stage runs in the real game: the duel, King of the Hill, the archipelago,
-  generated 6v6 domination maps and the open stage (all modes, 4–8 ships, up to 5 circles), with
-  promotion between them, self-play battles (both fleets flown from Python) in stages 3–4 and the
-  held-out evaluation and stopping rule in stage 4.
-- The notebook runs top to bottom (training, checkpoints, all plots, per-stage evaluation, replays),
-  and two "teammates" can take turns on one shared run from the notebook and from `train_simple.py`.
-- A SageMaker training job was emulated with the unzipped bundle.
+## 14. Results so far
 
-### Results of the commander method (2026-10-09, first local checks)
+Win / pass rates against the rule AI, sampled actions for MAPPO, measured with the real game. With
+24–40 battles a number is about ±8–10 percentage points.
 
-Measured on a 16-core desktop with the real game, before any long training run.
+**The SageMaker MAPPO run** (2.2 million timesteps, reached stage 7; 24 battles per stage; stage 7 on
+generated maps training never used):
 
-**Imitation alone** (`StageP`: 72 Elite-vs-Elite battles recorded in 2.5 min, 102k labelled
-decisions, 8 epochs; held-out accuracy move 0.72, speed 0.89, target 0.91, fire 0.95), 24 battles a
-stage, sampled actions:
+| Stage | Opponent | Passed | Enemy sunk / own lost |
+|---|---|---|---|
+| 0 Gunnery | passive | 71 % | 0.9 / 0.0 |
+| 1 Capture | passive | 100 % | 0.0 / 0.0 |
+| 2 Defend | Recruit | 4 % | 0.0 / 1.0 |
+| 3 Duel | Recruit | 33 % | 0.3 / 0.6 |
+| 4 King of the Hill | Veteran | 75 % | 2.2 / 1.3 |
+| 5 Archipelago | Veteran | 83 % | 2.8 / 0.8 |
+| 6 Domination | Elite | 75 % | 3.9 / 1.8 |
+| 7 Open | Elite | **83 %** | 4.5 / 2.1 |
 
-| Stage | Clone: pass rate | Random: pass rate |
+Every fleet stage passes; the single-ship stages were forgotten (now addressed by prioritised
+rehearsal). Elo at the end: 1193, against 893 for the Elite AI. **Stage 8** (new), before any
+training on it: 3 wins in 8 battles against the Elite AI — it out-fought the enemy (6.0 sunk, 3.5
+lost) but lost on points (408 to 436): the enemy held more circles, which is what stage 8 teaches.
+
+**Imitation alone** (72 Elite battles, 8 epochs), pass rate: gunnery 0.58, capture 1.00, defend 0.46,
+duel 0.25, King of the Hill 0.83, archipelago 0.58 (random: 0.42 / 0.00 / 0.33 / 0.17 / 0.04 / 0.33).
+**MAPPO from the clone** passed stages 0, 1, 2 at 11k, 27k and 58k timesteps.
+
+**Double DQN** (first checks): on gunnery from the clone, 0.50 → 0.58 pass rate in 30,000 timesteps
+with kickstarting; without it 0.33 after 2,400 (section 7.9). On the mock task each ship on its own
+reward learned fastest (section 7.10). The stage-by-stage comparison with MAPPO is what the notebooks
+produce as the two runs train.
+
+**Lessons from the earlier flat-MLP version** that the current method keeps: circle-focused reward
+weights (the fleet never found the circle with in_circle 0.02 / approach 0.2 / kills ±2); a fixed
+number of minibatches (a 1v1 otherwise got 5 gradient steps per update); no circle reward in the duel;
+MAPPO's slow value normalisation (β = 0.99999 — 0.99 stalled learning).
+
+---
+
+## 15. Speed
+
+Training never runs at ×1: each frame is a fixed `sim_dt` = 0.08 s of game time (the step the game
+itself uses at ×8 time compression; battle statistics match the normal 0.02 s step), and frames run
+as fast as the CPU allows. On a 16-thread laptop / desktop CPU:
+
+- MAPPO, 12 battles in parallel: about **265 timesteps/s** on one-ship stages, **150** on 3v3;
+- a 9v9 stage 8 battle of 720 decisions: ~30 s of computer time (4 battles in parallel);
+- Double DQN collects at a similar speed, plus its gradient steps: on real gunnery (6 battles) 30,000
+  timesteps and 548 gradient steps took 110 s.
+
+`torch_threads=4` (default) keeps PyTorch from fighting the Unity players for the cores, and padding is
+trimmed before the networks (`networks.trim`): a 1v1 does not pay for the 9 ship slots.
+
+---
+
+## 16. Troubleshooting
+
+- **"port already in use"**: an earlier run's players are still closing — wait a few seconds, or
+  `pkill -f NavalTrainer.x86_64`; the environment also moves to free ports by itself.
+- **"was trained on a different observation layout"**: the checkpoint's token sizes differ from the
+  game's (a different build of the game); room for more ships is fine.
+- **The notebook says another bundle version runs**: an uploaded zip does not replace an unzipped
+  folder — unzip the new one into a new folder and open the notebook from there.
+- **`ParserError: Expected 30 fields ... saw 31`** in a plot: a battle log started before the
+  `circles_held` reward term existed, with new rows appended. The current code reads such logs and
+  rewrites them in the new layout (every battle kept) the next time a battle is logged.
+- **Double DQN does not train for a while**: it first fills the replay buffer (`learning_starts` =
+  4,000 decisions) — also after every restart, since the buffer is not saved.
+- **A notebook says a run is on another stage**: open that stage's notebook, or set
+  `FORCE_STAGE = True`.
+- **The game says "no trained policy"**: export first (section 12); after exporting, press Play again.
+- **Windows / macOS**: the headless player is a Linux build — build your own with
+  `Training/build_player.sh`, or use WSL / SageMaker.
+
+---
+
+## 17. References and course links
+
+| Piece | Paper | Course link |
 |---|---|---|
-| 0 Gunnery (sunk ≤ 150 s) | 0.58 | 0.42 |
-| 1 Capture | **1.00** | 0.00 |
-| 2 Defend | 0.46 | 0.33 |
-| 3 Duel | 0.25 | 0.17 |
-| 4 King of the Hill vs Veteran | **0.83** | 0.04 |
-| 5 Archipelago vs Veteran | 0.58 | 0.33 |
-
-**Then reinforcement learning** from the clone (`train_simple.py`, 12 battles in parallel, default
-settings), stopped after 135k timesteps (~15 minutes) so the team could take over:
-
-| Stage | Passed at | Notes |
-|---|---|---|
-| 0 Gunnery | 11k timesteps (70 %) | |
-| 1 Capture | 27k timesteps (100 %) | |
-| 2 Defend | 58k timesteps (70 %) | RL lifted the clone from 46 % to 70 % |
-| 3 Duel | not yet | rolling pass rate 20 % → 50 % in 77k timesteps (clone: 25 %; flat MAPPO earlier: 59 % after 300k) |
-
-For comparison, the flat MAPPO of the previous version reached 25-33 % on King of the Hill after
-400-600k timesteps; the clone alone starts at 83 %. These are short runs with 24-100 battle windows,
-so treat single numbers as ±10 %.
-
-## Why a simpler version? A review of the original method (`naval_rl/`)
-
-The original pipeline is a serious research setup:
-
-- a **transformer** over every ship, contact, zone and island token, a **GRU** memory, and
-  **pointer heads** that pick targets and zones by attention;
-- a centralised critic with a second **win-probability** head, running value normalisation,
-  death masking and recurrent chunked training;
-- **behaviour cloning** from the rule AI before RL, a **5-stage curriculum** with promotion
-  thresholds, and **league self-play** with prioritised snapshot sampling;
-- 11 team + 5 ship reward components with **annealed shaping**;
-- the whole network re-implemented in C# (`RLPolicy.cs`) for in-game play, with a parity test.
-
-Its measured results (100 battles each unless noted, sampled actions):
-
-| Stage | Original MAPPO | Behaviour cloning | Random | Scripted |
-|---|---|---|---|---|
-| 0 — battleship duel vs Recruit | 0.47 ± 0.05 (100 updates) | 0.37 ± 0.05 | 0.39 ± 0.05 | 0.63 ± 0.05 |
-| 1 — King of the Hill 3v3 vs Veteran (60) | 0.20 ± 0.05 | 0.58 ± 0.06 | 0.03 ± 0.02 | 0.68 ± 0.06 |
-| 2 — Archipelago 3v3 vs Veteran (60) | 0.27 ± 0.06 | 0.45 ± 0.06 | 0.22 ± 0.05 | 0.43 ± 0.06 |
-
-Reading those numbers, the likely reasons it struggled:
-
-1. **Too many parts at once.** When it does not learn, the cause could be any of a dozen
-   components; it is hard for a team to debug or explain. The simple version keeps MAPPO's three
-   essentials and drops the rest.
-2. **A large model for little training.** The transformer + GRU got 40–100 updates per stage. That
-   is a lot of model to fit in so few updates; two small MLPs are a better match for the budget.
-3. **The objective barely paid.** A zone capture was worth ±0.1 and the score margin 2 × points / 1000
-   (holding the circle for a whole minute: about +0.2), while damage and kill shaping paid up to
-   ±1.3 a battle on top of ±1 for the result. `Training/README.md` notes that the cloned policy
-   "loses mostly on objective points". Nothing paid a ship for sailing towards the circle; the new
-   reward does, and pays every second it holds it.
-4. **Slower than needed.** Training simulated at the 0.02 s step; 0.08 runs about 2× faster end to
-   end with the same battle results.
-
-Kept from the original: the Unity environment and its TCP protocol, the full observation (the whole
-battle — nothing was removed), the six action heads, and MAPPO's centralised critic, parameter
-sharing and death masking. The advanced pipeline is still there for anyone who wants it.
-
-| | Original (`naval_rl/`) | Simple (`simple_mappo/`) |
-|---|---|---|
-| Actor | transformer + GRU + pointer heads | 2-layer MLP |
-| Critic | transformer + value & win heads, value normalisation | 2-layer MLP |
-| Training | BC → curriculum → league self-play | MAPPO against the rule AI |
-| Reward | 16 components, annealed | 11 terms, one readable function |
-| Code to read | ~2,700 lines of Python + ~4,000 of C# RL code | ~2,000 lines of Python (curriculum, self-play and team storage included) |
-| Plays inside the game | yes (C# re-implementation) | through the trainer (e.g. the editor on port 5005) |
-
-## Tips
-
-- **A model is tied to its battle size.** The MLP's input size depends on the number of ships and
-  circles, so a model trained on 3v3 cannot run a 6v6; train a new one.
-- **"port already in use"**: an earlier run's players are still closing; wait a few seconds or use
-  another `base_port`.
-- **Watch it live**: in the Unity editor tick `GameBootstrap.rlTrainingServer`, press Play, and
-  create the environment with `NavalEnv(..., ports=[5005])` (see the end of the notebook).
+| MAPPO: PPO with a centralised critic, value normalisation, death masking | Yu et al., *The Surprising Effectiveness of PPO in Cooperative Multi-Agent Games*, NeurIPS 2022 | W10 PPO |
+| PPO, GAE | Schulman et al., 2017; 2016 | W10 |
+| Memory, team spirit, zero-sum reward, self-play vs latest and past copies | OpenAI, *Dota 2 with Large Scale Deep RL* (OpenAI Five), 2019 | W10-C frame stacking |
+| Transformer over units, pointer heads, imitation + KL, PFSP league | Vinyals et al., *Grandmaster level in StarCraft II* (AlphaStar), Nature 2019 | W10-C feature extractor; W9-A |
+| Dual clip, multi-head value | Ye et al., *Towards Playing Full MOBA Games with Deep RL* (Honor of Kings), NeurIPS 2020 | W10 PPO |
+| Commander (macro) and captains (micro) | Wu et al., *Hierarchical Macro Strategy Model for MOBA Game AI*, AAAI 2019 | — |
+| Curriculum + self-play, joint ratio | Lin et al., *TiZero*, AAMAS 2023 | — |
+| Champion gating | Silver et al., *Mastering the game of Go without human knowledge* (AlphaGo Zero), Nature 2017 | — |
+| DQN, target network, replay | Mnih et al., Nature 2015 | W9-C/D DQN |
+| Double DQN | van Hasselt, Guez & Silver, AAAI 2016 | W9 |
+| Dueling networks | Wang et al., ICML 2016 | W9 |
+| Branching Q-heads | Tavakoli, Pardo & Kormushev, *Action Branching Architectures for Deep RL*, AAAI 2018 | — |
+| Recurrent sequence replay, n-step | Kapturowski et al., *R2D2*, ICLR 2019 | — |
+| QMIX; QMIX tuned for StarCraft | Rashid et al., ICML 2018; Hu et al., *pymarl2*, 2021/2023 | — |
+| Commander as meta-controller; intra-option learning | Kulkarni et al., *h-DQN*, NeurIPS 2016; Sutton, Precup & Singh, 1999 | — |
+| Kickstarting from a teacher | Schmitt et al., *Kickstarting Deep RL*, 2018 | — |
+| Prioritised replay of earlier stages | Jiang, Grefenstette & Rocktäschel, *Prioritized Level Replay*, ICML 2021 | — |
+| Entropy auto-tuning | Haarnoja et al., *SAC*, 2018 | W10-A SAC |

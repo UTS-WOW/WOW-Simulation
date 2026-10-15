@@ -175,20 +175,20 @@ class OpponentPool:
         self.champion, self.vs_champion = d.get("champion"), list(d.get("vs_champion", []))
 
 
-def fleet_snapshot(source):
+def fleet_snapshot(source, champion: bool = True):
     """A fleet to fight, from a MAPPO / Double DQN model or a checkpoint path: (weights, method name,
-    timesteps, greedy). Its champion if it has one, otherwise its current network."""
+    timesteps, greedy). Its champion if it has one (and champion=True), otherwise its current network."""
     if isinstance(source, str):
         import torch
         ck = torch.load(source, map_location="cpu", weights_only=False)
         greedy = ck.get("method") == "fleet-ddqn"
         league = ck.get("league") or {}
-        champion = league.get("champion")
-        weights = next((s["weights"] for s in league.get("snapshots", []) if s["id"] == champion), None)
+        best = league.get("champion") if champion else None
+        weights = next((s["weights"] for s in league.get("snapshots", []) if s["id"] == best), None)
         return weights or ck["policy"], "Double DQN" if greedy else "MAPPO", ck.get("num_timesteps", 0), greedy
     greedy = hasattr(source, "value_head")
-    champion = source.league.weights(source.league.champion) if source.league.champion is not None else None
-    return champion or _weights(source.policy), "Double DQN" if greedy else "MAPPO", source.num_timesteps, greedy
+    best = source.league.weights(source.league.champion) if champion and source.league.champion is not None else None
+    return best or _weights(source.policy), "Double DQN" if greedy else "MAPPO", source.num_timesteps, greedy
 
 
 class LeagueMixin:
@@ -244,12 +244,13 @@ class LeagueMixin:
                       + (f": the fleet beat the old champion in {rate:.0%} of its last "
                          f"{self.league.champion_games} battles against it ***" if beaten else " - the first one ***"))
 
-    def set_rival(self, other) -> bool:
+    def set_rival(self, other, champion: bool = True) -> bool:
         """Cross-play: the other method's fleet (a model, or a checkpoint path) joins this run's league as
-        the "rival" - its champion if it has one. Call it again to refresh it (e.g. before each learn)."""
+        the "rival" - its champion if it has one (champion=False: its current network). Call it again
+        to refresh it (e.g. before each learn)."""
         if other is None or (isinstance(other, str) and not os.path.exists(other)):
             return False
-        weights, name, steps, greedy = fleet_snapshot(other)
+        weights, name, steps, greedy = fleet_snapshot(other, champion)
         own = self.policy.state_dict()
         if set(weights) != set(own) or any(tuple(weights[k].shape) != tuple(own[k].shape) for k in own):
             print(f"the {name} fleet has a different network (settings differ) - not added as a rival")
