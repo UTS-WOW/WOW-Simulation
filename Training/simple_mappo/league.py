@@ -212,8 +212,11 @@ class LeagueMixin:
             policy = self.opponent if sid < 0 else self._past_policy(int(sid))
             greedy = self.GREEDY if sid < 0 or self.league.weights(int(sid)) is None else self.league.greedy(int(sid))
             eps = self.hp.get("opponent_epsilon", self.OPPONENT_EPSILON) if greedy else None
+            # a Double DQN copy with Boltzmann exploration plays the way it trained
+            temp = self.hp.get("temperature") if greedy and self.hp.get("exploration") == "softmax" else None
             memory = self._opp_memory.take(envs[rows])
-            out = policy.act({k: v[rows] for k, v in tens.items()}, memory, epsilon=eps, commander_epsilon=eps)
+            out = policy.act({k: v[rows] for k, v in tens.items()}, memory, epsilon=eps, commander_epsilon=eps,
+                             temperature=temp)
             self._opp_memory.put(envs[rows], memory)
             actions[rows] = out["actions"].cpu().numpy()
         return actions

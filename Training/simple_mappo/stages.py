@@ -21,8 +21,9 @@ import os
 
 from .ddqn import FleetDDQN
 from .mappo import MAPPO
+from .pqn import FleetPQN
 
-METHODS = {"mappo": MAPPO, "ddqn": FleetDDQN}
+METHODS = {"mappo": MAPPO, "pqn": FleetPQN, "ddqn": FleetDDQN}
 
 
 def continue_training(env, stage: int, run_dir: str, log_dir: str, storage=None, force: bool = False,
@@ -36,7 +37,8 @@ def continue_training(env, stage: int, run_dir: str, log_dir: str, storage=None,
     with the model anyway (to jump ahead, or to go back and train an earlier stage more).
     A new model starts from the run's imitation checkpoint (models/imitation.pt, from the StageP
     notebook - or imitation_path) when there is one and imitation=True.
-    algo: "mappo" (MAPPO) or "ddqn" (FleetDDQN, Double DQN) - each run keeps its own method.
+    algo: "mappo" (MAPPO), "pqn" (FleetPQN, the Parallelised Q-Network) or "ddqn" (FleetDDQN, Double DQN -
+    the earlier value-based method) - each run keeps its own method.
     """
     cls = METHODS[algo]
     latest = storage.pull(run_dir) if storage else None

@@ -26,6 +26,10 @@ namespace Naval
 
         public bool Aground { get; private set; }
         public float AgroundTimer { get; private set; }
+        /// <summary>Pressing against land: hard aground, or stopped at the bank by shoaling water ahead
+        /// (the terrain bleeds the speed off before most ships ever run hard aground). Holds 1 s.</summary>
+        public bool AgainstLand => _landTimer > 0f;
+        float _landTimer;
 
         // sinking presentation
         float _listAngle, _sinkDepth;
@@ -116,6 +120,7 @@ namespace Naval
 
             if (AgroundTimer > 0f) AgroundTimer -= dt;
             Aground = AgroundTimer > 0f;
+            if (_landTimer > 0f) _landTimer -= dt;
         }
 
         // ------------------------------------------------------------------ physics
@@ -195,6 +200,7 @@ namespace Naval
             float depthHere = map.SampleDepth(_rb.position);
 
             if (depthHere >= required && depthAhead >= required) return;
+            _landTimer = 1f;
 
             Vector2 grad = map.DepthGradient(_rb.position, _s.Stats.length * 0.8f);
             if (grad.sqrMagnitude < 1e-6f) grad = -_s.Forward;

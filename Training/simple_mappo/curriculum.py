@@ -71,8 +71,16 @@ A stage is a dict:
                        (they are logged under their own stage and never count for promotion)
     pass_if            what counts as passing a battle: "won" (default), "sunk" (every enemy ship sunk) or
                        "captured" (a circle captured); within: ... in at most this many seconds of battle
+                       (the battle ends at that time if the goal is not met by then). On a stage with
+                       its own goal the win / loss reward follows the goal, not the game's result
     promote_win_rate   move on once the share of passed battles over the last `window` qualifying
     window               battles (against the stage's own opponent: rule AI or passive target) reaches this
+    max_timesteps      move on anyway after this many timesteps on the stage, NOT passed, so a method that
+                       cannot reach the bar does not train on it for ever (compare_stages shows the stage
+                       as not passed); on the final stage, training ends there. Every default stage has
+                       one: twice a notebook session's budget on stages 0-3 (cheap single-ship battles),
+                       one session's on stages 4-8 (measured with 4 battles at once, Double DQN trains
+                       a 9v9 at ~31 timesteps/s, MAPPO at ~56: a stage 8 session is 25-45 hours)
     stop_win_rate      final stage only: stop training once the win rate over the last
     stop_window          `stop_window` evaluation battles reaches this. On a generated (procedural)
                          stage they are held-out battles, on maps whose seeds training never uses.
@@ -110,35 +118,42 @@ DEFAULT_CURRICULUM = [
     # Measured with random play / a simple script (32 battles each): gunnery - target sunk within 150 s
     # 52 % / 76 % (close in, fire at will); capture - circle captured 0 % / 100 % (sail to it); defend -
     # won 12 % / 0 % (sail to the circle). The passive target never scores, so a plain "won" would be
-    # passed by random play (the tiebreak goes our way): these stages are judged on their own skill.
+    # passed by random play (the tiebreak goes our way): these stages are judged on their own skill,
+    # and their win / loss reward follows it too (env.py) - a slow kill or no capture pays the loss.
+    # A battle with a deadline ("within") ends there once it is missed, so it does not run on.
     {"name": "0 Gunnery", "battle": "1 battleship vs a passive cruiser, 7 km, open sea",
      "description": "Destroy a ship: pick the target, keep the guns firing, close in, use torpedoes.",
      "scenario": "scenarios/stage0_gunnery.json", "opponent": "passive",
-     "pass_if": "sunk", "within": 150, "promote_win_rate": 0.70, "window": 50, "reward_weights": NO_CIRCLE},
+     "pass_if": "sunk", "within": 150, "promote_win_rate": 0.70, "window": 50, "max_timesteps": 400_000,
+     "reward_weights": NO_CIRCLE},
     {"name": "1 Capture", "battle": "1 cruiser, one neutral circle, the enemy far away",
      "description": "Sail into the capture circle and stay inside until it is captured.",
      "scenario": "scenarios/stage1_capture.json", "opponent": "passive",
-     "pass_if": "captured", "promote_win_rate": 0.70, "window": 50},
+     "pass_if": "captured", "promote_win_rate": 0.70, "window": 50, "max_timesteps": 500_000},
     {"name": "2 Defend", "battle": "1 cruiser vs 1 cruiser over a neutral circle",
      "description": "Take the circle and hold it while staying afloat: angle, dodge, smoke, repair, fight back.",
      "scenario": "scenarios/stage2_defend.json", "opponent": "rule", "difficulty": 0,
-     "pass_if": "won", "promote_win_rate": 0.70, "window": 100, "reward_weights": {"survive": 0.02}},
+     "pass_if": "won", "promote_win_rate": 0.70, "window": 100, "max_timesteps": 600_000,
+     "reward_weights": {"survive": 0.02}},
     # The duel is about gunnery and angling. Its circle lies between the two battleships, so the circle
     # reward pulls the ship bow-on into the enemy's guns: measured, sailing to the circle wins 33% of
     # duels, broadside and fire at will 70%, and MAPPO learned the duel only with the circle terms off.
     {"name": "3 Duel", "battle": "1v1 battleships, 13 km, open sea",
      "description": "Win a battleship duel: choose and time fire, angle the hull, do not throw the ship away.",
      "scenario": "scenarios/stage0_bb_duel.json", "opponent": "league", "opponents": SELF_PLAY, "difficulty": 0,
-     "promote_win_rate": 0.70, "window": 100, "rehearsal": 0.1, "reward_weights": NO_CIRCLE},
+     "promote_win_rate": 0.70, "window": 100, "max_timesteps": 800_000, "rehearsal": 0.1,
+     "reward_weights": NO_CIRCLE},
     # ---- fleets: the commander joins in, and the ships learn to share the reward
     {"name": "4 King of the Hill", "battle": "3v3 mixed fleets, one circle, open sea",
      "description": "The first fleet battle: the commander orders ships to hold the circle or engage.",
      "scenario": "scenarios/stage1_koth_3v3.json", "opponent": "league", "opponents": SELF_PLAY, "difficulty": 1,
-     "commander": True, "team_spirit": 0.3, "rehearsal": 0.15, "promote_win_rate": 0.70, "window": 100},
+     "commander": True, "team_spirit": 0.3, "rehearsal": 0.15, "promote_win_rate": 0.70, "window": 100,
+     "max_timesteps": 500_000},
     {"name": "5 Archipelago", "battle": "3v3 mixed fleets, three circles among islands",
      "description": "Which ship holds which circle, and who hunts - with islands, spotting and smoke.",
      "scenario": "scenarios/stage2_archipelago_3v3.json", "opponent": "league", "opponents": SELF_PLAY, "difficulty": 1,
-     "commander": True, "team_spirit": 0.5, "rehearsal": 0.15, "promote_win_rate": 0.70, "window": 150},
+     "commander": True, "team_spirit": 0.5, "rehearsal": 0.15, "promote_win_rate": 0.70, "window": 150,
+     "max_timesteps": 750_000},
     # ---- the full game against the Elite AI and a league of our own past selves
     {"name": "6 Domination", "battle": "6v6 on a new random map and weather",
      "description": "The full Domination game against the Elite AI and a league of the fleet's own past selves.",
@@ -146,21 +161,21 @@ DEFAULT_CURRICULUM = [
                                             "weather": "random", "ships": [6, 6], "time_limit": 900,
                                             "world_reuse": 8},
      "opponent": "league", "opponents": LEAGUE, "difficulty": 2, "commander": True, "team_spirit": 0.8,
-     "rehearsal": 0.1, "promote_win_rate": 0.70, "window": 200},
+     "rehearsal": 0.1, "promote_win_rate": 0.70, "window": 200, "max_timesteps": 1_000_000},
     {"name": "7 Open", "battle": "4-8 ships a side, random mode, map, weather and circle size",
      "description": "Anything the game can produce: modes, maps, weather and fleet sizes it has not seen.",
      "procedural": {"mode": "random", "preset": "random", "density": "random",
                                       "weather": "random", "ships": [4, 8], "time_limit": 1200,
                                       "capture_radius": [130, 200], "world_reuse": 4},
      "opponent": "league", "opponents": LEAGUE, "difficulty": 2, "commander": True, "team_spirit": 1.0,
-     "rehearsal": 0.1, "promote_win_rate": 0.70, "window": 200},
+     "rehearsal": 0.1, "promote_win_rate": 0.70, "window": 200, "max_timesteps": 2_000_000},
     # ---- the biggest battle: every class, five circles - the fleet has to split up
     {"name": "8 Archipelago 9v9", "battle": "9v9, every ship class, five circles among islands",
      "description": "Hold more circles than the enemy: three across the middle, one near each fleet. "
                     "Split the fleet - do not crowd the centre.",
      "scenario": "scenarios/stage8_archipelago_9v9.json", "opponent": "league", "opponents": LEAGUE, "difficulty": 2,
      "commander": True, "team_spirit": 1.0, "rehearsal": 0.15,
-     "stop_win_rate": 0.70, "stop_window": 200, "eval_battles": 40, "eval_every": 100_000},
+     "stop_win_rate": 0.70, "stop_window": 200, "eval_battles": 40, "eval_every": 100_000, "max_timesteps": 5_000_000},
 ]
 
 RANDOM_CHOICES = {"mode": [0, 1, 2, 3], "preset": [0, 1, 2], "density": [0, 1, 2], "weather": [0, 1, 2, 3]}
@@ -307,11 +322,17 @@ class CurriculumCallback(BaseCallback):
 
     stop_on_promotion=True ends training right after a promotion (the per-stage notebooks use it: the
     saved model then carries the new stage, and the next stage's notebook continues from it).
+
+    fresh=True trains the stage AGAIN (FORCE_STAGE in the stage notebooks): this session starts with
+    an empty promotion window and counts the stage's max_timesteps from now. Without it, a run brought
+    back to a stage it passed - or left at its cap - would pass or hit the cap again on its first step,
+    since both are rebuilt from the battle log.
     """
 
-    def __init__(self, verbose: int = 1, stop_on_promotion: bool = False):
+    def __init__(self, verbose: int = 1, stop_on_promotion: bool = False, fresh: bool = False):
         super().__init__(verbose)
         self.stop_on_promotion = stop_on_promotion
+        self.fresh = fresh
         self.results: list[float] = []          # current stage, rule-AI battles
         self.held_out: list[float] = []         # final stage, held-out evaluation battles
         self.last_eval = 0
@@ -321,10 +342,20 @@ class CurriculumCallback(BaseCallback):
 
     def _on_training_start(self) -> None:
         self.last_eval = self.num_timesteps
-        self.promoted = self.finished = False
-        self.results, self.held_out = self._from_log()
+        self.promoted = self.finished = self.moved_on_unpassed = self.capped_out = False
         env = self.model.env
         stage = env.stages[env.stage]
+        if self.fresh:                         # the window and the cap count from here on, also next session
+            self._record("again", stage, env.stage)
+        self.results, self.held_out = ([], []) if self.fresh else self._from_log()
+        # where the timesteps on this stage started counting: earlier sessions' battles on it come first
+        self._stage_from = self.num_timesteps - (0 if self.fresh else self._steps_on_stage())
+        if self.fresh and self.verbose:
+            print(f"training '{stage['name']}' again: a fresh promotion window"
+                  + (f" and {int(stage['max_timesteps']):,} timesteps before its cap" if stage.get("max_timesteps") else ""))
+        cap = stage.get("max_timesteps")
+        if cap and self.verbose:
+            print(f"'{stage['name']}': {self.num_timesteps - self._stage_from:,} of at most {int(cap):,} timesteps on it so far")
         if self.results and self.verbose:
             window = int(stage.get("window", 100))
             print(f"continuing the promotion window of '{stage['name']}': {len(self.results)} of {window} battles so far, "
@@ -335,16 +366,61 @@ class CurriculumCallback(BaseCallback):
                   + (" - the stopping rule is already met; training on tries to do better"
                      if len(self.held_out) >= need and np.mean(self.held_out) >= stage.get("stop_win_rate", 1.0) else ""))
 
-    def _from_log(self) -> tuple[list[float], list[float]]:
-        """The current stage's rule-AI battles and held-out battles, from the run's monitor.csv."""
+    COLUMNS = ["timesteps", "stage", "name", "event", "pass_rate", "battles", "log_rows"]
+
+    def _record(self, event: str, stage: dict, k: int) -> None:
+        """One line in logs/curriculum.csv (next to monitor.csv) each time the run leaves a stage - read
+        by compare_stages, and shared with the team like the other logs - and an "again" line when a
+        session starts training a stage again (fresh), from which its window and cap count."""
+        path = getattr(self.model.env, "path", None)
+        if not path:
+            return
+        out = os.path.join(os.path.dirname(path), "curriculum.csv")
+        if os.path.exists(out):
+            with open(out) as f:
+                lines = f.read().splitlines()
+            if lines and lines[0] != ",".join(self.COLUMNS):     # an older layout: add the new column
+                with open(out, "w") as f:
+                    f.write("\n".join([",".join(self.COLUMNS)] + [line + "," for line in lines[1:]]) + "\n")
+        new = not os.path.exists(out)
+        with open(out, "a", newline="") as f:
+            w = csv.writer(f)
+            if new:
+                w.writerow(self.COLUMNS)
+            w.writerow([self.num_timesteps, k, stage["name"], event,
+                        round(float(np.mean(self.results)), 3) if self.results else "", len(self.results),
+                        len(self._log_rows(all_rows=True))])
+
+    def _log_rows(self, all_rows: bool = False) -> list[dict]:
+        """monitor.csv's rows of the current stage since the run last started training it again (the
+        latest "again" line in curriculum.csv) - or, all_rows, every row."""
         env = self.model.env
         path = getattr(env, "path", None)                  # the Monitor wrapper's file
         if not path or not os.path.exists(path):
-            return [], []
-        stage = env.stages[env.stage]
+            return []
         with open(path) as f:
             next(f)                                        # the '#{...}' header line
-            rows = [r for r in csv.DictReader(f) if int(float(r.get("stage") or 0)) == env.stage]
+            rows = list(csv.DictReader(f))
+        if all_rows:
+            return rows
+        since, marks = 0, os.path.join(os.path.dirname(path), "curriculum.csv")
+        if os.path.exists(marks):
+            with open(marks) as f:
+                for m in csv.DictReader(f):
+                    if m.get("event") == "again" and int(m["stage"]) == env.stage:
+                        since = int(m.get("log_rows") or 0)
+        return [r for r in rows[since:] if int(float(r.get("stage") or 0)) == env.stage]
+
+    def _steps_on_stage(self) -> int:
+        """The timesteps this run already spent on its current stage (training battles in monitor.csv)."""
+        return int(sum(float(r.get("l") or 0) for r in self._log_rows()
+                       if not str(r.get("opponent", "")).startswith("eval")))
+
+    def _from_log(self) -> tuple[list[float], list[float]]:
+        """The current stage's rule-AI battles and held-out battles, from the run's monitor.csv."""
+        env = self.model.env
+        stage = env.stages[env.stage]
+        rows = self._log_rows()
         passed = "passed" if rows and rows[0].get("passed") not in (None, "") else "won"
         results = [float(r[passed]) for r in rows if r.get("opponent", "rule") in QUALIFYING]
         held_out = [float(r[passed]) for r in rows if r.get("opponent") == "eval-heldout"]
@@ -366,11 +442,39 @@ class CurriculumCallback(BaseCallback):
             self.history.append({"timesteps": self.num_timesteps, "event": msg})
             if self.verbose:
                 print(f"*** {msg} (at {self.num_timesteps} timesteps) ***")
+            self._record("passed", stage, env.stage)
             env.set_stage(env.stage + 1)
             self.results = []
             self.promoted = True
+            self._stage_from = self.num_timesteps
             if self.stop_on_promotion:
                 return False
+            return True
+        cap = stage.get("max_timesteps")
+        if not last and cap and self.num_timesteps - self._stage_from >= int(cap):
+            rate = f"passed {np.mean(self.results):.0%} of the last {len(self.results)}" if self.results else "no battles yet"
+            msg = (f"stage '{stage['name']}' NOT passed in {int(cap):,} timesteps (its max_timesteps; {rate}, "
+                   f"needs {threshold or 0:.0%}) - moving on to '{env.stages[env.stage + 1]['name']}'")
+            self.history.append({"timesteps": self.num_timesteps, "event": msg})
+            if self.verbose:
+                print(f"*** {msg} (at {self.num_timesteps} timesteps) ***")
+            self._record("not passed", stage, env.stage)
+            env.set_stage(env.stage + 1)
+            self.results = []
+            self.promoted = self.moved_on_unpassed = True
+            self._stage_from = self.num_timesteps
+            if self.stop_on_promotion:
+                return False
+        elif last and cap and self.num_timesteps - self._stage_from >= int(cap):
+            # the final stage has nothing to move on to: its cap ends the training
+            msg = (f"final stage '{stage['name']}': its stopping rule was not met in {int(cap):,} timesteps (its "
+                   f"max_timesteps) - training is over")
+            self.history.append({"timesteps": self.num_timesteps, "event": msg})
+            if self.verbose:
+                print(f"*** {msg} (at {self.num_timesteps} timesteps) ***")
+            self._record("not passed", stage, env.stage)
+            self.finished = self.capped_out = True
+            return False
         return True
 
     def _on_rollout_end(self) -> bool:
@@ -399,6 +503,7 @@ class CurriculumCallback(BaseCallback):
         if len(self.held_out) >= need and rate >= stage["stop_win_rate"]:
             if self.verbose:
                 print(f"*** stopping rule met: {rate:.0%} >= {stage['stop_win_rate']:.0%} over {need} evaluation battles ***")
+            self._record("passed", stage, env.stage)
             self.finished = True
             return False
         return True

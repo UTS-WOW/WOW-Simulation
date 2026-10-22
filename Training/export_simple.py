@@ -5,15 +5,16 @@
                                                               # if that one reached a later stage
     python export_simple.py --model runs_simple/fleet/models/model_latest.pt
     python export_simple.py --model runs_simple/fleet/models/imitation.pt      # just the clone of the Elite AI
-    python export_simple.py --run-name fleet_ddqn                              # the Double DQN fleet
-                                                         # -> naval_policy_ddqn.bin (TRAINED FLEET: DOUBLE DQN)
+    python export_simple.py --run-name fleet_pqn                               # the PQN fleet
+                                                         # -> naval_policy_pqn.bin (TRAINED FLEET: PQN)
 
     # a run trained on SageMaker / by a teammate: fetch its checkpoint from the team folder first
     python export_simple.py --team-storage s3://<bucket>/wow-mappo --run-name fleet
 
-It writes Assets/StreamingAssets/RL/naval_policy.bin - or naval_policy_ddqn.bin for a Double DQN
-checkpoint (the previous file is kept as .bak). Then open the project in Unity, press Play, and on the
-TRAINING STAGES screen pick TRAINED FLEET: MAPPO or DOUBLE DQN and WATCH AI on a stage - or on the
+It writes Assets/StreamingAssets/RL/naval_policy.bin - or naval_policy_pqn.bin for a PQN checkpoint
+(naval_policy_ddqn.bin for an earlier Double DQN one; the previous file is kept as .bak). Then open the
+project in Unity, press Play, and on the TRAINING STAGES screen pick TRAINED FLEET: MAPPO or PQN and
+WATCH AI on a stage - or on the
 setup screen set ENEMY AI: LEARNED (fight against it) or YOUR FLEET: LEARNED (watch it fight). RLPolicyDriver flies those ships with the
 trained captains - and, in fleets of two or more, with the trained fleet commander. The file is read
 when the game starts: after exporting again, stop and press Play again. The line under those
@@ -27,7 +28,8 @@ import os
 
 import torch
 
-from simple_mappo.export import GAME_POLICY, GAME_POLICY_DDQN, GAME_STAGES, export_policy, export_stages, pick_checkpoint
+from simple_mappo.export import (GAME_POLICY, GAME_POLICY_DDQN, GAME_POLICY_PQN, GAME_STAGES, export_policy,
+                                 export_stages, game_file_for, pick_checkpoint)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -38,7 +40,7 @@ def main():
     p.add_argument("--run-name", default="fleet")
     p.add_argument("--team-storage", help="download the run's checkpoint from this team folder first (s3://... or a folder)")
     p.add_argument("--out", default=None, help="the policy file (default: the game's StreamingAssets/RL/naval_policy.bin, "
-                                                "or naval_policy_ddqn.bin for a Double DQN checkpoint)")
+                                                "or naval_policy_pqn.bin for a PQN checkpoint)")
     p.add_argument("--no-commander", action="store_true", help="export the captains only (every ship free)")
     p.add_argument("--stages-only", action="store_true",
                    help="only write the curriculum for the game's TRAINING STAGES screen (stages.json)")
@@ -47,7 +49,8 @@ def main():
     # the curriculum, for the game's TRAINING STAGES screen (kept in step with simple_mappo/curriculum.py)
     stages = export_stages(os.path.join(os.path.dirname(os.path.abspath(a.out)), "stages.json")
                            if a.out and os.path.abspath(a.out) not in (os.path.abspath(GAME_POLICY),
-                                                                       os.path.abspath(GAME_POLICY_DDQN)) else GAME_STAGES)
+                                                                       os.path.abspath(GAME_POLICY_DDQN),
+                                                                       os.path.abspath(GAME_POLICY_PQN)) else GAME_STAGES)
     print(f"stages     -> {stages}")
     if a.stages_only:
         return
@@ -68,11 +71,12 @@ def main():
 
     out = a.out
     if out is None:
-        ddqn = torch.load(model, map_location="cpu", weights_only=False).get("method") == "fleet-ddqn"
-        out = GAME_POLICY_DDQN if ddqn else GAME_POLICY
+        ck = torch.load(model, map_location="cpu", weights_only=False)
+        q_learner = ck.get("method") == "fleet-ddqn"
+        out = game_file_for(ck.get("algorithm", "ddqn") if q_learner else "mappo")
     path = export_policy(model, os.path.abspath(out), commander=not a.no_commander)
     print(f"exported {model}\n      -> {path}")
-    print("In Unity: press Play (again), then TRAINING STAGES > TRAINED FLEET (MAPPO / DOUBLE DQN) > WATCH AI,\n"
+    print("In Unity: press Play (again), then TRAINING STAGES > TRAINED FLEET (MAPPO / PQN) > WATCH AI,\n"
           "or on the setup screen set ENEMY AI: LEARNED or YOUR FLEET: LEARNED.")
 
 

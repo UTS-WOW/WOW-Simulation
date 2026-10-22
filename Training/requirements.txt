@@ -3,6 +3,7 @@ numpy>=1.24
 pandas            # monitor.csv, notebook tables
 matplotlib        # learning curves and replays
 pillow            # replay videos / GIFs
+imageio-ffmpeg    # an ffmpeg for MP4 replays (8x smaller than GIF) where none is installed
 nbformat          # make_stage_notebooks.py
 # optional: jupyter (to run the notebooks locally), boto3 (S3 team checkpoints, SageMaker jobs),
-#           ffmpeg on the PATH (MP4 replays instead of GIF), tensorboard, pyyaml (naval_rl)
+#           tensorboard, pyyaml (naval_rl)

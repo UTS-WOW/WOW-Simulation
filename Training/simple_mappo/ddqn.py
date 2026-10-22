@@ -216,7 +216,11 @@ class SequenceReplay:
 
     def sample(self, batch_size: int) -> dict:
         """batch_size chunks, padded to the same number of ship slots -> arrays [T + 1, B, ...] (h0: [B, N, H])."""
-        picks = [self.chunks[i] for i in self.rng.integers(len(self.chunks), size=batch_size)]
+        return self.stack(self.rng.integers(len(self.chunks), size=batch_size))
+
+    def stack(self, indices) -> dict:
+        """The chunks at `indices`, padded to the same number of ship slots (PQN's minibatches use it too)."""
+        picks = [self.chunks[i] for i in indices]
         keys = set.intersection(*(set(c) for c in picks))             # (teacher_h0 only after an imitation start)
         n = max(c["exists"].shape[1] for c in picks)
         m = max(c["critic_enemy_mask"].shape[1] for c in picks)
@@ -239,6 +243,7 @@ class SequenceReplay:
 
 class FleetDDQN(LeagueMixin):
     GREEDY = True                       # its own copies in the league take their best action
+    ALGORITHM, NAME = "ddqn", "Double DQN"   # pqn.py's FleetPQN shares everything but the training loop
 
     def __init__(self, env, learning_rate: float = 2.5e-4, commander_learning_rate: float = 1e-4,
                  buffer_size: int = 40_000, learning_starts: int = 4_000, batch_size: int = 32,
@@ -250,7 +255,7 @@ class FleetDDQN(LeagueMixin):
                  mixing_embed: int = 32, d_model: int = 64, attn_heads: int = 4, attn_layers: int = 2,
                  hidden_size: int = 128, recurrent: bool = True, commander: bool = True, commander_period: int = 10,
                  kl_bc_coef: float = 0.5, kl_bc_final: float = 0.05, kl_bc_steps: int = 20_000,
-                 imitation_temperature: float = 0.1,
+                 imitation_temperature: float = 0.1, exploration: str = "epsilon", temperature: float = 0.1,
                  opponent_refresh: int = 80, snapshot_every: int = 200, pool_size: int = 20, pfsp: str = "hard",
                  device: str = "auto",
                  torch_threads: int | None = 4, seed: int = 0, verbose: int = 1, log_dir: str | None = None):
@@ -279,11 +284,19 @@ class FleetDDQN(LeagueMixin):
         kl_bc_coef             after an imitation start: weight of the kickstarting penalty, fading to
                                kl_bc_final over kl_bc_steps gradient steps
         imitation_temperature  tau: the clone's scores x tau are the starting advantages
+        exploration            how the captains choose while playing: "epsilon" (epsilon-greedy: the best
+                               option, or a random one) or "softmax" (Boltzmann exploration: options in
+                               proportion to exp(Q / temperature) - from the clone, with temperature =
+                               imitation_temperature, it first plays the clone's own choices, sampled as
+                               MAPPO does, instead of only its single likeliest one). The commander's
+                               orders stay epsilon-greedy either way; deterministic play is greedy.
         opponent_refresh       updates (rounds of chunk_len decisions) between refreshing the "latest"
                                opponent; snapshot_every between adding a past copy to the league
         """
         if mixer not in ("qmix", "vdn", "none"):
             raise ValueError(f"mixer must be 'qmix', 'vdn' or 'none', not {mixer!r}")
+        if exploration not in ("epsilon", "softmax"):
+            raise ValueError(f"exploration must be 'epsilon' or 'softmax', not {exploration!r}")
         self.env = env
         self.hp = dict(learning_rate=learning_rate, commander_learning_rate=commander_learning_rate,
                        buffer_size=buffer_size, learning_starts=learning_starts, batch_size=batch_size,
@@ -296,7 +309,7 @@ class FleetDDQN(LeagueMixin):
                        attn_layers=attn_layers, hidden_size=hidden_size, recurrent=recurrent, commander=commander,
                        commander_period=commander_period, kl_bc_coef=kl_bc_coef, kl_bc_final=kl_bc_final,
                        kl_bc_steps=kl_bc_steps, imitation_temperature=imitation_temperature,
-                       opponent_refresh=opponent_refresh,
+                       exploration=exploration, temperature=temperature, opponent_refresh=opponent_refresh,
                        snapshot_every=snapshot_every, pool_size=pool_size, pfsp=pfsp, seed=seed)
         self.verbose = verbose
         self.log_dir = log_dir
@@ -350,10 +363,11 @@ class FleetDDQN(LeagueMixin):
             n_q = sum(p.numel() for p in self.policy.captain.parameters()) + sum(p.numel() for p in self.value_head.parameters())
             n_cmd = sum(p.numel() for p in self.policy.commander.parameters()) if commander else 0
             n_mix = sum(p.numel() for p in self.mixer.parameters()) if self.mixer is not None else 0
-            print(f"Double DQN on {self.device}: Q-network (captain + value stream) {n_q:,} parameters"
+            print(f"{self.NAME} on {self.device}: Q-network (captain + value stream) {n_q:,} parameters"
                   + (f", commander {n_cmd:,}" if commander else "") + (f", QMIX mixer {n_mix:,}" if n_mix else
                                                                       f", mixer: {mixer}")
-                  + f"; replay {buffer_size:,} decisions, heads {dict(zip(self.head_names, self.head_sizes))}")
+                  + (f"; replay {buffer_size:,} decisions" if self.ALGORITHM == "ddqn" else "; no replay buffer: rollouts")
+                  + f", heads {dict(zip(self.head_names, self.head_sizes))}")
 
         self.num_timesteps = 0          # decisions, summed over the parallel battles (as MAPPO)
         self.n_updates = 0              # rounds of collecting chunk_len decisions + gradient steps
@@ -381,13 +395,20 @@ class FleetDDQN(LeagueMixin):
     def _fits(memory: Memory | None, obs: dict) -> bool:
         return memory is not None and memory.h.shape[:2] == obs["alive"].shape
 
+    @property
+    def act_temperature(self) -> float | None:
+        """The captains' Boltzmann temperature when exploration="softmax", else None (epsilon-greedy)."""
+        return self.hp["temperature"] if self.hp.get("exploration", "epsilon") == "softmax" else None
+
     def predict(self, obs: dict, deterministic: bool = False) -> np.ndarray:
-        """Actions [E, N, heads]: the best ones (epsilon = eval_epsilon, 0 if deterministic)."""
+        """Actions [E, N, heads]: the best ones (epsilon = eval_epsilon, 0 if deterministic) - or, with
+        exploration="softmax", sampled from softmax(Q / temperature) as in training."""
         if not self._fits(self._play_memory, obs):
             self._play_memory = self.policy.new_memory(*obs["alive"].shape)
         self.policy.eval()
         eps = 0.0 if deterministic else self.hp["eval_epsilon"]
-        out = self.policy.act(self._tensors(obs), self._play_memory, epsilon=eps, commander_epsilon=eps)
+        out = self.policy.act(self._tensors(obs), self._play_memory, epsilon=eps, commander_epsilon=eps,
+                              deterministic=deterministic, temperature=self.act_temperature)
         self.last_orders = out["orders"].cpu().numpy()
         return out["actions"].cpu().numpy()
 
@@ -448,7 +469,7 @@ class FleetDDQN(LeagueMixin):
         for t in range(L):
             tens = self._tensors(obs)
             out = self.policy.act(tens, self._memory, epsilon=eps,
-                                  commander_epsilon=eps * self.hp["commander_eps_scale"])
+                                  commander_epsilon=eps * self.hp["commander_eps_scale"], temperature=self.act_temperature)
             if t == 0:
                 h0 = out["h"].cpu().numpy()          # the memory each ship starts the chunk with [R2D2]
             if self.teacher is not None:             # the clone follows along (as a free ship, the way it was
@@ -743,7 +764,8 @@ class FleetDDQN(LeagueMixin):
         learning_starts decisions before its first gradient step - SB3 does not save it either)."""
         path = path if path.endswith(".pt") else path + ".pt"
         os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-        torch.save({"method": "fleet-ddqn", "policy": self.policy.state_dict(), "value_head": self.value_head.state_dict(),
+        torch.save({"method": "fleet-ddqn", "algorithm": self.ALGORITHM,
+                    "policy": self.policy.state_dict(), "value_head": self.value_head.state_dict(),
                     "mixer": self.mixer.state_dict() if self.mixer is not None else None,
                     "target_policy": self.target_policy.state_dict(),
                     "target_value_head": self.target_value_head.state_dict(),
@@ -767,6 +789,9 @@ class FleetDDQN(LeagueMixin):
         """A saved model, ready to predict or to continue learning in env (moved to the model's stage)."""
         path = path if path.endswith(".pt") else path + ".pt"
         ck = torch.load(path, map_location="cpu", weights_only=False)
+        if cls is FleetDDQN and ck.get("algorithm") == "pqn":     # a PQN checkpoint: the same network
+            from .pqn import FleetPQN
+            return FleetPQN.load(path, env, device, **overrides)
         if ck.get("method") != "fleet-ddqn":
             raise ValueError(f"{path} is not a Double DQN checkpoint (method {ck.get('method')!r}) - "
                              f"use MAPPO.load for a MAPPO one")

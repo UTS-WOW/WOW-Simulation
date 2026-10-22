@@ -13,6 +13,7 @@ namespace Naval
         public static event Action<Ship> OnSelectionChanged;
         public static event Action<Ship, Ship> OnContactGained;      // observer, contact
         public static event Action<Vector2, Team> OnTorpedoWarning;
+        public static event Action<Ship, Ship> OnShipCollision;      // ship, the ship it ran into (raised for each of the two)
 
         public static void RaiseMessage(string msg, Team team = Team.Neutral) => OnMessage?.Invoke(msg, team);
         public static void RaiseSpawned(Ship s) => OnShipSpawned?.Invoke(s);
@@ -21,6 +22,7 @@ namespace Naval
         public static void RaiseSelectionChanged(Ship s) => OnSelectionChanged?.Invoke(s);
         public static void RaiseContact(Ship observer, Ship contact) => OnContactGained?.Invoke(observer, contact);
         public static void RaiseTorpedoWarning(Vector2 pos, Team team) => OnTorpedoWarning?.Invoke(pos, team);
+        public static void RaiseShipCollision(Ship s, Ship other) => OnShipCollision?.Invoke(s, other);
 
         public static void ClearAll()
         {
@@ -31,6 +33,7 @@ namespace Naval
             OnSelectionChanged = null;
             OnContactGained = null;
             OnTorpedoWarning = null;
+            OnShipCollision = null;
         }
     }
 }

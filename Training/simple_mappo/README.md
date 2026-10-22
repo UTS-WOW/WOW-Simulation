@@ -199,6 +199,8 @@ fleet is paid for.
 | `enemy_sunk` / `ship_lost` | +1 / −1 | the fleet | combat | per ship |
 | `damage_dealt` / `damage_taken` | +0.5 / −0.25 | the ship | combat | per whole hull of damage |
 | `friendly_fire` | −1 | the ship | combat | per whole hull done to our own side |
+| `aground` | −0.05 | the ship | combat | per second against land — aground, or stopped at the bank (the game's terrain bleeds speed before most ships run hard aground) |
+| `collision` | −0.25 | the ship | combat | per collision with another ship, ours or theirs (ramming damage still counts as damage too) |
 | `zero_sum` | 1 | the fleet | combat | minus the enemy ships' average damage terms |
 | `win` / `loss` | +5 / −5 | the fleet | outcome | the result, on the last step |
 
@@ -461,7 +463,7 @@ off (`train_simple.py --ippo --no-commander --no-memory --attn-layers 0 --dual-c
 ## 7. Double DQN — how it learns
 
 `ddqn.py`, class `FleetDDQN`. It is the DQN of Week 9 — a Q-network, a frozen target network, a
-replay buffer, ε-greedy exploration — for a fleet with six action heads and a commander.
+replay buffer, Boltzmann or ε-greedy exploration — for a fleet with six action heads and a commander.
 
 ### 7.1 The idea
 
@@ -536,9 +538,20 @@ through the GRU from that memory, exactly as MAPPO does with its rollout.
 - The buffer is **not saved** with the model (it would be gigabytes, and SB3 does not save it
   either); a continued session first refills it for `learning_starts` decisions.
 
-### 7.6 Exploration: ε-greedy
+### 7.6 Exploration: Boltzmann (softmax) or ε-greedy
 
-While training, each ship takes its best action — or, with probability ε, a uniformly random *legal*
+`exploration="softmax"` (the stage notebooks' setting, run `fleet_ddqn_softmax`): each ship chooses
+every head's option with probability ∝ exp(Q / τ), τ = 0.1 — **Boltzmann exploration**. Started from
+the clone, whose scores × 0.1 are the first advantages, that is exactly the clone's own choice,
+sampled as MAPPO samples it; as Q-values grow apart the choice becomes greedier. Evaluations, replays
+and its frozen copies play the same way; `deterministic=True` and the game take the best option. The
+commander keeps ε-greedy. Why: a cloned policy played greedily keeps only its single likeliest option
+on every head (always "hold fire" when the clone is 55/45) — measured, the greedy clone passed 38 %
+of Gunnery, 31 % of Defend and 6 % of the Duel, against 53 / 62 / 31 % sampled, and over 200,000
+timesteps on Gunnery ε-greedy Double DQN passed 28–49 % of every 100 battles, softmax 50–71 %. The
+first run (`fleet_ddqn`, ε-greedy) never passed a stage but Capture in 3.1 M timesteps.
+
+`exploration="epsilon"` (the class default — plain Week 9 DQN): while training, each ship takes its best action — or, with probability ε, a uniformly random *legal*
 option on every head. ε falls linearly from 1.0 to 0.05 over 300,000 timesteps (Week 9's
 `exploration_fraction`); starting from the imitation clone it starts at 0.3 instead, since random
 play would only throw the clone's skill away. The commander explores with ε / 2. Evaluations,
@@ -624,7 +637,7 @@ earned the fleet's reward. It pays off only when the reward is truly shared; wit
 | | MAPPO | Double DQN |
 |---|---|---|
 | Family | policy gradient — PPO (Week 10) | value-based — DQN (Week 9) |
-| The captain's head outputs | logits: **sample** an option | advantages of a dueling Q: **take the best**, ε-greedy while training |
+| The captain's head outputs | logits: **sample** an option | advantages of a dueling Q: **sample** by softmax(Q / 0.1) (Boltzmann), or **take the best**, ε-greedy |
 | Data | the battles just played (on-policy), used for 5 epochs | a replay buffer of 32-decision chunks (off-policy), each reused many times |
 | Learning signal | GAE advantages from a centralised critic | Double Q targets with 5-step returns from a target network |
 | Six heads | one probability per head, product for the ratio | one Q per head, every head trained to one shared target |
@@ -668,6 +681,21 @@ submarine (dives, torpedoes, very hard to spot). Every notebook lists its stage'
   tiebreak hands the win to anyone — random play "won" 100 % of them. Measured (32 battles each):
   gunnery, sunk within 150 s — random 52 %, "close in, fire, torpedoes" 76 %; capture — random 0 %,
   "sail to circle A" 100 %; defend — random 12 %, "sail to the circle" 0 %.
+- **On those stages the result's reward follows the goal** (`env.py`): the win (+5) is paid only for
+  sinking the target within 150 s / for a capture, and a missed goal pays the loss (−5) — otherwise a
+  slow kill earns exactly what a quick one does, and Double DQN drifted to 260-second kills (33 %
+  passed). Gunnery's battle ends at its 150 s deadline once missed, so it does not run on into
+  overtime: ~50 % more battles per timestep.
+- **A cap on every stage** (`max_timesteps`: 400,000 / 500,000 / 600,000 / 800,000 timesteps on the
+  cheap stages 0–3, twice a session's budget; 500,000 / 750,000 / 1,000,000 / 2,000,000 on stages 4–7
+  and 5,000,000 on stage 8, one session's): a run that has not passed by then moves on anyway, recorded
+  as **not passed** (`logs/curriculum.csv`; `compare_stages` shows "no - moved on"), and on stage 8
+  training ends - so no run can loop on a stage for ever. `FORCE_STAGE = True` trains a stage again
+  with a fresh window and cap. Measured with 4 battles at once, a session takes MAPPO ~1 h on stage 4
+  and ~25 h on stage 8, Double DQN ~1.7 h and ~45 h (its updates grow with the number of ships). Measured from the
+  Elite clone, Double DQN — which plays the clone greedily — starts at 38 % on Gunnery, 31 % on Defend
+  and 6 % on the Duel, against MAPPO's 53 / 62 / 31 %, and over 300,000 timesteps on Gunnery its share
+  of kills within 150 s stayed at 35–45 %: without the cap it could stay on a single-ship stage for days.
 - **Qualifying battles** count for promotion: battles that started on the current stage against the
   stage's own opponent (the rule AI or the passive target). Self-play and rehearsal battles never
   count, and the window starts empty on every new stage. The window is rebuilt from
@@ -750,7 +778,12 @@ plots, evaluation, replays):
 5. compares them: pass rate and reward against the timesteps each spent **on this stage**
    (`plot_comparison`), an evaluation table (random, script, MAPPO latest / best, Double DQN latest /
    best), and every stage so far (`compare_stages`: timesteps until passed, final pass rate, passed);
-6. exports both fleets to the game, and shows the replays recorded while training.
+6. exports both fleets to the game, and shows **every** replay recorded on the stage, both methods'
+   (`show_videos`; `ALL_STAGES = True` for every stage) - also those a teammate or a training job
+   recorded, downloaded from the team folder first (`TeamStorage.pull_videos`). A replay is saved as an
+   MP4 (to keep) and a compact GIF; the notebook embeds the GIF, because an image plays in every
+   notebook app - VS Code and Cursor block embedded videos, and JupyterLab strips a `<source>` tag's
+   data once a notebook is reopened - and it stays in the notebook when reopened or downloaded.
 
 **Training is continuous**: every session continues each run's `models/model_latest.pt` (refreshed
 every `save_interval`), with its optimiser state, league, counters and stage, and its battle log.

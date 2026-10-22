@@ -35,11 +35,14 @@ namespace Naval.RL
             "spotting_damage",       // damage team mates dealt to targets this ship was spotting
             "friendly_fire_dealt",   // damage this ship's ordnance did to its own side
             "damage_taken",          // fraction of this ship's own hull lost
-            "sunk"                   // 1 on the step this ship went down
+            "sunk",                  // 1 on the step this ship went down
+            // new components go at the end: the trainer reads them by name, so older trainers just ignore them
+            "aground",               // 1 on every decision step this ship is against land: aground, or stopped at the bank
+            "collisions"             // collisions with another ship (ours or theirs) this step
         };
 
         const int TScore = 0, TDealt = 1, TTaken = 2, TCap = 3, TLost = 4, TKills = 5, TLosses = 6, TFF = 7, TWin = 8, TLoss = 9;
-        const int ADealt = 0, ASpot = 1, AFF = 2, ATaken = 3, ASunk = 4;
+        const int ADealt = 0, ASpot = 1, AFF = 2, ATaken = 3, ASunk = 4, AAground = 5, ACollision = 6;
 
         readonly float[][] _team = { new float[TeamComponents.Length], new float[TeamComponents.Length] };
         readonly float[][] _agent = new float[2][];
@@ -62,6 +65,7 @@ namespace Naval.RL
             {
                 GameEvents.OnShipDamaged += OnDamaged;
                 GameEvents.OnShipDestroyed += OnDestroyed;
+                GameEvents.OnShipCollision += OnCollision;
                 _subscribed = true;
             }
             _maxTeam = maxTeam;
@@ -154,6 +158,12 @@ namespace Naval.RL
             }
         }
 
+        void OnCollision(Ship ship, Ship other)
+        {
+            if (ship == null || ship.team == Team.Neutral || ship.IsDead) return;
+            AddAgent(ship, ACollision, 1f);
+        }
+
         void OnDestroyed(Ship victim, Ship killer)
         {
             if (victim == null || victim.team == Team.Neutral) return;
@@ -166,6 +176,14 @@ namespace Naval.RL
         /// <summary>Closes a decision step: score margin, zone flips and (if it ended) the result.</summary>
         public void EndStep(bool terminal, Team winner)
         {
+            // against land: sampled once per decision (both flags hold for a while after the last contact)
+            foreach (var kv in _slot)
+            {
+                var s = kv.Key;
+                if (s != null && !s.IsDead && s.Movement != null && (s.Movement.Aground || s.Movement.AgainstLand))
+                    AddAgent(s, AAground, 1f);
+            }
+
             for (int t = 0; t < 2; t++)
             {
                 float m = Margin((Team)t);
@@ -218,6 +236,7 @@ namespace Naval.RL
             if (!_subscribed) return;
             GameEvents.OnShipDamaged -= OnDamaged;
             GameEvents.OnShipDestroyed -= OnDestroyed;
+            GameEvents.OnShipCollision -= OnCollision;
             _subscribed = false;
         }
     }

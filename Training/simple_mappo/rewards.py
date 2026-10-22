@@ -55,6 +55,9 @@ REWARD_WEIGHTS = OrderedDict([
     ("damage_dealt", 0.5),        # ship: per whole enemy hull of damage this ship's weapons did
     ("damage_taken", -0.25),      # ship: per whole hull of damage this ship took
     ("friendly_fire", -1.0),      # ship: per whole hull of damage done to our own side
+    ("aground", -0.05),           # ship: per second against land - aground, or stopped at the bank
+    ("collision", -0.25),         # ship: per collision with another ship, ours or theirs (ramming damage
+                                  #   still counts as damage too)
     ("zero_sum", 1.0),            # team: minus the enemy ships' average damage terms (0 switches it off)
     # ---- outcome: the result of the battle (last step only; there are no draws)
     ("win", 5.0),                 # team
@@ -64,8 +67,10 @@ REWARD_WEIGHTS = OrderedDict([
 REWARD_GROUPS = ["objective", "combat", "outcome"]
 TERM_GROUP = {"in_circle": 0, "approach_circle": 0, "zone_captured": 0, "zone_lost": 0, "survive": 0, "circles_held": 0,
               "enemy_sunk": 1, "ship_lost": 1, "damage_dealt": 1, "damage_taken": 1, "friendly_fire": 1,
+              "aground": 1, "collision": 1,
               "zero_sum": 1, "win": 2, "loss": 2}
-SHIP_TERMS = ("in_circle", "approach_circle", "survive", "damage_dealt", "damage_taken", "friendly_fire")
+SHIP_TERMS = ("in_circle", "approach_circle", "survive", "damage_dealt", "damage_taken", "friendly_fire", "aground",
+              "collision")
 
 # Distances in the zone tokens are divided by 2800 game units, and one game unit is 10 m.
 ZONE_DIST_TO_KM = 2800 * 10 / 1000
@@ -188,6 +193,9 @@ def compute_rewards(before: dict, after: dict, team: dict, ship: dict, enemy_shi
         "damage_dealt": ship["damage_dealt"],
         "damage_taken": ship["damage_taken"],
         "friendly_fire": ship["friendly_fire_dealt"],
+        # reported by players built after these terms were added; an older player has neither
+        "aground": ship.get("aground", np.zeros(N, np.float32)) * seconds,
+        "collision": ship.get("collisions", np.zeros(N, np.float32)),
     }
 
     terms = {}

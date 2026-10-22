@@ -427,7 +427,7 @@ class FleetPolicy(nn.Module):
 
     @torch.no_grad()
     def act(self, obs: dict, memory: Memory, deterministic: bool = False, epsilon: float | None = None,
-            commander_epsilon: float | None = None) -> dict:
+            commander_epsilon: float | None = None, temperature: float | None = None) -> dict:
         """One decision for every ship of every battle. obs: tensors [E, N, ...] / [E, ...].
 
         Returns actions [E, N, heads] and what training needs to remember (log-probabilities, the
@@ -435,7 +435,8 @@ class FleetPolicy(nn.Module):
 
         epsilon (Double DQN, ddqn.py): the scores are Q-values - take the best option, or with
         probability epsilon a random one (commander_epsilon for the commander's orders) - instead of
-        sampling the policy's probabilities (MAPPO)."""
+        sampling the policy's probabilities (MAPPO). temperature (Double DQN's Boltzmann exploration):
+        the captains sample softmax(scores / temperature) instead - the commander stays epsilon-greedy."""
         q_mode = epsilon is not None
         E, N = obs["alive"].shape
         memory.reset(obs["starts"])
@@ -474,7 +475,10 @@ class FleetPolicy(nn.Module):
         h_all[real] = h
         memory.h = h_all.view(E, N, -1)
         legal = obs["action_mask"].reshape(E * N, -1)[real]
-        if q_mode:
+        if q_mode and temperature and not deterministic:
+            acts, _ = sample(logits / temperature, legal, H)     # Boltzmann: softmax over the advantages = over Q
+            logp = torch.zeros(acts.shape[0], device=acts.device)
+        elif q_mode:
             acts = epsilon_greedy(logits, legal, H, 0.0 if deterministic else epsilon)
             logp = torch.zeros(acts.shape[0], device=acts.device)
         else:

@@ -1,5 +1,5 @@
 """Writes the stage notebooks - StageP (imitation) and one per curriculum stage. Every stage notebook trains
-the run's MAPPO model AND its Double DQN model on that stage, and compares the two.
+the run's MAPPO model AND its PQN model on that stage, and compares the two.
 
     python make_stage_notebooks.py
 
@@ -24,26 +24,28 @@ MAPPO_SETTINGS = """mappo_settings = dict(learning_rate=3e-4, critic_learning_ra
                       commander=True, commander_period=10,                             # the fleet commander
                       kl_bc_coef=0.1, opponent_refresh=10)                             # imitation anchor, league"""
 
-DDQN_SETTINGS = """ddqn_settings = dict(learning_rate=2.5e-4, buffer_size=40_000, learning_starts=4_000, batch_size=32,
-                     chunk_len=32, gradient_steps=4, gamma=0.99, n_step=5, target_update_interval=250,
-                     exploration_initial_eps=1.0, exploration_final_eps=0.05, exploration_timesteps=300_000,
-                     kl_bc_coef=0.5,                  # kickstarting: the pull towards the imitation clone, fading
-                     mixer="none",                    # "qmix": one fleet value, mixed by hypernetworks (SMAC)
-                     d_model=64, attn_layers=2, hidden_size=128, recurrent=True,       # the same networks as MAPPO
-                     commander=True, commander_period=10)                             # the same commander"""
+PQN_SETTINGS = """pqn_settings = dict(learning_rate=2.5e-4, num_steps=128, epochs=4, minibatches=4, lam=0.85,
+                    gamma=0.99, max_grad_norm=1.0,   # PQN's SMAX setting (Gallici et al. 2025): Q(lambda) on rollouts
+                    mixer="vdn",                     # PQN-VDN: the fleet's Q is the sum of its ships' Q-values
+                    exploration="softmax", temperature=0.1,   # Boltzmann: options by softmax(Q / 0.1);
+                                                     #   "epsilon": epsilon-greedy (the paper's) - best option or random
+                    exploration_initial_eps=1.0, exploration_final_eps=0.01, exploration_timesteps=300_000,
+                    kl_bc_coef=0.5,                  # kickstarting: the pull towards the imitation clone, fading
+                    d_model=64, attn_layers=2, hidden_size=128, recurrent=True,       # the same networks as MAPPO
+                    commander=True, commander_period=10)                             # the same commander"""
 
 STAGES = [
     dict(file="Stage0-Gunnery.ipynb", name="Gunnery", scenario="gunnery", fleet="1 battleship vs 1 cruiser",
          opponent="Passive target (stop, hold fire)", rule="target sunk within 150 s in ≥70% of the last 50 battles",
          session=200_000, script="close",
-         learns="""The first lesson is the most basic one: **destroy a ship**. Our battleship starts 7 km from an enemy cruiser that neither moves nor shoots - Python flies it with "stop, hold fire". The circle reward is off; damage, the kill and the win pay.
+         learns="""The first lesson is the most basic one: **destroy a ship**. Our battleship starts 7 km from an enemy cruiser that neither moves nor shoots - Python flies it with "stop, hold fire". The circle reward is off; damage and the kill pay, and the **win pays only for a kill within 150 s** - at 150 s without one the battle ends as a loss (against a target that never scores, the game itself would call every battle won, however slow).
 
 A battle is *passed* when the target is sunk within 150 seconds - just sinking it eventually is too easy (random play does it), so the stage asks for doing it quickly: picking the target, keeping the guns firing, closing in and using torpedoes.""",
          measured="Measured (32 battles each): random play sinks the target within 150 s in 52% of battles, the script \"close in, fire at will, torpedoes\" 76%."),
     dict(file="Stage1-Capture.ipynb", name="Capture", scenario="capture", fleet="1 cruiser",
          opponent="Passive destroyer, far away", rule="circle captured in ≥70% of the last 50 battles",
-         session=200_000, script="circle",
-         learns="""**Capture the circle.** One cruiser, one neutral capture circle 4.5 km ahead; the only enemy is a passive destroyer 16 km beyond it, out of sight. Points come only from holding the circle, so the cruiser has to sail into it and stay inside until it is captured.""",
+         session=250_000, script="circle",
+         learns="""**Capture the circle.** One cruiser, one neutral capture circle 4.5 km ahead; the only enemy is a passive destroyer 16 km beyond it, out of sight. Points come only from holding the circle, so the cruiser has to sail into it and stay inside until it is captured. The win reward is paid only for a capture (the passive enemy never scores, so the game would call every battle won).""",
          measured="Measured: random play captures the circle in 0% of battles, the script \"sail to circle A\" in 100%."),
     dict(file="Stage2-Defend.ipynb", name="Defend", scenario="defend", fleet="1 cruiser vs 1 cruiser",
          opponent="Recruit rule-based AI", rule="won in ≥70% of the last 100 battles",
@@ -52,7 +54,7 @@ A battle is *passed* when the target is sunk within 150 seconds - just sinking i
          measured="Measured: random play wins 12% of battles, sailing straight to the circle 0% - the cruiser has to fight smart."),
     dict(file="Stage3-Duel.ipynb", name="Duel", scenario="bb_duel", fleet="1v1 battleships",
          opponent="Recruit rule AI 60% · self-play 40%: itself 15%, its champion 10%, past selves 5%, the other method 10%", rule="won in ≥70% of the last 100 battles against the rule AI",
-         session=300_000, script="broadside",
+         session=400_000, script="broadside",
          learns="""**1v1.** Two battleships 13 km apart on open sea, both spotted and inside gun range from the first second. The duel is about **choosing and timing fire, angling the hull, and not throwing the ship away**. The circle reward is off here: the circle lies between the two battleships, so racing to it means sailing bow-on into the enemy's guns.
 
 **Self-play starts here** (`league.py`) - 40% of battles are against the fleet itself, in four ways:
@@ -60,7 +62,7 @@ A battle is *passed* when the target is sunk within 150 seconds - just sinking i
 * **mirror** (15%): the fleet flies **both** battleships and **both sides learn** (OpenAI Five's self-play) - twice the training data, and an opponent exactly as good as the fleet;
 * **its champion** (10%): the strongest version so far. It is replaced only when the fleet beats it in 55% of 40 battles (AlphaGo Zero's gating) - then the fleet becomes the new champion. So it always has its best self to beat;
 * **past selves** (5%): older copies, the ones it loses to most often first (AlphaStar's PFSP);
-* **the other method** (10%): MAPPO's fleet for the Double DQN run and the other way round - a differently trained opponent with different habits (cross-play, like AlphaStar's league of different agents).
+* **the other method** (10%): MAPPO's fleet for the PQN run and the other way round - a differently trained opponent with different habits (cross-play, like AlphaStar's league of different agents).
 
 Only the battles against the rule AI count for promotion.""",
          measured="Measured earlier with this battle: random play wins 16-28%, the broadside script 70%, flat MAPPO from scratch 59% after 300,000 timesteps."),
@@ -69,23 +71,23 @@ Only the battles against the rule AI count for promotion.""",
          learns="""**The first fleet battle - and the commander joins in.** A battleship, a cruiser and a destroyer a side, one capture circle in the middle of the open sea, 6 minutes. Every 10 seconds the **fleet commander** gives each ship an order - *free*, *engage* or *hold the circle* - and the captains carry it out (the circle reward follows the order). Team spirit 0.3: each ship's own reward is now partly shared with the fleet. 15% of battles replay earlier stages so the single-ship skills stay.""",
          measured="Measured earlier with this battle: random play wins about 18% against Veteran, flat MAPPO from scratch 25-33%, the circle script 67-88% (against Recruit), imitation alone (naval_rl) 58%."),
     dict(file="Stage5-Archipelago.ipynb", name="Archipelago", scenario="archipelago_3v3", fleet="3v3 mixed fleet",
-         opponent="Veteran rule AI 60% · self-play 40% (itself, champion, past selves, the other method)", rule="won in ≥70% of the last 150 battles against the rule AI", session=500_000, script="circle",
+         opponent="Veteran rule AI 60% · self-play 40% (itself, champion, past selves, the other method)", rule="won in ≥70% of the last 150 battles against the rule AI", session=750_000, script="circle",
          learns="""The same three ships a side, now among islands with **three capture circles** (A, B, C) and 8 minutes. This is where the commander earns its place: **which ship holds which circle, and who hunts**. Islands break line of sight, so spotting, smoke, radar and cover matter. Team spirit 0.5.""",
          measured="Measured earlier: imitation alone (naval_rl) won 45%, flat MAPPO 27%."),
     dict(file="Stage6-Domination.ipynb", name="Domination", scenario="domination_6v6", fleet="6v6 fleet",
          opponent="League: Elite rule AI 40% · itself 25% · its champion 10% · past selves 15% · the other method 10%",
-         rule="won in ≥70% of the last 200 battles against the Elite AI", session=500_000, script="circle",
+         rule="won in ≥70% of the last 200 battles against the Elite AI", session=1_000_000, script="circle",
          learns="""The full Domination game at 6v6, 15 minutes, on a **newly generated battlefield** every 8 battles (random preset, island density and weather). The enemy is drawn from a **league** (OpenAI Five / AlphaGo Zero / AlphaStar): the Elite rule AI 40%, the fleet **itself** 25% (a mirror battle - both sides learn), **its champion** 10% (the strongest version so far, replaced only when beaten in 55% of 40 battles), **past selves** 15% (the ones we lose to come up most) and **the other method's fleet** 10% (cross-play). Everyone gets an **Elo rating**. Only battles against the Elite AI count for promotion. Team spirit 0.8.""",
          measured=""),
     dict(file="Stage7-Open.ipynb", name="Open", scenario="open", fleet="Random 4–8 ships per side",
          opponent="League: Elite rule AI 40% · itself 25% · its champion 10% · past selves 15% · the other method 10%",
-         rule="won in ≥70% of the last 200 battles against the Elite AI", session=500_000,
+         rule="won in ≥70% of the last 200 battles against the Elite AI", session=2_000_000,
          script="circle",
          learns="""Anything the game can produce: 4 to 8 ships a side, a random game mode (Domination, Skirmish, Fleet Battle, Capture and Control), map preset, density, weather and circle size, 20 minutes - against the league. Team spirit 1.0: every ship cares about the fleet as much as about itself. Passing it moves the fleet on to the biggest battle, stage 8.""",
          measured="Measured: the SageMaker MAPPO run (2.2 M timesteps) won 83% of 24 held-out battles against the Elite AI here."),
     dict(file="Stage8-Archipelago-9v9.ipynb", name="Archipelago 9v9", scenario="archipelago_9v9",
          fleet="9v9, every class", opponent="League: Elite rule AI 40% · itself 25% · its champion 10% · past selves 15% · the other method 10%",
-         rule="Final stage: won in ≥70% of the last 200 evaluation battles against the Elite AI", session=500_000,
+         rule="Final stage: won in ≥70% of the last 200 evaluation battles against the Elite AI", session=5_000_000,
          script="circle",
          learns="""**The biggest battle: nine ships a side, every class that fights, five capture circles.** Three circles lie across the middle (A, B, C), D up-left near the enemy, E down-right near us - the layout of the game's own *Capture and Control* mode - among hand-placed islands that are the same for both sides (turned 180°). 12 minutes; the fleet that holds more circles scores faster.
 
@@ -156,9 +158,11 @@ SCRIPT_NAME = "scripted: go to the circle, fire at will"''',
 
 INSTALL = r"""
 # install only what is missing (PyTorch as the CPU build)
-import importlib.util
+import importlib.util, shutil
 missing = [pkg for mod, pkg in (("numpy", "numpy"), ("pandas", "pandas"), ("matplotlib", "matplotlib"), ("PIL", "pillow"))
            if importlib.util.find_spec(mod) is None]
+if shutil.which("ffmpeg") is None and importlib.util.find_spec("imageio_ffmpeg") is None:
+    missing.append("imageio-ffmpeg")      # an ffmpeg: MP4 replays to keep, and GIFs of a teammate's MP4s
 if missing:
     !pip install -q {" ".join(missing)}
 if importlib.util.find_spec("torch") is None:
@@ -182,14 +186,14 @@ if storage:
     storage.show_status()
 """
 
-TEAM_DDQN = r"""
-DDQN_RUN_NAME = RUN_NAME + "_ddqn"   # the Double DQN run: its own checkpoints, logs and curriculum stage
-dqn_storage = TeamStorage(TEAM_STORAGE, DDQN_RUN_NAME, user=YOUR_NAME) if TEAM_STORAGE else None
-dqn_run_dir = f"runs_simple/{DDQN_RUN_NAME}"
-dqn_log_dir, dqn_models_dir, dqn_video_dir = (os.path.join(dqn_run_dir, d) for d in ("logs", "models", "videos"))
-os.makedirs(dqn_models_dir, exist_ok=True)
-if dqn_storage:
-    dqn_storage.show_status()
+TEAM_PQN = r"""
+PQN_RUN_NAME = RUN_NAME + "_pqn"     # the PQN run: its own checkpoints, logs and curriculum stage
+pqn_storage = TeamStorage(TEAM_STORAGE, PQN_RUN_NAME, user=YOUR_NAME) if TEAM_STORAGE else None
+pqn_run_dir = f"runs_simple/{PQN_RUN_NAME}"
+pqn_log_dir, pqn_models_dir, pqn_video_dir = (os.path.join(pqn_run_dir, d) for d in ("logs", "models", "videos"))
+os.makedirs(pqn_models_dir, exist_ok=True)
+if pqn_storage:
+    pqn_storage.show_status()
 """
 
 METHOD_MD = """
@@ -197,18 +201,18 @@ METHOD_MD = """
 
 Every stage notebook trains **two** runs on the same battles - one per method - and compares them:
 
-| | **MAPPO** (`simple_mappo/mappo.py`) | **Double DQN** (`simple_mappo/ddqn.py`) |
+| | **MAPPO** (`simple_mappo/mappo.py`) | **PQN** (`simple_mappo/pqn.py`) |
 |---|---|---|
-| Family | policy gradient (PPO, Week 10) | value-based Q-learning (DQN, Week 9) |
-| What the captain's head scores are | logits: sample an option | Q-values (dueling: V + A): take the best option, epsilon-greedy while training |
-| Learns from | the battles it just played (on-policy) | a replay buffer of chunks of past battles (off-policy, R2D2's sequence replay) |
-| Target | GAE advantages from a centralised critic | Double Q-learning: the online network picks the next action, the target network scores it; n-step returns |
+| Family | policy gradient (PPO, Week 10) | value-based Q-learning - the 2025 successor of DQN (Week 9): **PQN**, the Parallelised Q-Network (Gallici et al., ICLR 2025), which beat QMIX and MAPPO on SMAX (StarCraft multi-agent) |
+| What the captain's head scores are | logits: sample an option | Q-values (dueling: V + A): sample an option by softmax(Q / 0.1) - Boltzmann exploration (`exploration="epsilon"`: the best option, epsilon-greedy) |
+| Learns from | the battles it just played (on-policy) | **also the battles it just played**: a rollout of 128 decisions from every battle, 4 epochs of minibatches, then thrown away - no replay buffer, so self-play opponents never go stale |
+| Target | GAE advantages from a centralised critic | **Q(λ) returns**, λ = 0.85: R_t = r_t + γ[λR_t+1 + (1−λ) max Q(s_t+1)], from the network as it was at the rollout; no separate target network - LayerNorm in the Q-network keeps it stable |
 | Six action heads | one probability per head | one Q per head, every head trained to the same target (branching DQN, BDQ) |
 | Fleet commander | PPO at a 10 s clock | Q-learning on (ship, order) at a 10 s clock (h-DQN, intra-option) |
-| Many ships | shared weights, centralised critic | shared weights, each ship on its own reward (`mixer="qmix"` for QMIX, the StarCraft method) |
+| Many ships | shared weights, centralised critic | shared weights; **PQN-VDN**: the fleet's Q is the sum of its ships' Q-values, trained on the fleet's reward |
 | Shared | the captain network (transformer + GRU + pointer heads), the commander, the rewards, the curriculum, self-play, the imitation start | ← same |
 
-Each run climbs the curriculum on its own (`runs_simple/fleet` and `runs_simple/fleet_ddqn`), so a stage notebook only trains a run that is on its stage; the other one is still evaluated here, for the comparison.
+Each run climbs the curriculum on its own (`runs_simple/fleet` and `runs_simple/fleet_pqn`), so a stage notebook only trains a run that is on its stage; the other one is still evaluated here, for the comparison. (An earlier Double DQN run, `fleet_ddqn`, is kept for the record: `simple_mappo/ddqn.py`.)
 
 ### MAPPO in one picture
 
@@ -227,8 +231,19 @@ Each run climbs the curriculum on its own (`runs_simple/fleet` and `runs_simple/
 def nav(current: str) -> str:
     items = [f"**Imitation**" if current == "P" else f"[Imitation]({IMITATION_FILE})"]
     items += [f"**Stage {i}**" if str(i) == current else f"[Stage {i}]({s['file']})" for i, s in enumerate(STAGES)]
-    items.append("**MAPPO vs Double DQN**" if current == "V" else "[MAPPO vs Double DQN](Versus-MAPPO-vs-DDQN.ipynb)")
+    items.append("**MAPPO vs PQN**" if current == "V" else "[MAPPO vs PQN](Versus-MAPPO-vs-PQN.ipynb)")
     return " · ".join(items) + " · [the full walkthrough](WOW-MAPPO-Simple.ipynb)"
+
+
+def cap_md(k: int) -> str:
+    """The stage's max_timesteps (curriculum.py), for the table at the top of its notebook."""
+    from simple_mappo.curriculum import DEFAULT_CURRICULUM
+    cap = DEFAULT_CURRICULUM[k].get("max_timesteps")
+    if not cap:
+        return ""
+    if k == len(DEFAULT_CURRICULUM) - 1:
+        return f" - or, not met, training ends after {cap:,} timesteps on it (its cap)"
+    return f" - or, NOT passed, after {cap:,} timesteps on it (its cap), it moves on anyway"
 
 
 def ships_md(k: int) -> str:
@@ -258,7 +273,7 @@ def notebook(k: int) -> nbf.NotebookNode:
     league = k >= 3                  # self-play from stage 3: mirror, champion, past selves, the other method
 
     md(f"""
-# 43008: Reinforcement Learning - WOW Naval Fleet: MAPPO vs Double DQN
+# 43008: Reinforcement Learning - WOW Naval Fleet: MAPPO vs PQN
 
 ## Stage {k}: {st['name']}
 
@@ -266,7 +281,7 @@ def notebook(k: int) -> nbf.NotebookNode:
 
 | Stage | Battle | Fleet | Opponent | {'Stopping' if last else 'Promotion'} requirement |
 |---|---|---|---|---|
-| {k} - {st['name']} | `{st['scenario']}` | {st['fleet']} | {st['opponent']} | {st['rule']} |
+| {k} - {st['name']} | `{st['scenario']}` | {st['fleet']} | {st['opponent']} | {st['rule']}{cap_md(k)} |
 
 ### What the fleet learns here
 
@@ -282,10 +297,11 @@ def notebook(k: int) -> nbf.NotebookNode:
 
 ### One model per method, through every stage
 
-The stage notebooks train **two runs** - the MAPPO fleet (`RUN_NAME`) and the Double DQN fleet (`RUN_NAME + "_ddqn"`) - each through every stage. A session continues each run's latest checkpoint, which carries everything learned so far (networks, optimisers, the league, the timestep count, the stage) and its battle log, from which the promotion window continues where the last session stopped.
+The stage notebooks train **two runs** - the MAPPO fleet (`RUN_NAME`) and the PQN fleet (`PQN_RUN_NAME`, `RUN_NAME + "_pqn"`) - each through every stage. A session continues each run's latest checkpoint, which carries everything learned so far (networks, optimisers, the league, the timestep count, the stage) and its battle log, from which the promotion window continues where the last session stopped.
 
 * **Training is continuous.** Not passed yet? **Run this notebook again** - each session continues the last one (yours or a teammate's), from `models/model_latest.pt`, refreshed every `save_interval`. `KEEP_GOING = True` carries on into the next stages in the same session instead of stopping at the promotion.
-* `TRAIN_MAPPO` / `TRAIN_DDQN` (configuration cell) switch either method's training on or off for this session. A run that is on another stage is not trained here, only evaluated for the comparison.
+* `TRAIN_MAPPO` / `TRAIN_PQN` (configuration cell) switch either method's training on or off for this session. A run that is on another stage is not trained here, only evaluated for the comparison.
+* **Train this stage again** - after a run passed it, reached its cap, or is on another stage: set `FORCE_STAGE = True` (and `TRAIN_MAPPO` / `TRAIN_PQN` to choose the method) and run the notebook. The run comes back to this stage and trains it with a fresh promotion window and cap, until it passes again, reaches the cap, or `n_timesteps` is done; then it is on this stage - or the next one, if it passed - and the notebooks carry on from there.
 * {'This is the final stage: training ends when the stopping rule is met.' if last else f"Passed? That run stops and saves, and moves to stage {k + 1}: open [Stage {k + 1}]({STAGES[k + 1]['file']})."}
 {'* No model yet? Both start from the imitation checkpoint of the [Imitation notebook](' + IMITATION_FILE + ') - run that one first.' if k == 0 else ''}
 """ + METHOD_MD)
@@ -300,15 +316,16 @@ from collections import OrderedDict
 import numpy as np
 import pandas as pd
 
-from simple_mappo import (NavalEnv, MAPPO, FleetDDQN, Monitor, CurriculumCallback, SaveOnIntervalCallback,
+from simple_mappo import (NavalEnv, MAPPO, FleetPQN, Monitor, CurriculumCallback, SaveOnIntervalCallback,
                           BestModelCallback, VideoCallback, TeamStorage, TeamSyncCallback, DEFAULT_CURRICULUM,
                           open_run, training_status, evaluate, plot_results, plot_curriculum, plot_reward_terms,
-                          plot_progress, plot_comparison, compare_stages, show_videos)
+                          plot_progress, plot_comparison, compare_stages, show_videos, find_videos, record_battle)
+from simple_mappo.utils import video_ext
 """)
 
     md("## Team checkpoints\n\nUse the **same `RUN_NAME` in every notebook** (and as your teammates): that is the one line of training the stages hand over along - one per method. Only one person can train a run at a time.")
     code(TEAM)
-    code(TEAM_DDQN)
+    code(TEAM_PQN)
 
     md("""
 ## Configuration
@@ -317,21 +334,22 @@ Each method's settings are **identical in every notebook**. They only shape a br
 """)
     code(f"""
 STAGE = {k}
-FORCE_STAGE = False                  # True: train this stage even if a run is on another one
+FORCE_STAGE = False                  # True: train this stage (again) even if a run passed it, reached its cap
+                                     # or is on another stage - with a fresh promotion window and cap
 KEEP_GOING = False                   # True: when this stage is passed, carry on into the next stages
                                      # in this same session instead of stopping (continuous training)
 TRAIN_MAPPO = True                   # train the MAPPO run in this session
-TRAIN_DDQN = True                    # train the Double DQN run in this session
+TRAIN_PQN = True                    # train the PQN run in this session
 
 config = OrderedDict([
     ('n_envs', max(1, min(16, os.cpu_count() // 2))),     # battles in parallel, one Unity process each
     ('decision_period', 1.0),          # game seconds between decisions
     ('sim_dt', 0.08),                  # game seconds per simulated frame (fastest stable)
-    ('n_timesteps', {st['session']:_}),          # this session's training, per method
+    ('n_timesteps', {st['session']:_}),          # this session's training, per method (rises stage by stage)
 ])
 {MAPPO_SETTINGS}
-{DDQN_SETTINGS}
-save_interval = config['n_timesteps'] // 3
+{PQN_SETTINGS}
+save_interval = min(config['n_timesteps'] // 3, 250_000)   # a checkpoint (and team push) at least every 250,000
 
 pd.Series(DEFAULT_CURRICULUM[STAGE], name=f"stage {{STAGE}}").to_frame()
 """)
@@ -342,26 +360,33 @@ battles = NavalEnv(stages="default", start_stage=STAGE, n_envs=config['n_envs'],
                    decision_period=config['decision_period'], sim_dt=config['sim_dt'],
                    unity_log_dir=os.path.join(run_dir, "unity_logs"))
 env = Monitor(battles, log_dir)              # the MAPPO run's battles
-env_dqn = Monitor(battles, dqn_log_dir)      # the Double DQN run's battles
+env_pqn = Monitor(battles, pqn_log_dir)      # the PQN run's battles
 print("battles in parallel:", battles.n_envs, "| token sizes", battles.dims)
 """)
 
     md(f"""
 ## The two models
 
-`open_run` loads each run's latest checkpoint with all its training memory{' - or, with no checkpoint yet, starts a new model from the imitation checkpoint (`models/imitation.pt`; the Double DQN one takes it as its Q-network, so its greedy play starts as the Elite AI)' if k == 0 else ''}. It says when a run is on another stage: that run is then only evaluated here.
+`open_run` loads each run's latest checkpoint with all its training memory{' - or, with no checkpoint yet, starts a new model from the imitation checkpoint (`models/imitation.pt`; the PQN one takes it as its Q-network, so its greedy play starts as the Elite AI)' if k == 0 else ''}. It says when a run is on another stage: that run is then only evaluated here.
 """)
     code(r"""
 imitation = os.path.join(models_dir, "imitation.pt")
 model, mappo_here = open_run(env, STAGE, run_dir, log_dir, "mappo", storage=storage, force=FORCE_STAGE, **mappo_settings)
-dqn, dqn_here = open_run(env_dqn, STAGE, dqn_run_dir, dqn_log_dir, "ddqn", storage=dqn_storage, force=FORCE_STAGE,
-                         imitation_path=imitation, **ddqn_settings)
-TRAIN_MAPPO, TRAIN_DDQN = TRAIN_MAPPO and mappo_here, TRAIN_DDQN and dqn_here
+pqn, pqn_here = open_run(env_pqn, STAGE, pqn_run_dir, pqn_log_dir, "pqn", storage=pqn_storage, force=FORCE_STAGE,
+                         imitation_path=imitation, **pqn_settings)
+TRAIN_MAPPO, TRAIN_PQN = TRAIN_MAPPO and mappo_here, TRAIN_PQN and pqn_here
 if storage and TRAIN_MAPPO:
     storage.lock()                   # stops here if a teammate is training this run right now
-if dqn_storage and TRAIN_DDQN:
-    dqn_storage.lock()
-print(f"MAPPO: {'trains here' if TRAIN_MAPPO else 'evaluated only'} | Double DQN: {'trains here' if TRAIN_DDQN else 'evaluated only'}")
+if pqn_storage and TRAIN_PQN:
+    pqn_storage.lock()
+for name, m, m_env, trained in (("MAPPO", model, env, TRAIN_MAPPO), ("PQN", pqn, env_pqn, TRAIN_PQN)):
+    if trained:
+        print(f"{name}: trains here, on stage {STAGE}")
+    elif m is None:
+        print(f"{name}: no model yet - start it in the Stage0 notebook")
+    else:                            # each method climbs the curriculum on its own
+        print(f"{name}: on stage {m_env.stage} - only evaluated here. To train it, open the Stage{m_env.stage} notebook "
+              f"(or set FORCE_STAGE = True to train it on stage {STAGE}{' again' if m_env.stage > STAGE else ''})")
 model.actor if model else None       # the captain (and the commander), as in the Week 10 notebooks
 """)
 
@@ -383,15 +408,15 @@ if RUN_BASELINES:
     md(f"""
 ## Train MAPPO
 
-{'Training stops by itself when the stopping rule is met' if last else 'Training stops by itself as soon as the promotion requirement is met (unless `KEEP_GOING`)'}, or after `n_timesteps`. `models/model_best.pt` always holds the checkpoint with the best rolling pass rate. The team folder gets a status update every 10,000 timesteps and a checkpoint every `save_interval`.
+{'Training stops by itself when the stopping rule is met' if last else 'Training stops by itself as soon as the promotion requirement is met (unless `KEEP_GOING`)'}{(', or when the stage cap in the table at the top is reached (training then ends)' if last else ', or when the stage cap in the table at the top is reached (the run then moves on, recorded as not passed)') if cap_md(k) else ''}, or after `n_timesteps`. `models/model_best.pt` always holds the checkpoint with the best rolling pass rate. The team folder gets a status update every 10,000 timesteps and a checkpoint every `save_interval`.
 
-**Replays**: five times a session a battle is recorded and **shown right here, under the training table**, while training goes on (`runs_simple/<RUN_NAME>/videos/`, `.gif` on SageMaker - double-click one in the file browser).
+**Replays**: five times a session a battle is recorded and **shown right here, under the training table**, while training goes on (`runs_simple/<RUN_NAME>/videos/`: an MP4 to keep, and the GIF the notebook shows - an image plays in every notebook app, VS Code included; double-click it in the file browser). A replay shown while the cell runs is lost if the page is closed or reloaded meanwhile - **Replays from this stage** at the end shows every one again, from the files.
 
 In the table: `win_rate` / `pass_rate` against the stage's own opponent{', `win_rate_self_play` in battles against itself (about 0.5 in mirror battles - both sides are the fleet), `elo` the fleet''s rating' if k >= 3 else ''}{', `orders_free` the share of the commander''s orders that leave the ship free' if k >= 4 else ''}.
 """)
     code(r"""
 def callbacks_for(run_model, run_dir, models_dir, video_dir, run_storage):
-    curriculum = CurriculumCallback(stop_on_promotion=not KEEP_GOING)
+    curriculum = CurriculumCallback(stop_on_promotion=not KEEP_GOING, fresh=FORCE_STAGE)
     callbacks = [SaveOnIntervalCallback(save_interval, models_dir),     # also refreshes model_latest.pt
                  curriculum,
                  BestModelCallback(models_dir),
@@ -401,7 +426,7 @@ def callbacks_for(run_model, run_dir, models_dir, video_dir, run_storage):
     return callbacks, curriculum
 
 if TRAIN_MAPPO:
-    model.set_rival(dqn)             # cross-play: the Double DQN fleet joins MAPPO's league as "rival"
+    model.set_rival(pqn)             # cross-play: the PQN fleet joins MAPPO's league as "rival"
     callbacks, curriculum = callbacks_for(model, run_dir, models_dir, video_dir, storage)
     model.learn(total_timesteps=model.num_timesteps + config['n_timesteps'], callback=callbacks, log_interval=5)
     model.save(os.path.join(models_dir, "model_final"))
@@ -409,39 +434,45 @@ if TRAIN_MAPPO:
 """)
 
     md(f"""
-## Train Double DQN
+## Train PQN
 
-The same battles, the same rewards, the same stopping rule - learned with Double DQN. The first `learning_starts` decisions only fill the replay buffer (it is not saved with the model, so every session refills it first); then every 32 decisions per battle bring `gradient_steps` updates on chunks sampled from it.
+The same battles, the same rewards, the same stopping rule - learned with PQN: every battle plays `num_steps` (128) decisions, then the Q-network learns from that rollout - Q(λ) targets, `epochs` (4) passes in `minibatches` (4) minibatches - and the rollout is thrown away. No replay buffer to fill and no target network to copy: it trains from the first rollout, and needs about a fifth of the Double DQN's network work per timestep.
 
 Cross-play: before each method trains, the other one's fleet - its champion, if it has one - joins its league as the **rival** (`set_rival`), so each learns to beat a differently trained fleet too. A *new champion* message means the fleet just beat its best self.
 
-In the table: `q_loss` the TD error, `q_value` / `target_value` the Q-values and their targets (both should rise as the fleet starts winning), `epsilon` the exploration rate, `replay_decisions` how full the buffer is.
+In the table: `q_loss` the squared TD error against the Q(λ) targets, `q_value` / `target_value` the Q-values and their targets (both should rise as the fleet starts winning), `epsilon` the commander's exploration rate, `replay_decisions` the size of the last rollout.
 """)
     code(r"""
-if TRAIN_DDQN:
-    dqn.set_rival(model)             # ... and the MAPPO fleet (just trained) joins Double DQN's
-    callbacks, dqn_curriculum = callbacks_for(dqn, dqn_run_dir, dqn_models_dir, dqn_video_dir, dqn_storage)
-    dqn.learn(total_timesteps=dqn.num_timesteps + config['n_timesteps'], callback=callbacks, log_interval=8)
-    dqn.save(os.path.join(dqn_models_dir, "model_final"))
-    dqn.save(os.path.join(dqn_models_dir, "model_latest"))
+if TRAIN_PQN:
+    pqn.set_rival(model)             # ... and the MAPPO fleet (just trained) joins PQN's
+    callbacks, pqn_curriculum = callbacks_for(pqn, pqn_run_dir, pqn_models_dir, pqn_video_dir, pqn_storage)
+    pqn.learn(total_timesteps=pqn.num_timesteps + config['n_timesteps'], callback=callbacks, log_interval=8)
+    pqn.save(os.path.join(pqn_models_dir, "model_final"))
+    pqn.save(os.path.join(pqn_models_dir, "model_latest"))
 """)
 
     md("""
 ## Save and hand over
 
-Pushes both runs to the team. **If you stop training early (Kernel > Interrupt), run this cell too** (and `model.save(...)` / `dqn.save(...)` from the cells above), so your progress is kept and the runs are free for the next person.
+Saves both runs (`models/model_latest.pt`, where the next session continues) and pushes them to the team. **If you stop training early (Kernel > Interrupt), run this cell** - it saves what the interrupted session learned, so nothing is lost, and frees the runs for the next person.
 """)
     code(f"""
 for name, m, m_env, m_storage, m_run_dir, trained in (("MAPPO", model, env, storage, run_dir, TRAIN_MAPPO),
-                                                      ("Double DQN", dqn, env_dqn, dqn_storage, dqn_run_dir, TRAIN_DDQN)):
+                                                      ("PQN", pqn, env_pqn, pqn_storage, pqn_run_dir, TRAIN_PQN)):
     if m is None or not trained:
         continue
+    m.save(os.path.join(m_run_dir, "models", "model_latest"))     # also after Kernel > Interrupt
     if m_storage:
         m_storage.push(m_run_dir, m, status=training_status(m, m_run_dir))
         m_storage.release()
     if m_env.stage > STAGE:
-        print(f"{{name}}: stage {{STAGE}} passed at {{m.num_timesteps:,}} timesteps - now on '{{m_env.stages[m_env.stage]['name']}}': "
-              f"open the Stage{{m_env.stage}} notebook.")
+        unpassed = (curriculum if name == "MAPPO" else pqn_curriculum).moved_on_unpassed
+        print(f"{{name}}: stage {{STAGE}} {{'NOT passed - its timestep cap was reached' if unpassed else 'passed'}} at "
+              f"{{m.num_timesteps:,}} timesteps - now on '{{m_env.stages[m_env.stage]['name']}}': open the Stage{{m_env.stage}} notebook.")
+    elif STAGE == len(m_env.stages) - 1 and (curriculum if name == "MAPPO" else pqn_curriculum).finished:
+        capped = (curriculum if name == "MAPPO" else pqn_curriculum).capped_out
+        print(f"{{name}}: training is complete ({{m.num_timesteps:,}} timesteps) - "
+              f"{{'its timestep cap was reached before the stopping rule was met' if capped else 'the stopping rule was met'}}.")
     else:
         print(f"{{name}}: stage {{STAGE}} {{'- the stopping rule decides when it is done' if STAGE == len(m_env.stages) - 1 else 'not passed yet'}} "
               f"({{m.num_timesteps:,}} timesteps) - run this notebook again to continue.")
@@ -451,25 +482,30 @@ for name, m, m_env, m_storage, m_run_dir, trained in (("MAPPO", model, env, stor
     code(r"""
 if storage:
     storage.show_status()
-plot_comparison({"MAPPO": log_dir, "Double DQN": dqn_log_dir}, stage=STAGE)
+plot_comparison({"MAPPO": log_dir, "PQN": pqn_log_dir}, stage=STAGE)
+""")
+    md("""
+**Reading the curriculum plots** (one per method): each colour is a stage, the y-axis its pass rate over the last 50 battles, and the dashed line the 70 % bar. A new colour starting means the run moved on - by passing, or at a stage's cap. A colour drawn **dotted** after that is not training on that stage: from stage 3 on, 10-15 % of the battles replay earlier stages (rehearsal) so their skills are not forgotten. The title says the furthest stage the run has reached - **that** stage's notebook is the one that trains it.
 """)
     code(r"""
-plot_curriculum(log_dir)                     # MAPPO: pass rate per stage, one colour each
-plot_curriculum(dqn_log_dir)                 # Double DQN
-plot_reward_terms(log_dir, stage=STAGE)      # what the MAPPO fleet is being paid for on this stage
-plot_reward_terms(dqn_log_dir, stage=STAGE)  # ... and the Double DQN fleet
+plot_curriculum(log_dir, name="MAPPO")                          # pass rate per stage, one colour each
+plot_curriculum(pqn_log_dir, name="PQN")
+plot_reward_terms(log_dir, stage=STAGE, name="MAPPO")           # what the fleet is paid for on this stage
+plot_reward_terms(pqn_log_dir, stage=STAGE, name="PQN")
 """)
     code(r"""
 plot_progress(log_dir)                       # PPO's diagnostics
-plot_progress(dqn_log_dir)                   # Double DQN's diagnostics
+plot_progress(pqn_log_dir)                   # PQN's diagnostics
 """)
     if k >= 4:
         code(r"""
 # the commanders: how often each leaves a ship free (1.0 = never gives orders)
-for name, d in (("MAPPO", log_dir), ("Double DQN", dqn_log_dir)):
+for name, d in (("MAPPO", log_dir), ("PQN", pqn_log_dir)):
     path = os.path.join(d, "progress.csv")
-    if os.path.exists(path):
-        p = pd.read_csv(path)
+    p = pd.read_csv(path) if os.path.exists(path) else None
+    if p is None or not (p.stage == STAGE).any():
+        print(f"{name}: no training updates on stage {STAGE} - it has not trained here (see 'The two models')")
+    else:
         print(name)
         display(p[p.stage == STAGE][["total_timesteps", "orders_free", "win_rate", "pass_rate"]].tail(5))
 """)
@@ -477,24 +513,24 @@ for name, d in (("MAPPO", log_dir), ("Double DQN", dqn_log_dir)):
         code(r"""
 # the leagues: Elo ratings of each fleet, its champion, past copies, the rival (the other method) and the
 # rule AI (chess-style; 400 points = 10:1 odds)
-for name, m in (("MAPPO", model), ("Double DQN", dqn)):
+for name, m in (("MAPPO", model), ("PQN", pqn)):
     if m is not None:
         print(name)
         display(pd.DataFrame(m.league.table(), columns=["player", "elo", "our record against it"]).head(8))
 """)
 
     md(f"""
-## Evaluation: MAPPO vs Double DQN
+## Evaluation: MAPPO vs PQN
 
-Fresh battles on this stage against its own opponent, for every model{', and on held-out maps' if st['scenario'] == 'open' else ''}: MAPPO samples its actions (its natural policy); Double DQN takes its best action (2% random). The best checkpoints are evaluated too.
+Fresh battles on this stage against its own opponent, for every model{', and on held-out maps' if st['scenario'] == 'open' else ''}: each plays the way it trains - MAPPO samples its policy, PQN samples softmax(Q / 0.1) (with `exploration="epsilon"`: its best action, 2% random). The best checkpoints are evaluated too.
 """)
     code(r"""
 results = dict(baselines)
-for name, cls, m, mdir in (("MAPPO", MAPPO, model, models_dir), ("Double DQN", FleetDDQN, dqn, dqn_models_dir)):
+for name, cls, m, mdir in (("MAPPO", MAPPO, model, models_dir), ("PQN", FleetPQN, pqn, pqn_models_dir)):
     if m is None:
         print(f"{name}: no model yet - train it from Stage 0")
         continue
-    m_env = env if cls is MAPPO else env_dqn
+    m_env = env if cls is MAPPO else env_pqn
     results[f"{name} (latest)"] = evaluate(m, m_env, n_battles=40, stage=STAGE)
     best_path = os.path.join(mdir, "model_best.pt")
     if os.path.exists(best_path):
@@ -515,22 +551,22 @@ table[[c for c in columns if c in table]]
 How each method did on every stage of the curriculum, from its battle log: the timesteps it spent there until it passed, its pass rate over its last 50 qualifying battles there, and whether it passed.
 """)
     code(r"""
-compare_stages({"MAPPO": log_dir, "Double DQN": dqn_log_dir}, env.stages)
+compare_stages({"MAPPO": log_dir, "PQN": pqn_log_dir}, env.stages)
 """)
 
     md("""
 ## Put the fleets into your Unity game
 
-Exports each run's best checkpoint (or its latest, if that has reached a later stage) as a policy file the game runs in plain C# (`Assets/Scripts/RL/RLPolicy.cs`): MAPPO's as `naval_policy.bin`, Double DQN's as `naval_policy_ddqn.bin`. From the repository they go straight into `Assets/StreamingAssets/RL/`; elsewhere (SageMaker) into the run folders - download them (right-click > Download) and copy them there.
+Exports each run's best checkpoint (or its latest, if that has reached a later stage) as a policy file the game runs in plain C# (`Assets/Scripts/RL/RLPolicy.cs`): MAPPO's as `naval_policy.bin`, PQN's as `naval_policy_ddqn.bin`. From the repository they go straight into `Assets/StreamingAssets/RL/`; elsewhere (SageMaker) into the run folders - download them (right-click > Download) and copy them there.
 
-Then in Unity: **Play** > **TRAINING STAGES**; at the bottom pick **TRAINED FLEET: MAPPO** or **DOUBLE DQN**, and **WATCH AI** on any stage (or on the setup screen: **YOUR FLEET: LEARNED** / **ENEMY AI: LEARNED**). From a computer later: `python export_simple.py` and `python export_simple.py --run-name fleet_ddqn`.
+Then in Unity: **Play** > **TRAINING STAGES**; at the bottom pick **TRAINED FLEET: MAPPO** or **PQN**, and **WATCH AI** on any stage (or on the setup screen: **YOUR FLEET: LEARNED** / **ENEMY AI: LEARNED**). From a computer later: `python export_simple.py` and `python export_simple.py --run-name fleet_ddqn`.
 """)
     code(r"""
-from simple_mappo.export import GAME_POLICY, GAME_POLICY_DDQN, export_policy, pick_checkpoint
+from simple_mappo.export import GAME_POLICY, GAME_POLICY_PQN, export_policy, pick_checkpoint
 in_repo = os.path.isdir(os.path.join("..", "Assets", "StreamingAssets"))
-for mdir, rdir, game_file in ((models_dir, run_dir, GAME_POLICY), (dqn_models_dir, dqn_run_dir, GAME_POLICY_DDQN)):
+for mdir, rdir, game_file in ((models_dir, run_dir, GAME_POLICY), (pqn_models_dir, pqn_run_dir, GAME_POLICY_PQN)):
     checkpoint = pick_checkpoint(mdir)        # model_best.pt, or model_latest.pt if it reached a later stage
-    if checkpoint is None or checkpoint.endswith("imitation.pt") and mdir == dqn_models_dir:
+    if checkpoint is None or checkpoint.endswith("imitation.pt") and mdir == pqn_models_dir:
         continue
     target = game_file if in_repo else os.path.join(rdir, os.path.basename(game_file))
     print("exported", checkpoint, "->", os.path.abspath(export_policy(checkpoint, target)))
@@ -539,11 +575,26 @@ for mdir, rdir, game_file in ((models_dir, run_dir, GAME_POLICY), (dqn_models_di
     md("""
 ## Replays from this stage
 
-The newest replays recorded while training on this stage, MAPPO's then Double DQN's. They are a 2D map drawn from the game's data (the training player has no graphics); to see a fleet in the real game's graphics, export it (above) and use **WATCH AI** in Unity.
+**Every** replay recorded on this stage, MAPPO's then PQN's, oldest first: the ones from this session (also those whose live display above was lost when the page was closed), from earlier sessions, and - with team checkpoints - the ones a teammate or a training job recorded, downloaded from the team folder first.
+
+A run records replays only on the stage it **trains** on. A run that is on another stage (each method climbs the curriculum at its own pace) is only evaluated here - so for it, one battle on this stage is recorded now (`..._evaluated`, once per checkpoint), and both methods always have a replay of this stage to compare. Each is embedded in the notebook as an animated GIF - an image plays in every notebook app (JupyterLab, SageMaker Studio, VS Code, Cursor; VS Code blocks embedded videos) and stays in the notebook when it is reopened or downloaded. An older replay with only an MP4 gets its GIF made here. `ALL_STAGES = True` shows every replay of both runs, from every stage.
+
+They are a 2D map drawn from the game's data (the training player has no graphics); to see a fleet in the real game's graphics, export it (above) and use **WATCH AI** in Unity.
 """)
     code(r"""
-show_videos(video_dir, contains=f"_stage{STAGE}", newest=2)
-show_videos(dqn_video_dir, contains=f"_stage{STAGE}", newest=2)
+ALL_STAGES = False                   # True: every replay of both runs, from every stage
+for replay_storage, replay_run_dir in ((storage, run_dir), (pqn_storage, pqn_run_dir)):
+    if replay_storage:
+        print(f"{replay_storage.pull_videos(replay_run_dir)} new replay(s) from {replay_storage.location}")
+# a run that is on another stage did not train here, so it recorded nothing on this stage: record one battle
+for name, m, m_env, m_video_dir, trained in (("MAPPO", model, env, video_dir, TRAIN_MAPPO),
+                                             ("PQN", pqn, env_pqn, pqn_video_dir, TRAIN_PQN)):
+    stem = f"battle_{m.num_timesteps:09d}_stage{STAGE}" if m is not None else ""
+    if m is not None and not trained and not find_videos(m_video_dir, prefix=stem):
+        print(f"{name} is on stage {m_env.stage} ('{m_env.stages[m_env.stage]['name']}'), so it did not train here - "
+              f"recording one battle of it on stage {STAGE}:")
+        record_battle(m, m_env, os.path.join(m_video_dir, f"{stem}_evaluated{video_ext()}"), stage=STAGE)
+show_videos({"MAPPO": video_dir, "PQN": pqn_video_dir}, stage=None if ALL_STAGES else STAGE)
 """)
     code(r"""
 battles.close()
@@ -566,7 +617,7 @@ A random policy almost never wins a naval battle, so reinforcement learning from
 
 1. **Record** - the Elite AI flies both fleets; for every decision of every one of our ships the game reports the option it chose on each of the six action heads. That is a labelled dataset: *observation → action*.
 2. **Clone** - train the captain network to predict those labels. It is **Week 9 Part A** again: a classifier, a `DataLoader`, `CrossEntropyLoss` (one per action head), `Adam`, a loss curve and an accuracy curve.
-3. **Hand over** - the cloned captain is saved as `models/imitation.pt`. The Stage 0 notebook starts **both** RL models from it: MAPPO's captain (a KL penalty that fades out keeps it close to the clone at first - AlphaStar's KL to the supervised policy) and Double DQN's Q-network (the clone's head scores become its advantages, so its greedy play starts as the Elite AI's).
+3. **Hand over** - the cloned captain is saved as `models/imitation.pt`. The Stage 0 notebook starts **both** RL models from it: MAPPO's captain (a KL penalty that fades out keeps it close to the clone at first - AlphaStar's KL to the supervised policy) and PQN's Q-network (the clone's head scores become its advantages, so its greedy play starts as the Elite AI's).
 
 In this project's first pipeline, cloning alone won **58%** of King of the Hill battles where RL from scratch won 20%.
 
@@ -648,6 +699,7 @@ path = save_imitation(os.path.join(models_dir, "imitation.pt"), captain, dims, h
 print("saved", path)
 if storage:
     storage.push(run_dir, None, status={"imitation_accuracy": dict(zip(names, history["test_accuracy"][-1]))})
+    storage.release()                # a push holds the run: free it for the Stage 0 notebook
 """)
     md("""
 ## How good is the clone?
@@ -670,7 +722,7 @@ pd.DataFrame(rows).T
     return _finish(cells)
 
 
-VERSUS_FILE = "Versus-MAPPO-vs-DDQN.ipynb"
+VERSUS_FILE = "Versus-MAPPO-vs-PQN.ipynb"
 
 VERSUS_METHODS_MD = r"""
 ## 1. The two methods, in detail
@@ -696,9 +748,9 @@ What differs is **what the captain's head outputs mean** and **how they are trai
                          the captain's 6 heads output scores for every option
                                           │
               ┌───────────────────────────┴───────────────────────────┐
-         MAPPO: logits                                         Double DQN: advantages A_d
+         MAPPO: logits                                         PQN: advantages A_d
    probabilities = softmax(logits)                   Q_d = V + A_d − mean(A_d)  (dueling)
-   act: SAMPLE an option                             act: take the BEST option (ε-greedy in training)
+   act: SAMPLE an option                             act: SAMPLE by softmax(Q / τ) (Boltzmann; or ε-greedy)
    learn: make good options likelier                 learn: make Q match the reward that followed
 ```
 
@@ -726,7 +778,7 @@ What differs is **what the captain's head outputs mean** and **how they are trai
    - **commander** — the same PPO on its orders (one joint decision for the fleet).
 4. Throw the data away and collect again (**on-policy**: every decision is used for one update only).
 
-### 1.3 Double DQN — value-based (Week 9's DQN, for a team)
+### 1.3 PQN — value-based (Week 9's DQN, for a team)
 
 **Idea.** Learn **Q(s, a)** — the return to expect after choosing a in state s — and always take the option with the highest Q. Learning makes Q match what actually followed: the rewards plus the value of where the ship ended up.
 
@@ -738,29 +790,29 @@ The advantages A_d are the captain's head outputs; V is one extra layer. So **th
 
 **One round** (`ddqn.py`):
 
-1. **Play** 32 decisions in every battle, ε-greedy: the best option, or with probability ε a random legal one (ε 0.3 → 0.05 when starting from the clone).
+1. **Play** 32 decisions in every battle. With `exploration="softmax"` (the default in these notebooks) each option is chosen with probability ∝ exp(Q / 0.1) - **Boltzmann exploration**: from the clone, whose scores × 0.1 are the first advantages, that is exactly the clone's own choice, sampled; as the Q-values grow apart it becomes greedier. With `exploration="epsilon"`: the best option, or with probability ε a random legal one (ε 0.3 → 0.05 from the clone). Measured on Gunnery over 200,000 timesteps from the clone: ε-greedy passed 28-49 % of every 100 battles, softmax 50-71 % - greedy play of a cloned policy takes only its single likeliest option on every head (e.g. always "hold fire" when the clone is 55/45), and loses most of what the clone knew.
 2. **Store** one **chunk** per fleet in the **replay buffer**: 33 observations, the actions, orders, rewards, battle ends — and the GRU memory at the chunk's start, so training can replay the chunk through the memory (**R2D2**). The buffer holds 40,000 decisions; old ones drop out.
 3. Once the buffer holds 4,000 decisions: **4 gradient steps**, each on 32 chunks sampled from it (**off-policy**: a decision is reused many times). For every decision:
    ```
    a*_d = argmax Q_online,d(s_t+5, ·)                       the ONLINE network picks the next option (per head)…
-   next = mean over heads of Q_target,d(s_t+5, a*_d)        …the TARGET network scores it  (Double DQN)
+   next = mean over heads of Q_target,d(s_t+5, a*_d)        …the TARGET network scores it  (PQN)
    y    = r_t + γ r_t+1 + … + γ⁴ r_t+4 + γ⁵ · next          5-step return, γ = 0.99 (stops at the battle's end)
    loss = mean over heads of Huber(Q_online,d(s_t, a_t,d) − y)   every head trained to the same y (BDQ)
    ```
-   Plain DQN uses the target network for both picking and scoring and **over-estimates** (it takes the max of noisy numbers); Double DQN splits the two jobs.
+   Plain DQN uses the target network for both picking and scoring and **over-estimates** (it takes the max of noisy numbers); PQN splits the two jobs.
 4. Every 250 gradient steps, copy the online network into the **target network** (Week 9 C/D).
 5. **Commander**: its scores for (ship, order) are Q-values too; a set of orders is worth the sum. Between its decisions an order stays in force, so it learns at every step: the next value is Q(next state, *the same* orders), or the best orders at its next decision (h-DQN, intra-option Q-learning).
 6. **Starting from the clone** ("kickstarting"): the clone's scores × 0.1 become the first advantages (the same best options, at the size of Q-values), and a fading penalty KL(clone ‖ softmax(A / 0.1)) keeps it close while the Q-values are still meaningless — without it the first updates erased the clone.
 
 ### 1.4 Side by side
 
-| | MAPPO | Double DQN |
+| | MAPPO | PQN |
 |---|---|---|
 | Family | policy gradient | value-based |
-| Acts by | **sampling** its probabilities | taking the **best** Q (ε-greedy while training) |
+| Acts by | **sampling** its probabilities | **sampling** softmax(Q / 0.1) - Boltzmann (or the **best** Q, ε-greedy) |
 | Learns from | the battles it just played (on-policy) | a replay buffer of past chunks (off-policy) |
 | Learning signal | advantage from a centralised critic (GAE) | Double-Q target with 5-step returns |
-| Exploration | entropy bonus | ε-greedy |
+| Exploration | entropy bonus | Boltzmann (softmax over Q), or ε-greedy |
 | Stability tricks | clip, dual clip, value normalisation | target network, Huber loss, n-step returns |
 | Commander | PPO at a 10 s clock | Q-learning on (ship, order) |
 | Strength (in theory) | copes well with an opponent that keeps changing; what OpenAI Five and Honor of Kings used | reuses its data many times; the StarCraft micro-management classic (QMIX) |
@@ -769,17 +821,17 @@ The advantages A_d are the captain's head outputs; V is one extra layer. So **th
 VERSUS_TEST_MD = r"""
 ## 2. What this notebook tests
 
-The stage notebooks compare the methods **side by side** — each against the rule AI. Here they meet **head to head**: MAPPO's fleet on one side of the battle, Double DQN's on the other.
+The stage notebooks compare the methods **side by side** — each against the rule AI. Here they meet **head to head**: MAPPO's fleet on one side of the battle, PQN's on the other.
 
-**Head to head, from both sides.** A battle is played with MAPPO's fleet as *blue* (our side) and Double DQN's as *red* (the enemy), and again the other way round — the maps are symmetric, but spawning first or second, north or south, could still favour one side, so both seats are played and added up. Each fleet plays the way it plays in the game: MAPPO samples, Double DQN takes its best option (2 % random). Technically the enemy is the **rival** of `league.py`: `blue.set_rival(red)` puts red's network in blue's league, and the head-to-head stage sends every battle's enemy to it.
+**Head to head, from both sides.** A battle is played with MAPPO's fleet as *blue* (our side) and PQN's as *red* (the enemy), and again the other way round — the maps are symmetric, but spawning first or second, north or south, could still favour one side, so both seats are played and added up. Each fleet plays the way it trains: MAPPO samples its policy, PQN samples softmax(Q / 0.1) (or its best option, 2 % random, if it was trained ε-greedy). Technically the enemy is the **rival** of `league.py`: `blue.set_rival(red)` puts red's network in blue's league, and the head-to-head stage sends every battle's enemy to it.
 
-**Training each other** (`TRAIN_EACH_OTHER = True`). Rounds of *iterated best response*: MAPPO trains against Double DQN's current fleet, then Double DQN trains against MAPPO's improved one, and so on — after every round both are measured again: head to head, and each against the rule AI. Things to watch for:
+**Training each other** (`TRAIN_EACH_OTHER = True`). Rounds of *iterated best response*: MAPPO trains against PQN's current fleet, then PQN trains against MAPPO's improved one, and so on — after every round both are measured again: head to head, and each against the rule AI. Things to watch for:
 
-* **Who adapts faster.** Off-policy Double DQN reuses every battle many times; on-policy MAPPO needs fresh battles. The head-to-head win rate over the rounds shows which one learns to counter the other first.
+* **Who adapts faster.** Off-policy PQN reuses every battle many times; on-policy MAPPO needs fresh battles. The head-to-head win rate over the rounds shows which one learns to counter the other first.
 * **Exploitation.** Two fleets that only meet each other can learn tricks that only work on each other. That is why `RIVAL_SHARE` keeps the stage's rule AI in the training mix (30 % by default) — and why the rule-AI win rates are measured every round: if a fleet beats its rival more but the rule AI less, it is exploiting, not improving.
 * **Cycles.** A beats B, B adapts and beats A, A adapts back... — rock-paper-scissors. The league's champion and past copies exist to break such cycles in the main training.
 
-Nothing here touches the main runs: the fleets are loaded from `runs_simple/fleet` and `runs_simple/fleet_ddqn` (or the team folder), and what they learn here is saved under `runs_simple/versus/`.
+Nothing here touches the main runs: the fleets are loaded from `runs_simple/fleet` and `runs_simple/fleet_pqn` (or the team folder), and what they learn here is saved under `runs_simple/versus/`.
 """
 
 
@@ -788,11 +840,11 @@ def versus_notebook() -> nbf.NotebookNode:
     md = lambda s: cells.append(nbf.v4.new_markdown_cell(s.strip("\n")))
     code = lambda s: cells.append(nbf.v4.new_code_cell(s.strip("\n")))
     md(f"""
-# 43008: Reinforcement Learning - WOW Naval Fleet: MAPPO vs Double DQN, fleet against fleet
+# 43008: Reinforcement Learning - WOW Naval Fleet: MAPPO vs PQN, fleet against fleet
 
 {nav("V")}
 
-What happens when the two methods **fight each other**? This notebook loads the team's MAPPO fleet and Double DQN fleet, puts them on opposite sides of the same battle (both ways round), and — if you like — lets them **train against each other** in rounds, measuring after every round who is winning and whether either got better or just learned to exploit the other.
+What happens when the two methods **fight each other**? This notebook loads the team's MAPPO fleet and PQN fleet, puts them on opposite sides of the same battle (both ways round), and — if you like — lets them **train against each other** in rounds, measuring after every round who is winning and whether either got better or just learned to exploit the other.
 
 It starts with a detailed explanation of both methods (section 1) and of the test (section 2).
 """)
@@ -809,7 +861,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-from simple_mappo import (NavalEnv, MAPPO, FleetDDQN, Monitor, TeamStorage, DEFAULT_CURRICULUM, versus_stages,
+from simple_mappo import (NavalEnv, MAPPO, FleetPQN, Monitor, TeamStorage, DEFAULT_CURRICULUM, versus_stages,
                           head_to_head, both_sides, elo_gap, evaluate, record_battle, show_videos, stage_fleets)
 from simple_mappo.env import load_scenario
 from simple_mappo.export import pick_checkpoint
@@ -818,19 +870,20 @@ from simple_mappo.versus import FIGHT, TRAIN
     md("""
 ## 4. Where the fleets come from
 
-The latest MAPPO run (`RUN_NAME`) and Double DQN run (`RUN_NAME + "_ddqn"`) — pulled from the team folder if there is one (read only: nothing is pushed or locked), otherwise from this machine. A run with no checkpoint yet starts from the imitation clone (the Elite AI's copy), so the notebook always runs.
+The latest MAPPO run (`RUN_NAME`) and PQN run (`PQN_RUN_NAME`) — pulled from the team folder if there is one (read only: nothing is pushed or locked), otherwise from this machine. A run with no checkpoint yet starts from the imitation clone (the Elite AI's copy), so the notebook always runs.
 """)
     code(r"""
-RUN_NAME = "fleet"                   # the stage notebooks' run; the Double DQN run is RUN_NAME + "_ddqn"
+RUN_NAME = "fleet"                   # the stage notebooks' MAPPO run
+PQN_RUN_NAME = RUN_NAME + "_pqn"     # and their PQN run
 if ON_SAGEMAKER:
     from simple_mappo.aws import team_storage_uri
     TEAM_STORAGE = team_storage_uri()
 else:
     TEAM_STORAGE = None              # e.g. "s3://<team-bucket>/wow-mappo"
 
-runs = {"MAPPO": f"runs_simple/{RUN_NAME}", "Double DQN": f"runs_simple/{RUN_NAME}_ddqn"}
+runs = {"MAPPO": f"runs_simple/{RUN_NAME}", "PQN": f"runs_simple/{PQN_RUN_NAME}"}
 if TEAM_STORAGE:
-    for name, run in (("MAPPO", RUN_NAME), ("Double DQN", RUN_NAME + "_ddqn")):
+    for name, run in (("MAPPO", RUN_NAME), ("PQN", PQN_RUN_NAME)):
         TeamStorage(TEAM_STORAGE, run, user="versus-notebook").pull(runs[name])     # read only
 imitation = os.path.join(runs["MAPPO"], "models", "imitation.pt")
 versus_dir = "runs_simple/versus"     # what the fleets learn here goes here, never into the main runs
@@ -863,37 +916,37 @@ battles = NavalEnv(stages=versus_stages(STAGE, RIVAL_SHARE), n_envs=config['n_en
                    decision_period=config['decision_period'], sim_dt=config['sim_dt'],
                    unity_log_dir=os.path.join(versus_dir, "unity_logs"))
 env_mappo = Monitor(battles, os.path.join(versus_dir, "mappo", "logs"))
-env_dqn = Monitor(battles, os.path.join(versus_dir, "ddqn", "logs"))
+env_pqn = Monitor(battles, os.path.join(versus_dir, "pqn", "logs"))
 pd.DataFrame(battles.stages)[["name", "opponents", "commander", "team_spirit"]]
 """)
     md("## 7. Load the two fleets")
     code(r"""
 def load_fleet(cls, run_dir, env, name):
     checkpoint = pick_checkpoint(os.path.join(run_dir, "models"), verbose=False)
-    log_dir = os.path.join(versus_dir, "mappo" if cls is MAPPO else "ddqn", "logs")
+    log_dir = os.path.join(versus_dir, "mappo" if cls is MAPPO else "pqn", "logs")
     if checkpoint and not checkpoint.endswith("imitation.pt"):
         model = cls.load(checkpoint, env=env, log_dir=log_dir, verbose=1)
         print(f"{name}: {checkpoint}, {model.num_timesteps:,} timesteps")
     else:
-        model = cls(env, log_dir=log_dir, verbose=1)
+        model = cls(env, log_dir=log_dir, verbose=1, **({"exploration": "softmax"} if cls is FleetPQN else {}))
         model.init_from_imitation(imitation)
         print(f"{name}: no checkpoint yet - the Elite AI clone, untrained")
     env.set_stage(FIGHT)
     return model
 
 mappo = load_fleet(MAPPO, runs["MAPPO"], env_mappo, "MAPPO")
-dqn = load_fleet(FleetDDQN, runs["Double DQN"], env_dqn, "Double DQN")
+pqn = load_fleet(FleetPQN, runs["PQN"], env_pqn, "PQN")
 """)
     md("""
 ## 8. Head to head
 
-Both seats: MAPPO as blue against Double DQN as red, then the other way round. `win_rate` is **blue's**. The overall MAPPO win rate adds both seats up; the Elo gap is the rating difference that would predict it (+200 ≈ 76 %, +400 ≈ 91 %).
+Both seats: MAPPO as blue against PQN as red, then the other way round. `win_rate` is **blue's**. The overall MAPPO win rate adds both seats up; the Elo gap is the rating difference that would predict it (+200 ≈ 76 %, +400 ≈ 91 %).
 """)
     code(r"""
 def measure(label):
-    r = both_sides(mappo, dqn, env_mappo, env_dqn, n_battles=N_BATTLES)
-    table = pd.DataFrame({k: r[k] for k in ("MAPPO as blue", "Double DQN as blue")}).T
-    print(f"{label}: MAPPO wins {r['mappo_win_rate']:.0%} of {r['battles']} battles against Double DQN "
+    r = both_sides(mappo, pqn, env_mappo, env_pqn, n_battles=N_BATTLES)
+    table = pd.DataFrame({k: r[k] for k in ("MAPPO as blue", "PQN as blue")}).T
+    print(f"{label}: MAPPO wins {r['mappo_win_rate']:.0%} of {r['battles']} battles against PQN "
           f"(Elo gap {elo_gap(r['mappo_win_rate']):+.0f})")
     return r, table
 
@@ -904,58 +957,58 @@ table[["battles", "win_rate", "win_rate_stderr", "enemy_ships_sunk", "own_ships_
     code(r"""
 def vs_rule():
     return {"MAPPO": evaluate(mappo, env_mappo, n_battles=N_BATTLES, stage=TRAIN),
-            "Double DQN": evaluate(dqn, env_dqn, n_battles=N_BATTLES, stage=TRAIN)}
+            "PQN": evaluate(pqn, env_pqn, n_battles=N_BATTLES, stage=TRAIN)}
 
 rule = vs_rule()
 pd.DataFrame(rule).T[["battles", "win_rate", "win_rate_stderr", "enemy_ships_sunk", "own_ships_lost"]]
 """)
-    md("### Watch them fight\n\nOne battle, MAPPO's fleet in blue (cyan trails) against Double DQN's in red - a 2D map drawn from the game's data.")
+    md("### Watch them fight\n\nOne battle, MAPPO's fleet in blue (cyan trails) against PQN's in red - a 2D map drawn from the game's data.")
     code(r"""
 video_dir = os.path.join(versus_dir, "videos")
 os.makedirs(video_dir, exist_ok=True)
-mappo.set_rival(dqn, champion=False)
+mappo.set_rival(pqn, champion=False)
 battles.set_opponent_policy(mappo._opponent_act, mappo.league.sample)
-path = record_battle(mappo, env_mappo, os.path.join(video_dir, "mappo_blue_vs_ddqn_red_round0.mp4"), stage=FIGHT,
+path = record_battle(mappo, env_mappo, os.path.join(video_dir, "mappo_blue_vs_pqn_red_round0.mp4"), stage=FIGHT,
                      evaluation=False)
 show_videos(video_dir, contains="round0", newest=1)
 """)
     md("""
 ## 9. Train each other
 
-Each round: **MAPPO trains** against Double DQN's current fleet (`set_rival`), then **Double DQN trains** against MAPPO's improved fleet; then both are measured head to head and against the rule AI. The progress tables are the usual ones (`win_rate` there is against the rule AI, `win_rate_self_play` against the rival). Every round's fleets are saved to `runs_simple/versus/<method>/models/round_<k>.pt`.
+Each round: **MAPPO trains** against PQN's current fleet (`set_rival`), then **PQN trains** against MAPPO's improved fleet; then both are measured head to head and against the rule AI. The progress tables are the usual ones (`win_rate` there is against the rule AI, `win_rate_self_play` against the rival). Every round's fleets are saved to `runs_simple/versus/<method>/models/round_<k>.pt`.
 """)
     code(r"""
-history = [{"round": 0, "mappo_vs_ddqn": result["mappo_win_rate"],
-            "mappo_vs_rule": rule["MAPPO"]["win_rate"], "ddqn_vs_rule": rule["Double DQN"]["win_rate"]}]
+history = [{"round": 0, "mappo_vs_pqn": result["mappo_win_rate"],
+            "mappo_vs_rule": rule["MAPPO"]["win_rate"], "pqn_vs_rule": rule["PQN"]["win_rate"]}]
 if TRAIN_EACH_OTHER:
     for k in range(1, ROUNDS + 1):
-        print(f"===== round {k}: MAPPO trains against Double DQN =====")
+        print(f"===== round {k}: MAPPO trains against PQN =====")
         env_mappo.set_stage(TRAIN)
-        mappo.set_rival(dqn, champion=False)
+        mappo.set_rival(pqn, champion=False)
         mappo.learn(total_timesteps=mappo.num_timesteps + TIMESTEPS_PER_ROUND, log_interval=5)
-        print(f"===== round {k}: Double DQN trains against MAPPO =====")
-        env_dqn.set_stage(TRAIN)
-        dqn.set_rival(mappo, champion=False)
-        dqn.learn(total_timesteps=dqn.num_timesteps + TIMESTEPS_PER_ROUND, log_interval=8)
+        print(f"===== round {k}: PQN trains against MAPPO =====")
+        env_pqn.set_stage(TRAIN)
+        pqn.set_rival(mappo, champion=False)
+        pqn.learn(total_timesteps=pqn.num_timesteps + TIMESTEPS_PER_ROUND, log_interval=8)
         mappo.save(os.path.join(versus_dir, "mappo", "models", f"round_{k}"))
-        dqn.save(os.path.join(versus_dir, "ddqn", "models", f"round_{k}"))
+        pqn.save(os.path.join(versus_dir, "pqn", "models", f"round_{k}"))
 
         result, table = measure(f"After round {k}")
         rule = vs_rule()
-        history.append({"round": k, "mappo_vs_ddqn": result["mappo_win_rate"],
-                        "mappo_vs_rule": rule["MAPPO"]["win_rate"], "ddqn_vs_rule": rule["Double DQN"]["win_rate"]})
+        history.append({"round": k, "mappo_vs_pqn": result["mappo_win_rate"],
+                        "mappo_vs_rule": rule["MAPPO"]["win_rate"], "pqn_vs_rule": rule["PQN"]["win_rate"]})
         display(pd.DataFrame(history).set_index("round"))
 """)
     md("## 10. What happened")
     code(r"""
 h = pd.DataFrame(history).set_index("round")
 fig, (left, right) = plt.subplots(1, 2, figsize=(14, 4.5))
-left.plot(h.index, h.mappo_vs_ddqn, "o-", label="MAPPO's win rate against Double DQN")
-left.plot(h.index, 1 - h.mappo_vs_ddqn, "o-", label="Double DQN's win rate against MAPPO")
+left.plot(h.index, h.mappo_vs_pqn, "o-", label="MAPPO's win rate against PQN")
+left.plot(h.index, 1 - h.mappo_vs_pqn, "o-", label="PQN's win rate against MAPPO")
 left.axhline(0.5, color="gray", lw=0.8, ls="--")
 left.set_title("Head to head (both seats)")
 right.plot(h.index, h.mappo_vs_rule, "o-", label="MAPPO vs rule AI")
-right.plot(h.index, h.ddqn_vs_rule, "o-", label="Double DQN vs rule AI")
+right.plot(h.index, h.pqn_vs_rule, "o-", label="PQN vs rule AI")
 right.set_title(f"Against the rule AI ({DEFAULT_CURRICULUM[STAGE]['name']})")
 for ax in (left, right):
     ax.set_ylim(0, 1)
@@ -975,12 +1028,16 @@ h
 """)
     md("### The last battle, after training each other")
     code(r"""
-mappo.set_rival(dqn, champion=False)
+mappo.set_rival(pqn, champion=False)
 battles.set_opponent_policy(mappo._opponent_act, mappo.league.sample)
 k = len(history) - 1
-path = record_battle(mappo, env_mappo, os.path.join(video_dir, f"mappo_blue_vs_ddqn_red_round{k}.mp4"), stage=FIGHT,
+path = record_battle(mappo, env_mappo, os.path.join(video_dir, f"mappo_blue_vs_pqn_red_round{k}.mp4"), stage=FIGHT,
                      evaluation=False)
 show_videos(video_dir, contains=f"round{k}", newest=1)
+""")
+    md("### Every replay of this notebook\n\nAll the head-to-head battles recorded here so far (`runs_simple/versus/videos/`), from this session and earlier ones, oldest first - MAPPO's fleet in blue, PQN's in red.")
+    code(r"""
+show_videos(video_dir)
 """)
     code(r"""
 battles.close()

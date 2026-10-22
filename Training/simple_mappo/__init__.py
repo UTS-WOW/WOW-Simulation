@@ -5,8 +5,11 @@
     env.py        NavalEnv: n_envs Unity battles behind a reset() / step() interface
     networks.py   the captain (every ship), the fleet commander and the centralised critic
     mappo.py      MAPPO: the PPO update for captains, commander and critic
+    pqn.py        FleetPQN: PQN, the Parallelised Q-Network (Gallici et al., ICLR 2025) - the
+                  value-based method the notebooks compare MAPPO with: Q(lambda) on rollouts from
+                  parallel battles, no replay buffer, the ships' Q-values summed (VDN)
     ddqn.py       FleetDDQN: Double DQN with the same captain and commander (QMIX mixer, sequence
-                  replay) - the value-based method the notebooks compare MAPPO with
+                  replay) - the earlier value-based method; FleetPQN builds on it
     league.py     past copies of the fleet to practise against (self-play) and Elo ratings
     imitation.py  record the Elite rule AI and clone it - the warm start before RL
     callbacks.py  BaseCallback, SaveOnIntervalCallback, BestModelCallback, as in Stable-Baselines3
@@ -14,7 +17,7 @@
     team.py       TeamStorage: one shared S3 folder per run, so teammates continue each other's training
     stages.py     continue_training / open_run: one model per method, trained stage by stage (the
                   Stage<k> notebooks)
-    versus.py     MAPPO's fleet against Double DQN's: head to head, and training against each other
+    versus.py     MAPPO's fleet against PQN's: head to head, and training against each other
 
 The first research pipeline (naval_rl/) is unchanged; this package only borrows its TCP connection
 to Unity.
@@ -23,6 +26,7 @@ to Unity.
 from .callbacks import BaseCallback, BestModelCallback, CallbackList, SaveOnIntervalCallback
 from .curriculum import DEFAULT_CURRICULUM, CurriculumCallback, balanced_fleet, fleet_text, load_curriculum, stage_fleets
 from .ddqn import FleetDDQN, QMixer, SequenceReplay
+from .pqn import FleetPQN
 from .env import NavalEnv, find_unity_binary
 from .imitation import (behaviour_cloning, collect_expert, load_dataset, merge_datasets, plot_imitation,
                         save_dataset, save_imitation)
@@ -33,9 +37,9 @@ from .rewards import REWARD_GROUPS, REWARD_WEIGHTS, compute_rewards
 from .stages import continue_training, open_run
 from .versus import both_sides, elo_gap, head_to_head, versus_stages
 from .team import TeamStorage, TeamStorageBusy, TeamSyncCallback, training_status
-from .utils import (Monitor, VideoCallback, compare_stages, evaluate, load_results, plot_comparison, plot_curriculum,
-                    plot_progress, plot_results, plot_reward_terms, record_battle, record_unity_video, show_videos,
-                    ts2xy, view)
+from .utils import (Monitor, VideoCallback, compare_stages, evaluate, find_videos, load_results, plot_comparison,
+                    plot_curriculum, plot_progress, plot_results, plot_reward_terms, record_battle, record_unity_video,
+                    show_videos, ts2xy, view)
 
 __all__ = ["BaseCallback", "BestModelCallback", "CallbackList", "SaveOnIntervalCallback", "DEFAULT_CURRICULUM",
            "CurriculumCallback", "load_curriculum", "NavalEnv", "find_unity_binary", "behaviour_cloning",
@@ -43,7 +47,7 @@ __all__ = ["BaseCallback", "BestModelCallback", "CallbackList", "SaveOnIntervalC
            "OpponentPool", "MAPPO", "Captain", "CentralCritic", "Commander", "FleetPolicy", "REWARD_GROUPS",
            "REWARD_WEIGHTS", "compute_rewards", "Monitor", "evaluate", "load_results", "plot_curriculum",
            "plot_progress", "plot_results", "plot_reward_terms", "record_battle", "record_unity_video",
-           "VideoCallback", "show_videos", "ts2xy", "view", "TeamStorage", "TeamStorageBusy", "TeamSyncCallback",
-           "training_status", "continue_training", "open_run", "FleetDDQN", "QMixer", "SequenceReplay",
+           "VideoCallback", "show_videos", "find_videos", "ts2xy", "view", "TeamStorage", "TeamStorageBusy", "TeamSyncCallback",
+           "training_status", "continue_training", "open_run", "FleetPQN", "FleetDDQN", "QMixer", "SequenceReplay",
            "plot_comparison", "compare_stages", "stage_fleets", "fleet_text", "balanced_fleet", "head_to_head",
            "both_sides", "versus_stages", "elo_gap"]

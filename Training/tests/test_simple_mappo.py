@@ -446,3 +446,147 @@ def test_head_to_head_puts_the_other_fleet_in_the_enemy_seat(tmp_path):
         assert mappo.league.greedy(mappo.league.sample("rival"))           # Double DQN plays greedily
     finally:
         battles.close()
+
+
+@pytest.mark.parametrize("met", [True, False])
+def test_a_goal_stage_pays_the_result_for_the_goal(met):
+    # Gunnery and Capture: the passive enemy never scores, so the game's tiebreak would call every
+    # battle won - the win / loss reward must follow the stage's goal instead (env.py)
+    stages = [{"name": "goal", "scenario": "scenarios/stage0_gunnery.json", "opponent": "passive",
+               "pass_if": "sunk", "within": 150}]
+    env = NavalEnv(stages=stages, n_envs=1, mock=True)
+    env._passed = lambda e, o, captures=None: met
+    obs, info = env.reset(), None
+    for _ in range(500):
+        obs, _, dones, infos = env.step(env.sample_random_actions(obs))
+        if dones[0]:
+            info = infos[0]
+            break
+    env.close()
+    terms = info["reward_terms"]
+    assert (terms["win"] > 0 and terms["loss"] == 0) if met else (terms["win"] == 0 and terms["loss"] < 0)
+
+
+def test_a_missed_deadline_ends_the_battle():
+    stages = [{"name": "goal", "scenario": "scenarios/stage0_gunnery.json", "opponent": "passive",
+               "pass_if": "sunk", "within": 20}]
+    env = NavalEnv(stages=stages, n_envs=1, mock=True)            # a mock battle lasts 60 s
+    obs, info = env.reset(), None
+    for _ in range(100):
+        obs, _, dones, infos = env.step(env.sample_random_actions(obs))
+        if dones[0]:
+            info = infos[0]
+            break
+    env.close()
+    assert info["battle_time"] == 20 and not info["passed"] and not info["won"] and "missed" in info["reason"]
+    assert info["reward_terms"]["loss"] < 0
+
+
+def test_ddqn_mirror_battles_train_both_fleets():
+    """Self-play for Double DQN too: in a mirror battle both fleets' chunks go into the replay buffer."""
+    from simple_mappo.ddqn import FleetDDQN
+    stages = [{"name": "mirror", "scenario": "scenarios/stage1_koth_3v3.json", "opponent": "league",
+               "opponents": {"mirror": 1.0}},
+              {"name": "rule", "scenario": "scenarios/stage1_koth_3v3.json", "opponent": "rule"}]
+    env = NavalEnv(stages=stages, n_envs=2, mock=True, seed=4)
+    try:
+        dqn = FleetDDQN(env, chunk_len=8, learning_starts=10_000, d_model=32, attn_layers=1, hidden_size=32,
+                        verbose=0)
+        dqn.learn(total_timesteps=8 * 2)                         # one chunk of 8 decisions per battle
+        assert len(dqn.replay.chunks) == 4                       # 2 battles x both sides
+        env.set_stage(1)                                         # against the rule AI: our side only
+        dqn.learn(total_timesteps=dqn.num_timesteps + 8 * 2)
+        assert len(dqn.replay.chunks) == 6
+    finally:
+        env.close()
+
+
+def test_a_stage_that_is_not_passed_moves_on_after_its_cap(tmp_path):
+    from simple_mappo.curriculum import CurriculumCallback
+    from simple_mappo.utils import Monitor, compare_stages
+    stages = [{"name": "0 hard", "scenario": "scenarios/stage1_koth_3v3.json", "opponent": "rule",
+               "promote_win_rate": 1.1, "window": 1000, "max_timesteps": 200},       # a bar no one can reach
+              {"name": "1 next", "scenario": "scenarios/stage1_koth_3v3.json", "opponent": "rule"}]
+    battles = NavalEnv(stages=stages, n_envs=2, mock=True)
+    env = Monitor(battles, str(tmp_path))
+    try:
+        model = MAPPO(env, n_steps=32, chunk_len=8, n_epochs=1, d_model=32, attn_layers=1, hidden_size=32,
+                      commander=False, verbose=0)
+        first = CurriculumCallback(stop_on_promotion=True, verbose=0)
+        model.learn(total_timesteps=128, callback=[first])                  # one session: not there yet
+        assert env.stage == 0 and not first.moved_on_unpassed
+        second = CurriculumCallback(stop_on_promotion=True, verbose=0)      # the next session continues the count
+        model.learn(total_timesteps=model.num_timesteps + 1000, callback=[second])
+        assert env.stage == 1 and second.moved_on_unpassed and model.num_timesteps < 128 + 1000
+        table = compare_stages({"MAPPO": str(tmp_path)}, stages)
+        assert table.loc["0 hard", "MAPPO: passed"] == "no - moved on"
+
+        # FORCE_STAGE: back to the capped stage - it trains again, with its cap counted afresh
+        env.set_stage(0)
+        again = CurriculumCallback(stop_on_promotion=True, fresh=True, verbose=0)
+        model.learn(total_timesteps=model.num_timesteps + 128, callback=[again])
+        assert env.stage == 0 and not again.moved_on_unpassed                # without fresh: moved on at once
+        assert compare_stages({"MAPPO": str(tmp_path)}, stages).loc["0 hard", "MAPPO: passed"] == "training again"
+        # the next session continues the retrain's count (from the "again" mark), not the stage's whole log
+        later = CurriculumCallback(stop_on_promotion=True, verbose=0)
+        start = model.num_timesteps
+        model.learn(total_timesteps=start + 1000, callback=[later])
+        assert env.stage == 1 and 40 <= model.num_timesteps - start < 200     # the rest of the new 200-step cap
+    finally:
+        battles.close()
+
+
+def test_the_final_stage_ends_at_its_cap(tmp_path):
+    from simple_mappo.curriculum import CurriculumCallback
+    from simple_mappo.utils import Monitor, compare_stages
+    stages = [{"name": "0 first", "scenario": "scenarios/stage1_koth_3v3.json", "opponent": "rule"},
+              {"name": "1 last", "scenario": "scenarios/stage1_koth_3v3.json", "opponent": "rule",
+               "stop_win_rate": 1.1, "stop_window": 1000, "eval_every": 10**9, "max_timesteps": 200}]
+    battles = NavalEnv(stages=stages, start_stage=1, n_envs=2, mock=True)
+    env = Monitor(battles, str(tmp_path))
+    try:
+        model = MAPPO(env, n_steps=32, chunk_len=8, n_epochs=1, d_model=32, attn_layers=1, hidden_size=32,
+                      commander=False, verbose=0)
+        cb = CurriculumCallback(stop_on_promotion=True, verbose=0)
+        model.learn(total_timesteps=5000, callback=[cb])
+        assert cb.finished and cb.capped_out and model.num_timesteps < 300      # over at the cap, not at 5000
+        assert compare_stages({"MAPPO": str(tmp_path)}, stages).loc["1 last", "MAPPO: passed"] == "no - cap reached"
+    finally:
+        battles.close()
+
+
+def test_running_aground_and_ramming_cost_points():
+    N, Z = 2, 1
+    facts = {"dist_km": np.full((N, Z), np.inf, np.float32), "inside": np.zeros((N, Z), np.float32),
+             "alive": np.ones(N, np.float32)}
+    team = {k: 0.0 for k in ("zones_captured", "zones_lost", "kills", "losses", "win", "loss")}
+    zero = np.zeros(N, np.float32)
+    ship = {"damage_dealt": zero, "damage_taken": zero, "friendly_fire_dealt": zero,
+            "aground": np.array([1.0, 0.0], np.float32), "collisions": np.array([0.0, 2.0], np.float32)}
+    r, _, terms = compute_rewards(facts, facts, team, ship, None, N, 1, REWARD_WEIGHTS, 1.0)
+    assert terms["aground"].tolist() == pytest.approx([REWARD_WEIGHTS["aground"], 0.0])
+    assert terms["collision"].tolist() == pytest.approx([0.0, 2 * REWARD_WEIGHTS["collision"]])
+    assert REWARD_WEIGHTS["aground"] < 0 and REWARD_WEIGHTS["collision"] < 0 and (r < 0).all()
+    # a player built before these terms existed reports neither: nothing is charged
+    old = {k: v for k, v in ship.items() if k not in ("aground", "collisions")}
+    _, _, terms = compute_rewards(facts, facts, team, old, None, N, 1, REWARD_WEIGHTS, 1.0)
+    assert not terms["aground"].any() and not terms["collision"].any()
+
+
+def test_ddqn_softmax_exploration_samples_and_trains(env, tmp_path):
+    from simple_mappo.ddqn import FleetDDQN
+    greedy = FleetDDQN(env, d_model=32, attn_layers=1, hidden_size=32, verbose=0)
+    soft = FleetDDQN(env, d_model=32, attn_layers=1, hidden_size=32, exploration="softmax", temperature=10.0,
+                     chunk_len=8, learning_starts=16, batch_size=4, verbose=0)
+    soft.policy.load_state_dict(greedy.policy.state_dict())
+    assert greedy.act_temperature is None and soft.act_temperature == 10.0
+    obs = env.reset()
+    picks_g = {tuple(greedy.predict(obs, deterministic=True)[0, 0]) for _ in range(20)}
+    picks_s = {tuple(soft.predict(obs)[0, 0]) for _ in range(20)}
+    assert len(picks_g) == 1 and len(picks_s) > 1             # greedy repeats its best option, softmax samples
+    assert {tuple(soft.predict(obs, deterministic=True)[0, 0]) for _ in range(5)} == picks_g   # deterministic = greedy
+    soft.learn(total_timesteps=64)                              # plays (and trains) with it, saves and reloads it
+    path = soft.save(str(tmp_path / "soft"))
+    assert FleetDDQN.load(path, env=env).hp["exploration"] == "softmax"
+    with pytest.raises(ValueError):
+        FleetDDQN(env, exploration="boltzmann")

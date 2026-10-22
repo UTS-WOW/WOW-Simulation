@@ -217,6 +217,7 @@ namespace Naval
             // head-on collisions ever registered.
             float closing = collision.relativeVelocity.magnitude;
             if (closing < 0.35f) return;
+            GameEvents.RaiseShipCollision(this, other);      // each of the two ships reports its own collision
 
             float massRatio = other.Body != null && Body != null
                 ? Mathf.Clamp(other.Body.mass / Mathf.Max(1f, Body.mass), 0.3f, 3f) : 1f;

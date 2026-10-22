@@ -857,17 +857,17 @@ namespace Naval
 
             _stagesStatusText = Label("StagesStatus", p, "", 12, TextAnchor.MiddleCenter, TextDim,
                 new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(190f, 18f), new Vector2(-390f, 52f));
-            // which trained fleet WATCH AI / FIGHT AI use: the MAPPO one or the Double DQN one
+            // which trained fleet WATCH AI / FIGHT AI use: the MAPPO one or the PQN one
             Label("PolicyHdr", p, "TRAINED FLEET", 11, TextAnchor.MiddleRight, TextDim,
                 new Vector2(1f, 0f), new Vector2(1f, 0f), new Vector2(-380f, 18f), new Vector2(-292f, 52f));
             Button("MAPPO", p, new Vector2(1f, 0f), new Vector2(1f, 0f), new Vector2(-284f, 18f), new Vector2(-172f, 52f),
                 () => RL.RLPolicyDriver.I?.UsePolicy(RL.RLPolicyDriver.MappoFile),
                 () => RL.RLPolicyDriver.I != null && System.IO.File.Exists(RL.RLPolicyDriver.FilePath(RL.RLPolicyDriver.MappoFile)),
                 () => RL.RLPolicyDriver.PolicyFile == RL.RLPolicyDriver.MappoFile);
-            Button("DOUBLE DQN", p, new Vector2(1f, 0f), new Vector2(1f, 0f), new Vector2(-164f, 18f), new Vector2(-30f, 52f),
-                () => RL.RLPolicyDriver.I?.UsePolicy(RL.RLPolicyDriver.DdqnFile),
-                () => RL.RLPolicyDriver.I != null && System.IO.File.Exists(RL.RLPolicyDriver.FilePath(RL.RLPolicyDriver.DdqnFile)),
-                () => RL.RLPolicyDriver.PolicyFile == RL.RLPolicyDriver.DdqnFile);
+            Button("PQN", p, new Vector2(1f, 0f), new Vector2(1f, 0f), new Vector2(-164f, 18f), new Vector2(-30f, 52f),
+                () => RL.RLPolicyDriver.I?.UsePolicy(RL.RLPolicyDriver.PqnFile),
+                () => RL.RLPolicyDriver.I != null && System.IO.File.Exists(RL.RLPolicyDriver.FilePath(RL.RLPolicyDriver.PqnFile)),
+                () => RL.RLPolicyDriver.PolicyFile == RL.RLPolicyDriver.PqnFile);
             Button("BACK", p, new Vector2(0f, 0f), new Vector2(0f, 0f), new Vector2(30f, 18f), new Vector2(170f, 52f),
                 () => { _showStages = false; });
 

@@ -9,6 +9,7 @@ SageMaker training job or their own computer - and they all read and write the s
         config.json           the settings the run was started with
         logs/monitor.csv      one line per battle, from every session - the team's learning curve
         logs/progress.csv     one line per update
+        logs/curriculum.csv   each stage the run left: passed, or moved on at its timestep cap
         models/model_latest.pt     the checkpoint to continue from
         models/imitation.pt        the captain cloned from the rule AI (the StageP notebook)
         models/model_<n>.pt        kept checkpoints, models/model_final.pt
@@ -16,6 +17,7 @@ SageMaker training job or their own computer - and they all read and write the s
 
     storage.show_status()                    # how the run is doing: stage, progress, win rate, ETA
     storage.pull_view("team_view")           # its logs and videos, to plot and watch
+    storage.pull_videos("runs_simple/curriculum")  # every replay it has that this machine does not
 
     storage = TeamStorage("s3://my-bucket/wow-mappo", "curriculum", user="Lukita")
     latest = storage.pull("runs_simple/curriculum")      # None if the run is new
@@ -198,8 +200,8 @@ class TeamStorage:
         self._base_push = info.get("push_id") if info else None
         if not info:
             return None
-        for key in ("config.json", "logs/monitor.csv", "logs/progress.csv", "models/model_latest.pt",
-                    "models/imitation.pt"):
+        for key in ("config.json", "logs/monitor.csv", "logs/progress.csv", "logs/curriculum.csv",
+                    "models/model_latest.pt", "models/imitation.pt"):
             path = os.path.join(run_dir, key)
             if self.backend.download(key, path):
                 self._uploaded[key] = os.path.getmtime(path)          # already in the team's folder
@@ -309,13 +311,28 @@ class TeamStorage:
         print("\n".join(lines))
         return info
 
+    def pull_videos(self, run_dir: str) -> int:
+        """Downloads every replay in the team folder that run_dir/videos does not have yet - the ones a
+        teammate, a training job or a session in another space recorded - so show_videos shows them
+        all. Returns how many replays it downloaded (a replay's .mp4 and .gif count once)."""
+        new = set()
+        for key in self.backend.list("videos"):
+            path = os.path.join(run_dir, key)
+            if key.endswith((".mp4", ".gif")) and not os.path.exists(path) and self.backend.download(key, path):
+                self._uploaded[key] = os.path.getmtime(path)          # already in the team's folder
+                new.add(os.path.splitext(key)[0])
+        return len(new)
+
     def pull_view(self, local_dir: str, videos: int = 3) -> str:
         """Downloads the run's logs and its newest `videos` replays into local_dir (to plot and watch
         without disturbing whoever is training it). Returns local_dir."""
-        for key in ("logs/monitor.csv", "logs/progress.csv"):
+        for key in ("logs/monitor.csv", "logs/progress.csv", "logs/curriculum.csv"):
             self.backend.download(key, os.path.join(local_dir, key))
-        for key in [k for k in self.backend.list("videos") if k.endswith((".mp4", ".gif"))][-videos:] if videos else []:
-            self.backend.download(key, os.path.join(local_dir, key))
+        keys = [k for k in self.backend.list("videos") if k.endswith((".mp4", ".gif"))]
+        newest = sorted({os.path.splitext(k)[0] for k in keys})[-videos:] if videos else []
+        for key in keys:                                 # a replay's .mp4 and its .gif
+            if os.path.splitext(key)[0] in newest:
+                self.backend.download(key, os.path.join(local_dir, key))
         return local_dir
 
 
@@ -344,9 +361,10 @@ def training_status(model, run_dir: str) -> dict:
             out.update({"recent_battles": len(recent),
                         "win_rate_recent": round(sum(float(r.get("passed") or r["won"]) for r in recent) / len(recent), 3),
                         "reward_recent": round(sum(float(r["r"]) for r in recent) / len(recent), 3)})
-    vids = sorted(glob.glob(os.path.join(run_dir, "videos", "*.mp4")) + glob.glob(os.path.join(run_dir, "videos", "*.gif")))
+    from .utils import find_videos
+    vids = find_videos(os.path.join(run_dir, "videos"))          # one per replay (its .mp4 and .gif count once)
     if vids:
-        out.update({"videos": len(vids), "latest_video": os.path.basename(vids[-1])})
+        out.update({"videos": len(vids), "latest_video": vids[-1].name})
     return out
 
 

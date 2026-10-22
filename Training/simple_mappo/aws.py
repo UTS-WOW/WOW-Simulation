@@ -28,7 +28,7 @@ from .env import TRAINING_DIR, find_unity_binary
 # AWS's PyTorch training image, CPU build: Ubuntu 22.04 (the Unity player needs its glibc 2.35), Python 3.12
 TRAINING_IMAGE = "763104351884.dkr.ecr.{region}.amazonaws.com/pytorch-training:2.9.0-cpu-py312-ubuntu22.04-sagemaker"
 JOB_CODE = ["simple_mappo", "naval_rl", "scenarios", "train_simple.py"]
-JOB_REQUIREMENTS = "matplotlib\npillow\n"     # for the replay videos; PyTorch, NumPy and boto3 are in the image
+JOB_REQUIREMENTS = "matplotlib\npillow\nimageio-ffmpeg\n"  # MP4 replay videos; PyTorch, NumPy and boto3 are in the image
 # numbers from the training table, charted by SageMaker on the job's page (Monitor -> Algorithm metrics)
 METRICS = [{"Name": name, "Regex": rf"\| {name} +\| +([-0-9.e+]+) +\|"}
            for name in ("total_timesteps", "stage", "win_rate", "win_rate_self_play", "ep_rew_mean", "fps",

@@ -16,6 +16,7 @@ import csv
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -213,9 +214,11 @@ def plot_results(log_folder: str, title: str = "Learning Curve", window: int = 5
     plt.show()
 
 
-def plot_curriculum(log_folder: str, window: int = 50):
+def plot_curriculum(log_folder: str, window: int = 50, name: str = ""):
     """Pass rate over training (each stage's own goal - usually a win), one colour per curriculum stage
-    (a new colour = a promotion). Only qualifying battles: against the stage's own opponent."""
+    (a new colour = the run moved on). Only qualifying battles: against the stage's own opponent.
+    Solid while the run trains ON that stage; dotted afterwards - rehearsal battles of an earlier stage
+    (10-15 % of the battles from stage 3 on), which never decide anything. name: the run, for the title."""
     import matplotlib.pyplot as plt
     df = load_results(log_folder)
     if _no_battles(df, "Curriculum"):
@@ -223,6 +226,7 @@ def plot_curriculum(log_folder: str, window: int = 50):
     x = np.cumsum(df.l.values)
     rule = df.opponent.astype(str).isin(["rule", "passive"]).values if "opponent" in df else np.ones(len(df), bool)
     passed = df.passed.values if "passed" in df else df.won.values
+    furthest = np.maximum.accumulate(df.stage.values)       # the furthest stage reached by each battle
     plt.figure(figsize=(10, 4))
     for st in sorted(df.stage.unique()):
         part = (df.stage.values == st) & rule                # what counts: the stage's own opponent
@@ -230,18 +234,23 @@ def plot_curriculum(log_folder: str, window: int = 50):
         if not len(y):
             continue
         w = max(1, min(window, len(y)))
-        plt.plot(x[part][w - 1:], np.convolve(y, np.ones(w) / w, mode="valid"), label=f"stage {st}")
+        xs, ys = x[part][w - 1:], np.convolve(y, np.ones(w) / w, mode="valid")
+        on = furthest[part][w - 1:] == st                    # trained on it, not a rehearsal of it
+        line, = plt.plot(np.where(on, xs, np.nan), np.where(on, ys, np.nan), label=f"stage {st}")
+        if (~on).any():
+            plt.plot(np.where(~on, xs, np.nan), np.where(~on, ys, np.nan), ls=":", lw=0.9, color=line.get_color())
     plt.ylim(0, 1)
     plt.xlabel("Number of Timesteps")
     plt.axhline(0.7, color="gray", lw=0.8, ls="--")      # the promotion requirement
     plt.ylabel(f"Pass rate (last {window} battles)")
-    plt.title("Curriculum: pass rate per stage")
+    plt.title(f"{name + ' - ' if name else ''}curriculum: pass rate per stage (furthest stage reached: "
+              f"{int(furthest[-1])}; dotted = rehearsal battles)")
     plt.legend()
     plt.show()
 
 
-def plot_reward_terms(log_folder: str, window: int = 50, stage: int | None = None):
-    """What the fleet is actually being paid for: each reward term per battle, smoothed."""
+def plot_reward_terms(log_folder: str, window: int = 50, stage: int | None = None, name: str = ""):
+    """What the fleet is actually being paid for: each reward term per battle, smoothed. name: the run."""
     import matplotlib.pyplot as plt
     df = load_results(log_folder, stage=stage)
     if _no_battles(df, "Reward terms"):
@@ -254,7 +263,7 @@ def plot_reward_terms(log_folder: str, window: int = 50, stage: int | None = Non
     plt.axhline(0, color="gray", lw=0.8)
     plt.xlabel("Number of Timesteps")
     plt.ylabel("Reward per ship per battle")
-    plt.title("Reward terms")
+    plt.title(f"{name + ' - ' if name else ''}reward terms" + (f" on stage {stage}" if stage is not None else ""))
     plt.legend(ncol=3, fontsize=8)
     plt.show()
 
@@ -272,7 +281,7 @@ def plot_progress(log_folder: str):
     if "q_loss" in df:
         cols, title = ["q_loss", "q_value", "target_value", "epsilon", "commander_loss", "replay_decisions"], "Double DQN"
     else:
-        cols, title = ["policy_loss", "value_loss", "entropy", "approx_kl", "clip_fraction", "explained_variance"], "PPO"
+        cols, title = ["policy_loss", "value_loss", "entropy", "approx_kl", "clip_fraction", "explained_variance"], "MAPPO (PPO)"
     fig, axes = plt.subplots(2, 3, figsize=(14, 6))
     for ax, c in zip(axes.ravel(), cols):
         if c in df and df[c].notna().any():
@@ -327,9 +336,15 @@ def plot_comparison(runs: dict, stage: int, window: int = 50):
 
 def compare_stages(runs: dict, stages: list[dict], window: int = 50):
     """Every stage, every method, side by side (from the runs' monitor.csv): how long each needed on the
-    stage, how it was doing at the end, and whether it passed (moved on to a later stage)."""
+    stage, how it was doing at the end, and whether it passed - "no - moved on" when it reached a later
+    stage without meeting the bar (the stage's max_timesteps, or FORCE_STAGE)."""
     import pandas as pd
     rows = []
+    events = {}                                  # logs/curriculum.csv: how each run left each stage
+    for name, log_dir in runs.items():
+        path = os.path.join(log_dir, "curriculum.csv")
+        if os.path.exists(path):
+            events[name] = dict(zip(*[pd.read_csv(path)[c].tolist() for c in ("stage", "event")]))   # the latest
     for k, st in enumerate(stages):
         row = {"stage": st["name"]}
         for name, log_dir in runs.items():
@@ -344,7 +359,15 @@ def compare_stages(runs: dict, stages: list[dict], window: int = 50):
             gate = before[before.opponent.astype(str).isin(["rule", "passive"])]
             row[f"{name}: timesteps"] = int(before.l.sum()) if len(before) else None     # None: before this log
             row[f"{name}: pass rate"] = round(float(gate.passed.tail(window).mean()), 2) if len(gate) else None
-            row[f"{name}: passed"] = "yes" if later.any() else ("training" if len(df) else "-")
+            if k in events.get(name, {}):        # the curriculum's own record
+                row[f"{name}: passed"] = {"passed": "yes", "not passed": "no - cap reached" if k == len(stages) - 1
+                                          else "no - moved on"}.get(events[name][k], "training again")
+            elif later.any():                    # moved on: by passing, or after its max_timesteps / FORCE_STAGE
+                need, n = st.get("promote_win_rate"), int(st.get("window", window))
+                met = need is None or (len(gate) >= n and float(gate.passed.tail(n).mean()) >= need)
+                row[f"{name}: passed"] = "yes" if met else "no - moved on"
+            else:
+                row[f"{name}: passed"] = "training" if len(df) else "-"
         rows.append(row)
     return pd.DataFrame(rows).set_index("stage")
 
@@ -525,33 +548,97 @@ def video_ext() -> str:
     return ".mp4" if ffmpeg_path() else ".gif"
 
 
-def save_video(frames: list, path: str, fps: int = 10) -> str:
-    """Writes PIL frames to path (.mp4 through ffmpeg, or .gif). Without ffmpeg an .mp4 request is
-    written as .gif instead. Returns the path actually written."""
+GIF_HEIGHT, GIF_COLORS = 400, 64                       # the replays the notebooks show
+
+
+def save_gif(frames: list, path: str, fps: float = 10, height: int = GIF_HEIGHT, colors: int = GIF_COLORS) -> str:
+    """Writes PIL frames as a compact animated GIF - the replay the notebooks show, because an image is
+    the one thing every notebook front end plays (VS Code and Cursor block embedded videos): at most
+    `height` pixels high, one palette of `colors` shared by every frame and no dithering, and in a long
+    battle every second frame, shown twice as long. A third of the size of a plain GIF."""
+    from PIL import Image
+    stride = 2 if len(frames) > 150 else 1
+    last = frames[-1]
+    frames = frames[::stride] + ([last] if (len(frames) - 1) % stride else [])
+    w, h = frames[0].size
+    if h > height:
+        frames = [f.resize((round(w * height / h), height), Image.LANCZOS) for f in frames]
+        w, h = frames[0].size
+    # one palette for the whole battle, from its start, middle and end (trails and colours build up)
+    sample = Image.new("RGB", (3 * w, h))
+    for i, k in enumerate((0, len(frames) // 2, len(frames) - 1)):
+        sample.paste(frames[k], (i * w, 0))
+    palette = sample.quantize(colors=colors, method=Image.Quantize.MEDIANCUT)
+    frames = [f.quantize(palette=palette, dither=Image.Dither.NONE) for f in frames]
+    frames[0].save(path, save_all=True, append_images=frames[1:], duration=round(1000 * stride / fps), loop=0)
+    return path
+
+
+def save_video(frames: list, path: str, fps: int = 10, gif: bool = True) -> str:
+    """Writes PIL frames to path: an .mp4 through ffmpeg (small, full quality - to keep or share), and
+    the compact .gif next to it that the notebooks show (save_gif). Without ffmpeg an .mp4 request is
+    written as the .gif only. gif=False: no .gif next to an .mp4, and a full-size one without ffmpeg
+    (record_unity_video - the game's graphics make big GIFs). Returns the path actually written."""
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    gif_path = os.path.splitext(path)[0] + ".gif"
     ffmpeg = ffmpeg_path()
     if path.endswith(".mp4") and ffmpeg:
         w, h = frames[0].size
         w, h = w - w % 2, h - h % 2                    # H.264 needs even sizes
-        proc = subprocess.Popen([ffmpeg, "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24",
-                                 "-s", f"{w}x{h}", "-r", str(fps), "-i", "-", "-c:v", "libx264",
-                                 "-pix_fmt", "yuv420p", path], stdin=subprocess.PIPE)
-        for f in frames:
-            proc.stdin.write(f.crop((0, 0, w, h)).tobytes())
-        proc.stdin.close()
-        if proc.wait() == 0:
-            return path
-        path = path[:-4] + ".gif"                      # this ffmpeg has no H.264: fall back
-    if path.endswith(".mp4"):
-        path = path[:-4] + ".gif"
-    frames[0].save(path, save_all=True, append_images=frames[1:], duration=int(1000 / fps), loop=0)
-    return path
+        proc = None
+        try:
+            # +faststart: the index first, so a browser can start playing before the whole file is read
+            proc = subprocess.Popen([ffmpeg, "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24",
+                                     "-s", f"{w}x{h}", "-r", str(fps), "-i", "-", "-c:v", "libx264",
+                                     "-pix_fmt", "yuv420p", "-movflags", "+faststart", path], stdin=subprocess.PIPE)
+            for f in frames:
+                proc.stdin.write(f.crop((0, 0, w, h)).tobytes())
+            proc.stdin.close()
+            if proc.wait() == 0:
+                if gif:
+                    save_gif(frames, gif_path, fps)
+                return path
+        except OSError:                                # ffmpeg cannot run here, or stopped early
+            if proc is not None:
+                proc.kill()
+                proc.wait()
+        if os.path.exists(path):
+            os.remove(path)                            # a half-written file would show as a broken replay
+    if gif:                                            # no ffmpeg, or this one has no H.264
+        return save_gif(frames, gif_path, fps)
+    frames[0].save(gif_path, save_all=True, append_images=frames[1:], duration=int(1000 / fps), loop=0)
+    return gif_path
+
+
+def _read_video(path: str, height: int = GIF_HEIGHT) -> tuple[list, float]:
+    """The frames of a video (PIL images, at most `height` pixels high) and its frame rate, decoded with
+    ffmpeg - ([], 0) where there is no ffmpeg or the file cannot be read."""
+    from PIL import Image
+    ffmpeg = ffmpeg_path()
+    if not ffmpeg:
+        return [], 0.0
+    info = subprocess.run([ffmpeg, "-hide_banner", "-i", str(path)], capture_output=True, text=True).stderr
+    size, rate = re.search(r"Video: .*?, (\d{2,5})x(\d{2,5})", info), re.search(r"([\d.]+) fps", info)
+    if not size:
+        return [], 0.0
+    w, h = int(size.group(1)), int(size.group(2))
+    if h > height:
+        w, h = round(w * height / h / 2) * 2, height
+    proc = subprocess.Popen([ffmpeg, "-v", "error", "-i", str(path), "-vf", f"scale={w}:{h}", "-f", "rawvideo",
+                             "-pix_fmt", "rgb24", "-"], stdout=subprocess.PIPE)
+    frames = []
+    while len(chunk := proc.stdout.read(w * h * 3)) == w * h * 3:
+        frames.append(Image.frombytes("RGB", (w, h), chunk))
+    proc.stdout.close()
+    proc.wait()
+    return frames, float(rate.group(1)) if rate else 10.0
 
 
 def record_battle(model, env, path: str, every: int = 2, deterministic: bool = False, dpi: int = 80,
                   stage: int | None = None, evaluation: bool = True) -> str:
     """Plays one battle against the rule AI (in the env's first battle slot) and writes a top-down
-    replay to path (.mp4, or .gif where ffmpeg is missing). Returns the file written.
+    replay to path: an .mp4 and the .gif the notebooks show (the .gif only where ffmpeg is missing).
+    Returns the file written (the .mp4, or the .gif).
 
     model=None plays random legal actions. every: draw a frame every N decisions (seconds).
     stage: the curriculum stage to play (default: the current one).
@@ -641,15 +728,15 @@ def record_unity_video(model, env, path: str, every: int = 2, width: int = 1280,
     last = frames[-1].copy()
     ImageDraw.Draw(last).text((12, 30), caption, fill=(255, 230, 120))
     frames += [last] * (2 * fps)                       # hold the result for two seconds
-    path = save_video(frames, path, fps=fps)
+    path = save_video(frames, path, fps=fps, gif=False)
     print(f"{caption.lower()} after {result['battle_time']:.0f} s - wrote {path}")
     return path
 
 
 class VideoCallback(BaseCallback):
     """Records a replay of one battle every `every` timesteps while training, on the stage being
-    trained: videos/battle_<timesteps>_stage<k>.mp4 (.gif where ffmpeg is missing, e.g. on SageMaker).
-    With TeamSyncCallback they go to the team folder too.
+    trained: videos/battle_<timesteps>_stage<k>.mp4 and the .gif the notebooks show (the .gif only
+    where ffmpeg is missing). With TeamSyncCallback they go to the team folder too.
 
     show=True also shows each replay in the notebook right away, under the training table - so you
     can watch the fleet while the training cell is still running."""
@@ -683,46 +770,133 @@ class VideoCallback(BaseCallback):
         self.videos.append(path)
         self._session += 1
         if self.show:
-            _display_html(_video_html(Path(path)))
+            _show_replay(Path(path))
         self.model.reset_battles()                     # the recording used the training battles
 
 
-def _video_html(f: Path, height: int = 400) -> str:
-    """One replay as HTML: a .gif as an image (plays anywhere), an .mp4 as an HTML5 video."""
-    b64 = base64.b64encode(f.read_bytes()).decode("ascii")
-    if f.suffix == ".gif":
-        return (f'<figure style="display:inline-block"><img src="data:image/gif;base64,{b64}" style="height: {height}px;"/>'
-                f"<figcaption>{f.name}</figcaption></figure>")
-    return (f'<figure style="display:inline-block"><video autoplay loop muted controls style="height: {height}px;">'
-            f'<source src="data:video/mp4;base64,{b64}" type="video/mp4"/></video><figcaption>{f.name}</figcaption></figure>')
+VIDEO_SUFFIXES = (".mp4", ".gif")
 
 
-def _display_html(html: str) -> None:
-    """Shows HTML in a notebook; in a plain script it does nothing (the files are written anyway)."""
+def _replay_gif(f: Path) -> Path | None:
+    """The .gif to show for replay f: f itself, the .gif recorded next to an .mp4, or one made from the
+    .mp4 now and kept next to it (an older or a teammate's replay) - None where there is no ffmpeg to
+    make one."""
+    gif = f.with_suffix(".gif")
+    if gif.exists():
+        return gif
+    frames, fps = _read_video(str(f))
+    return Path(save_gif(frames, str(gif), fps)) if frames else None
+
+
+def _video_html(f: Path, height: int = GIF_HEIGHT, caption: str | None = None) -> str:
+    """One replay as HTML, embedded in the notebook so it is still there when the notebook is reopened
+    or downloaded. It is shown as an animated image (<img>, the .gif): the one kind of embedded media
+    every front end shows - VS Code and Cursor block embedded <video> outright, and JupyterLab (also
+    SageMaker Studio) strips the data off a <source> tag once a notebook is reopened. Only an .mp4
+    without a .gif and without ffmpeg to make one is embedded as a video, with its data on the <video>
+    tag itself, which JupyterLab keeps."""
+    gif = _replay_gif(f)
+    if gif is not None:
+        b64 = base64.b64encode(gif.read_bytes()).decode("ascii")
+        media = f'<img src="data:image/gif;base64,{b64}" style="height: {height}px;"/>'
+    else:
+        b64 = base64.b64encode(f.read_bytes()).decode("ascii")
+        media = (f'<video src="data:video/mp4;base64,{b64}" autoplay loop muted controls playsinline '
+                 f'style="height: {height}px;"></video>')
+        caption = (caption or f.name) + " (an MP4: VS Code cannot play it here - install ffmpeg to see it as a GIF)"
+    return (f'<figure style="display: inline-block; margin: 0 12px 12px 0;">{media}'
+            f'<figcaption>{caption or f.name}</figcaption></figure>')
+
+
+def _display_html(html: str, text: str = "") -> None:
+    """Shows HTML in a notebook (text where HTML cannot be shown); in a plain script it does nothing
+    (the files are written anyway)."""
     try:
         from IPython import get_ipython
-        from IPython.display import HTML, display
+        from IPython.display import display
     except ImportError:
         return
     if get_ipython() is not None:
-        display(HTML(data=html))
+        display({"text/html": html, "text/plain": text or "(a replay - open this notebook in Jupyter to watch it)"},
+                raw=True)
 
 
-def show_videos(video_path: str = "", prefix: str = "", contains: str | None = None, newest: int | None = None):
-    """Shows the replays in the notebook (the notebooks' show_videos, for .gif and .mp4).
-    contains: only files whose name includes it (e.g. "_stage1"); newest: only the last n.
-    Says so when there is nothing to show, instead of showing nothing."""
-    folder = Path(video_path)
-    files = [f for f in sorted(folder.glob(f"{prefix}*")) if f.suffix in (".gif", ".mp4")
-             and (contains is None or contains in f.name)]
-    if not files:
-        others = sorted(f.name for f in folder.glob("*") if f.suffix in (".gif", ".mp4")) if folder.is_dir() else []
-        print(f"no replays{' matching ' + repr(contains or prefix) if (contains or prefix) else ''} in "
-              f"{folder.resolve()} yet" + (f" (it has {len(others)} others, e.g. {others[-1]})" if others else "") +
-              ". Replays are recorded by VideoCallback while training (every `every` timesteps), or with "
-              "record_battle(model, env, path).")
-        return
-    _display_html("<br>".join(_video_html(f) for f in (files[-newest:] if newest else files)))
+def _replay_stage(f: Path) -> int | None:
+    """The curriculum stage in a replay's name (battle_<timesteps>_stage<k>.mp4), or None."""
+    m = re.search(r"_stage(\d+)(?:_|\.|$)", f.name)
+    return int(m.group(1)) if m else None
+
+
+def _replay_caption(f: Path, label: str = "") -> str:
+    parts = [label] if label else []
+    m = re.match(r"battle_(\d+)_stage(\d+)", f.name)
+    if m:
+        parts.append(f"stage {int(m.group(2))}, after {int(m.group(1)):,} timesteps"
+                     + (" (evaluated on it, trained on another stage)" if "_evaluated" in f.name else ""))
+    parts.append(f.name)
+    return " · ".join(parts)
+
+
+def _show_replay(f: Path, label: str = "", height: int = GIF_HEIGHT) -> None:
+    _display_html(_video_html(f, height, _replay_caption(f, label)), text=f"replay {f}")
+
+
+def find_videos(video_path: str = "", prefix: str = "", contains: str | None = None, stage: int | None = None,
+                newest: int | None = None) -> list[Path]:
+    """The replays in a folder, oldest first - one file per replay: its .mp4 where there is one (its
+    .gif is what the notebooks show), otherwise its .gif. prefix / contains: only files whose name
+    starts with / includes it; stage: only those recorded on that curriculum stage; newest: the last n."""
+    replays: dict[Path, Path] = {}
+    for f in sorted(Path(video_path).glob(f"{prefix}*")):
+        if f.suffix in VIDEO_SUFFIXES and f.is_file() and (contains is None or contains in f.name) \
+                and (stage is None or _replay_stage(f) == stage):
+            if f.suffix == ".mp4" or f.with_suffix("") not in replays:
+                replays[f.with_suffix("")] = f
+    files = [replays[k] for k in sorted(replays)]
+    return files[-newest:] if newest else files
+
+
+def show_videos(video_path: str | list | dict = "", prefix: str = "", contains: str | None = None,
+                newest: int | None = None, stage: int | None = None, height: int = GIF_HEIGHT) -> list[Path]:
+    """Shows the replays in the notebook - every one there is, oldest first (the notebooks' show_videos,
+    for .mp4 and .gif). Each replay is its own output, embedded in the notebook as an animated image
+    (see _video_html), so it plays in JupyterLab, SageMaker Studio, VS Code and Cursor alike, and is
+    still there when the notebook is reopened or downloaded.
+
+    video_path  a folder, a list of folders, or {"MAPPO": folder, "Double DQN": folder} to show each
+                run's replays under its name
+    prefix / contains   only files whose name starts with / includes it
+    stage       only the replays recorded on that curriculum stage
+    newest      only the last n (of each folder)
+    Says so when there is nothing to show, instead of showing nothing. Returns the files shown."""
+    if isinstance(video_path, dict):
+        groups = list(video_path.items())
+    elif isinstance(video_path, (list, tuple)):
+        groups = [("", p) for p in video_path]
+    else:
+        groups = [("", video_path)]
+    shown = []
+    for label, path in groups:
+        folder = Path(path)
+        files = find_videos(path, prefix, contains, stage, newest)
+        what = (f" of stage {stage}" if stage is not None else "") + \
+               (f" matching {contains or prefix!r}" if (contains or prefix) else "")
+        if not files:
+            others = find_videos(path) if folder.is_dir() else []
+            seen = sorted({_replay_stage(f) for f in others if _replay_stage(f) is not None})
+            print(f"{label + ': ' if label else ''}no replays{what} in {folder.resolve()} yet"
+                  + (f" - it has {len(others)} from other stages ({', '.join(map(str, seen)) or '?'}; newest "
+                     f"{others[-1].name}): stage=None shows them" if others else "")
+                  + ". A run records replays on the stage it trains on (VideoCallback, every `every` timesteps); "
+                    "record_battle(model, env, path, stage=k) records one on any stage.")
+            continue
+        rest = len(find_videos(path, prefix, contains)) - len(files) if stage is not None else 0
+        print(f"{label + ': ' if label else ''}{len(files)} replay{'s' if len(files) > 1 else ''}{what} in {folder}"
+              + (f" - and {rest} from other stages" if rest else ""))
+        for f in files:
+            _show_replay(f, label, height)
+        shown += files
+    return shown
 
 
 # ---------------------------------------------------------------------------------------------- beginning / middle / end

@@ -2,9 +2,10 @@
 
     python export_simple.py --model runs_simple/fleet/models/model_best.pt
         -> Assets/StreamingAssets/RL/naval_policy.bin (the previous file is kept as naval_policy.bin.bak)
-    python export_simple.py --run-name fleet_ddqn
-        -> Assets/StreamingAssets/RL/naval_policy_ddqn.bin (a Double DQN fleet: the game takes its best
-           action instead of sampling - "greedy" in the header)
+    python export_simple.py --run-name fleet_pqn
+        -> Assets/StreamingAssets/RL/naval_policy_pqn.bin (a PQN fleet - TRAINED FLEET: PQN in the game;
+           a Q-learner, so the game takes its best action instead of sampling - "greedy" in the header;
+           an earlier Double DQN fleet goes to naval_policy_ddqn.bin)
 
 Then in Unity: Play, and on the setup screen set "Enemy AI: Learned" (or "Your fleet: Learned"); the
 game's RLPolicyDriver flies those ships with the exported captains and, in fleets of two or more,
@@ -35,6 +36,13 @@ VERSION = 2
 TRAINING_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GAME_POLICY = os.path.join(TRAINING_DIR, "..", "Assets", "StreamingAssets", "RL", "naval_policy.bin")
 GAME_POLICY_DDQN = os.path.join(TRAINING_DIR, "..", "Assets", "StreamingAssets", "RL", "naval_policy_ddqn.bin")
+GAME_POLICY_PQN = os.path.join(TRAINING_DIR, "..", "Assets", "StreamingAssets", "RL", "naval_policy_pqn.bin")
+
+
+def game_file_for(algorithm: str) -> str:
+    """Where the game looks for a method's fleet: TRAINED FLEET: MAPPO (naval_policy.bin) or PQN
+    (naval_policy_pqn.bin); an earlier Double DQN fleet goes to naval_policy_ddqn.bin."""
+    return {"pqn": GAME_POLICY_PQN, "ddqn": GAME_POLICY_DDQN}.get(algorithm, GAME_POLICY)
 GAME_STAGES = os.path.join(TRAINING_DIR, "..", "Assets", "StreamingAssets", "RL", "stages.json")
 
 # What the commander may not see (simple_mappo/env.py zeroes the same): the true-state columns of
@@ -113,8 +121,8 @@ def _load(source):
     highest score: the game plays it greedily."""
     if not isinstance(source, str):                          # a model in memory
         env = source.env
-        greedy = hasattr(source, "value_head")               # FleetDDQN
-        return {"captain": source.policy.captain, "commander": source.policy.commander, "dims": source.dims,
+        greedy = hasattr(source, "value_head")               # FleetDDQN / FleetPQN
+        return {"algorithm": getattr(source, "ALGORITHM", "mappo"), "captain": source.policy.captain, "commander": source.policy.commander, "dims": source.dims,
                 "heads": source.heads, "arch": source.arch, "commander_period": source.hp["commander_period"],
                 "decision_period": getattr(env, "decision_period", 1.0),
                 "enemy_privileged": tuple(getattr(getattr(env, "spec", None), "enemy_privileged", DEFAULT_ENEMY_PRIVILEGED)),
@@ -123,6 +131,7 @@ def _load(source):
     ck = torch.load(source, map_location="cpu", weights_only=False)
     dims, heads = ck["dims"], ck["heads"]
     method = ck.get("method", "commander-mappo")
+    algorithm = ck.get("algorithm", "ddqn" if method == "fleet-ddqn" else "mappo")
     if "captain" in ck:                                      # an imitation checkpoint: the clone, no commander
         arch = ck["arch"]
         captain = Captain(dims, heads, arch["d"], arch["attn_heads"], arch["layers"], arch["hidden"], arch["recurrent"])
@@ -141,8 +150,8 @@ def _load(source):
     if match_hidden is None:
         m = dims["critic_match"]
         match_hidden = [0.0] * (m - DEFAULT_MATCH_HIDDEN_FROM_END) + [1.0] * DEFAULT_MATCH_HIDDEN_FROM_END
-    return {"captain": captain, "commander": commander, "dims": dims, "heads": heads, "arch": arch,
-            "commander_period": period, "decision_period": ck.get("decision_period", 1.0),
+    return {"algorithm": algorithm, "captain": captain, "commander": commander, "dims": dims, "heads": heads,
+            "arch": arch, "commander_period": period, "decision_period": ck.get("decision_period", 1.0),
             "enemy_privileged": tuple(ck.get("enemy_privileged", DEFAULT_ENEMY_PRIVILEGED)),
             "match_hidden": match_hidden, "method": method, "greedy": method == "fleet-ddqn", "about": about}
 
@@ -193,7 +202,7 @@ def export_policy(source, path: str = GAME_POLICY, commander: bool = True, backu
         offset += arr.size
     dims = {k: int(v) for k, v in m["dims"].items() if k != "fleet_match"}
     header = {
-        "version": VERSION, "method": m["method"], "greedy": bool(m["greedy"]),
+        "version": VERSION, "method": m["method"], "algorithm": m.get("algorithm", "mappo"), "greedy": bool(m["greedy"]),
         "d": m["arch"]["d"], "heads": m["arch"]["attn_heads"], "layers": m["arch"]["layers"], "hidden": m["arch"]["hidden"],
         "dims": dims, "max_obstacles": max_obstacles,
         "action_heads": [{"name": h["name"], "fixed": h["fixed"], "pointer": h["pointer"]} for h in m["heads"]],

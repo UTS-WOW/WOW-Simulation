@@ -64,6 +64,7 @@ from __future__ import annotations
 
 import atexit
 import copy
+import dataclasses
 import hashlib
 import json
 import os
@@ -384,7 +385,7 @@ class NavalEnv:
         expert_valid = np.zeros((E, N), dtype=np.float32)
         self._starts[:] = 0.0
         for e, w in enumerate(self.workers):
-            o = w.recv()
+            o = self._end_at_deadline(e, w.recv())
             if self.record_expert:
                 # what the rule AI did with each of our ships during this step
                 expert[e], expert_valid[e] = o.arrays["expert_actions"][0], o.arrays["expert_valid"][0]
@@ -436,6 +437,13 @@ class NavalEnv:
                 team_terms["circles_held"] = float(((mine > 0.5).sum() - (theirs > 0.5).sum()) / real.sum())
         ship = {k: arr["agent_reward"][team, :, i] for i, k in enumerate(self.ship_components)}
         their = {k: arr["agent_reward"][other, :, i] for i, k in enumerate(self.ship_components)}
+        stage = self.stages[self._battle_stage[e]]
+        if o.terminal and team == 0 and ("within" in stage or stage.get("pass_if", "won") != "won"):
+            # a goal stage (curriculum.py "pass_if" / "within"): the result pays for meeting the goal.
+            # Against a passive enemy the game's tiebreak calls every battle won, so a slow kill (or no
+            # capture) would earn the full win and nothing would teach the fleet the stage's skill.
+            met = self._passed(e, o, self._ep_captures[e] + team_terms.get("zones_captured", 0.0))
+            team_terms["win"], team_terms["loss"] = float(met), float(not met)
         before = self._facts[e] if team == 0 else self._facts1[e]
         r, g, terms = compute_rewards(before, facts, team_terms, ship, their,
                                       int(self._ships[e, team]), int(self._ships[e, other]), self._weights[e],
@@ -618,14 +626,24 @@ class NavalEnv:
                 info.setdefault("stats", {})[k] = v
         return info
 
-    def _passed(self, e: int, o) -> bool:
-        """Did the battle meet its stage's goal? ("pass_if" / "within" in curriculum.py)"""
+    def _end_at_deadline(self, e: int, o):
+        """A goal with a deadline ("within" in curriculum.py) cannot be met once it has passed, so the
+        battle ends there - a missed goal - instead of playing on (against a passive target the game
+        would go into overtime). The time saved goes into more battles."""
+        within = self.stages[self._battle_stage[e]].get("within")
+        if o.terminal or within is None or o.battle_time < float(within):
+            return o
+        return dataclasses.replace(o, terminal=True, winner=1, reason=f"The {float(within):.0f} s goal was missed.")
+
+    def _passed(self, e: int, o, captures: float | None = None) -> bool:
+        """Did the battle meet its stage's goal? ("pass_if" / "within" in curriculum.py) captures: the
+        circles captured so far, when the last step's are not counted yet."""
         stage = self.stages[self._battle_stage[e]]
         goal = stage.get("pass_if", "won")
         if goal == "sunk":
             ok = int((o.stats or {}).get("player_kills", 0)) >= int(self._ships[e, 1])
         elif goal == "captured":
-            ok = self._ep_captures[e] > 0
+            ok = (self._ep_captures[e] if captures is None else captures) > 0
         else:
             ok = o.winner == 0
         return bool(ok and o.battle_time <= float(stage.get("within", float("inf"))))
