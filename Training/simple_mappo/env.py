@@ -107,9 +107,25 @@ SNAPSHOT_OPPONENTS = ("latest", "past", "champion", "rival")
 PASSIVE = {"speed": 3, "fire": 1}
 
 
+def check_code_location() -> None:
+    """A notebook kernel keeps the code it imported, with its paths. After the folder is renamed or
+    moved - or a bundle is unzipped into another folder - it would launch the players from a path
+    that is gone (they die at once: "Connection refused"). Says so instead."""
+    restart = "Restart the kernel (Kernel > Restart Kernel) and run the notebook again from the top."
+    if not os.path.isdir(TRAINING_DIR):
+        raise RuntimeError(f"this kernel loaded the code from {TRAINING_DIR}, which no longer exists - the folder "
+                           f"was renamed or moved after the kernel started. {restart}")
+    here = os.getcwd()
+    if (os.path.basename(here) == "Training" and os.path.isdir(os.path.join(here, "simple_mappo"))
+            and not os.path.samefile(here, TRAINING_DIR)):
+        raise RuntimeError(f"this notebook runs in {here}, but its kernel loaded the code from {TRAINING_DIR} "
+                           f"(the folder was renamed, moved or copied after the kernel started). {restart}")
+
+
 def find_unity_binary(path: str | None = None) -> str:
     """The headless training player: an explicit path, $NAVAL_UNITY_BINARY, a SageMaker "unity"
     input channel, the repo's Builds/ folder, or a NavalTrainer/ folder next to this package."""
+    check_code_location()
     candidates = [
         path,
         os.environ.get("NAVAL_UNITY_BINARY"),

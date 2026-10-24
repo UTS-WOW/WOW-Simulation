@@ -12,11 +12,10 @@
     python export_simple.py --team-storage s3://<bucket>/wow-mappo --run-name fleet
 
 It writes Assets/StreamingAssets/RL/naval_policy.bin - or naval_policy_pqn.bin for a PQN checkpoint
-(naval_policy_ddqn.bin for an earlier Double DQN one; the previous file is kept as .bak). Then open the
-project in Unity, press Play, and on the TRAINING STAGES screen pick TRAINED FLEET: MAPPO or PQN and
-WATCH AI on a stage - or on the
-setup screen set ENEMY AI: LEARNED (fight against it) or YOUR FLEET: LEARNED (watch it fight). RLPolicyDriver flies those ships with the
-trained captains - and, in fleets of two or more, with the trained fleet commander. The file is read
+(the previous file is kept as .bak). Then open the project in Unity, press Play, and on the TRAINING
+STAGES screen pick TRAINED FLEET: MAPPO or PQN and WATCH AI on a stage - or on the setup screen set
+ENEMY AI: LEARNED (fight against it) or YOUR FLEET: LEARNED (watch it fight). RLPolicyDriver flies those
+ships with the trained captains - and, in fleets of two or more, with the trained fleet commander. The file is read
 when the game starts: after exporting again, stop and press Play again. The line under those
 buttons says which policy is loaded ("commander MAPPO with fleet commander").
 """
@@ -28,8 +27,8 @@ import os
 
 import torch
 
-from simple_mappo.export import (GAME_POLICY, GAME_POLICY_DDQN, GAME_POLICY_PQN, GAME_STAGES, export_policy,
-                                 export_stages, game_file_for, pick_checkpoint)
+from simple_mappo.export import (GAME_POLICY, GAME_POLICY_PQN, GAME_STAGES, export_policy, export_stages,
+                                 game_file_for, pick_checkpoint)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -49,7 +48,6 @@ def main():
     # the curriculum, for the game's TRAINING STAGES screen (kept in step with simple_mappo/curriculum.py)
     stages = export_stages(os.path.join(os.path.dirname(os.path.abspath(a.out)), "stages.json")
                            if a.out and os.path.abspath(a.out) not in (os.path.abspath(GAME_POLICY),
-                                                                       os.path.abspath(GAME_POLICY_DDQN),
                                                                        os.path.abspath(GAME_POLICY_PQN)) else GAME_STAGES)
     print(f"stages     -> {stages}")
     if a.stages_only:
@@ -72,8 +70,7 @@ def main():
     out = a.out
     if out is None:
         ck = torch.load(model, map_location="cpu", weights_only=False)
-        q_learner = ck.get("method") == "fleet-ddqn"
-        out = game_file_for(ck.get("algorithm", "ddqn") if q_learner else "mappo")
+        out = game_file_for("pqn" if ck.get("method") == "fleet-pqn" else "mappo")
     path = export_policy(model, os.path.abspath(out), commander=not a.no_commander)
     print(f"exported {model}\n      -> {path}")
     print("In Unity: press Play (again), then TRAINING STAGES > TRAINED FLEET (MAPPO / PQN) > WATCH AI,\n"

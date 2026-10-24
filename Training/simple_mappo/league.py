@@ -17,7 +17,7 @@ Five, AlphaGo Zero and AlphaStar is a league of opponents (the shares are set pe
               beaten it - at least champion_win_rate of the last champion_games battles against it
               (AlphaGo Zero's gating: 55 %). The learner then becomes the new champion, and the old
               one stays in the pool as a past copy. So the fleet always has its best self to beat.
-    rival     the OTHER method's fleet (MAPPO's for the Double DQN run, and the other way round) -
+    rival     the OTHER method's fleet (MAPPO's for the PQN run, and the other way round) -
               a differently trained opponent with different habits, the way AlphaStar's league mixes
               different kinds of agents so no single strategy dominates (cross-play)
     rule      the game's rule-based AI - the anchor every stage is judged against
@@ -27,7 +27,7 @@ loser, more for an upset. The rule AI's three difficulties are players too, so t
 the fleet compares with Recruit, Veteran and Elite over time.
 
 The pool keeps only the acting networks (FleetPolicy weights): that is all an opponent needs. A
-copy marked greedy (a Double DQN fleet) takes its best action; the others sample (MAPPO).
+copy marked greedy (a PQN fleet) chooses by its Q-values; the others sample (MAPPO).
 """
 
 from __future__ import annotations
@@ -176,25 +176,25 @@ class OpponentPool:
 
 
 def fleet_snapshot(source, champion: bool = True):
-    """A fleet to fight, from a MAPPO / Double DQN model or a checkpoint path: (weights, method name,
+    """A fleet to fight, from a MAPPO / PQN model or a checkpoint path: (weights, method name,
     timesteps, greedy). Its champion if it has one (and champion=True), otherwise its current network."""
     if isinstance(source, str):
         import torch
         ck = torch.load(source, map_location="cpu", weights_only=False)
-        greedy = ck.get("method") == "fleet-ddqn"
+        greedy = ck.get("method") == "fleet-pqn"
         league = ck.get("league") or {}
         best = league.get("champion") if champion else None
         weights = next((s["weights"] for s in league.get("snapshots", []) if s["id"] == best), None)
-        return weights or ck["policy"], "Double DQN" if greedy else "MAPPO", ck.get("num_timesteps", 0), greedy
+        return weights or ck["policy"], "PQN" if greedy else "MAPPO", ck.get("num_timesteps", 0), greedy
     greedy = hasattr(source, "value_head")
     best = source.league.weights(source.league.champion) if champion and source.league.champion is not None else None
-    return best or _weights(source.policy), "Double DQN" if greedy else "MAPPO", source.num_timesteps, greedy
+    return best or _weights(source.policy), "PQN" if greedy else "MAPPO", source.num_timesteps, greedy
 
 
 class LeagueMixin:
-    """What MAPPO and FleetDDQN share about the league: the enemy fleet's actions in league battles,
-    past copies, the champion, and the other method's fleet. GREEDY: this method's own copies take
-    their best action (Double DQN) instead of sampling (MAPPO)."""
+    """What MAPPO and FleetPQN share about the league: the enemy fleet's actions in league battles,
+    past copies, the champion, and the other method's fleet. GREEDY: this method's own copies choose
+    by their Q-values (PQN) instead of sampling the policy (MAPPO)."""
 
     GREEDY = False
     OPPONENT_EPSILON = 0.02
@@ -212,7 +212,7 @@ class LeagueMixin:
             policy = self.opponent if sid < 0 else self._past_policy(int(sid))
             greedy = self.GREEDY if sid < 0 or self.league.weights(int(sid)) is None else self.league.greedy(int(sid))
             eps = self.hp.get("opponent_epsilon", self.OPPONENT_EPSILON) if greedy else None
-            # a Double DQN copy with Boltzmann exploration plays the way it trained
+            # a PQN copy with Boltzmann exploration plays the way it trained
             temp = self.hp.get("temperature") if greedy and self.hp.get("exploration") == "softmax" else None
             memory = self._opp_memory.take(envs[rows])
             out = policy.act({k: v[rows] for k, v in tens.items()}, memory, epsilon=eps, commander_epsilon=eps,

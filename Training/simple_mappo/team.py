@@ -26,7 +26,9 @@ SageMaker training job or their own computer - and they all read and write the s
     storage.push("runs_simple/curriculum"); storage.release()
 
 Two rules keep teammates from overwriting each other:
-* lock() refuses while someone else holds the run and has pushed within lock_minutes.
+* lock() refuses while someone else holds the run and has pushed within lock_minutes - unless that
+  session ran on this same machine and has ended (a restarted kernel, or the notebook's cells run
+  again): then the lock is simply taken over.
 * push() refuses if someone else pushed after you pulled - pull again (you lose only your own
   unpushed training, never theirs).
 
@@ -51,6 +53,37 @@ from .callbacks import BaseCallback
 
 class TeamStorageBusy(RuntimeError):
     """Someone else is training this run, or pushed since you pulled."""
+
+
+def _lock_host(lock: dict) -> str | None:
+    """The machine a lock was taken on (older locks only have it inside "session": user@host#id)."""
+    if lock.get("host"):
+        return lock["host"]
+    session = lock.get("session", "")
+    return session.rsplit("@", 1)[1].rsplit("#", 1)[0] if "@" in session else None
+
+
+def _ended_here(lock: dict, this_kernel: bool = True) -> bool:
+    """The lock's session ran on this machine and is over: its process has ended (a restarted or
+    closed kernel), or - this_kernel - it is this very process (an earlier run of the notebook's
+    cells). A lock from before locks recorded their process counts as over too: a new bundle needs
+    every kernel restarted. Another machine's lock (a teammate, a training job) is never judged here."""
+    if _lock_host(lock) != socket.gethostname():
+        return False
+    pid = lock.get("pid")
+    if not isinstance(pid, int):
+        return True
+    if pid == os.getpid():
+        return this_kernel
+    if os.name != "posix":                     # (os.kill(pid, 0) means something else on Windows)
+        return False
+    try:
+        os.kill(pid, 0)                        # signal 0: only asks whether the process exists
+    except ProcessLookupError:
+        return True
+    except OSError:                            # it exists, but belongs to someone else
+        return False
+    return False
 
 
 def _now() -> datetime.datetime:
@@ -186,7 +219,7 @@ class TeamStorage:
         return json.loads(raw) if raw else None
 
     def _lock_is_live(self, lock: dict | None) -> bool:
-        if not lock or lock.get("released") or lock.get("session") == self.session:
+        if not lock or lock.get("released") or lock.get("session") == self.session or _ended_here(lock):
             return False
         age = _now() - datetime.datetime.fromisoformat(lock["heartbeat"])
         return age.total_seconds() < self.lock_minutes * 60
@@ -213,7 +246,8 @@ class TeamStorage:
         return latest
 
     def lock(self, force: bool = False) -> None:
-        """Claims the run. force=True takes over a lock you know is stale (e.g. a crashed session)."""
+        """Claims the run. force=True takes over a lock you know is stale (e.g. a crashed session on
+        another machine; a finished session on this machine is taken over without it)."""
         held = self._lock()
         if self._lock_is_live(held) and not force:
             raise TeamStorageBusy(f"{held['user']} is training '{self.run_name}' (last heartbeat "
@@ -228,6 +262,7 @@ class TeamStorage:
 
     def _write_lock(self, released: bool) -> None:
         self.backend.write("LOCK.json", json.dumps({"user": self.user, "session": self.session,
+                                                    "host": socket.gethostname(), "pid": os.getpid(),
                                                     "heartbeat": _now().isoformat(), "released": released}).encode())
 
     def push(self, run_dir: str, model=None, status: dict | None = None, models: bool = True) -> None:
@@ -283,7 +318,7 @@ class TeamStorage:
             return None
         lock = self._lock()
         age_min = (_now() - datetime.datetime.fromisoformat(info["updated"])).total_seconds() / 60
-        training = bool(lock and not lock.get("released")
+        training = bool(lock and not lock.get("released") and not _ended_here(lock, this_kernel=False)
                         and (_now() - datetime.datetime.fromisoformat(lock["heartbeat"])).total_seconds() < self.lock_minutes * 60)
         lines = [f"run           {self.location}",
                  f"state         {'TRAINING now by ' + lock['user'] if training else 'idle - free to continue'}",

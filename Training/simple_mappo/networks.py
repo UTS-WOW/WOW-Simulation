@@ -207,7 +207,7 @@ class Captain(nn.Module):
         """Training pass over chunks of consecutive decisions: obs [T, B, ...] -> logits [T, B, L].
         The memory starts from h0 (what it was during the rollout) and is cleared where starts=1.
         features=True also returns what the heads read ([T, B, hidden + d]: memory + current view) -
-        the Double DQN's value stream reads it too."""
+        PQN's value stream reads it too."""
         T, B = order.shape
         flat = {k: v.reshape(T * B, *v.shape[2:]) for k, v in obs.items()}
         x, ptr = self.encode(flat, order.reshape(T * B))
@@ -433,9 +433,9 @@ class FleetPolicy(nn.Module):
         Returns actions [E, N, heads] and what training needs to remember (log-probabilities, the
         memory before this step, the orders and the commander's decision).
 
-        epsilon (Double DQN, ddqn.py): the scores are Q-values - take the best option, or with
-        probability epsilon a random one (commander_epsilon for the commander's orders) - instead of
-        sampling the policy's probabilities (MAPPO). temperature (Double DQN's Boltzmann exploration):
+        epsilon (PQN, pqn.py): the scores are Q-values - take the best option, or with probability
+        epsilon a random one (commander_epsilon for the commander's orders) - instead of sampling the
+        policy's probabilities (MAPPO). temperature (PQN's Boltzmann exploration):
         the captains sample softmax(scores / temperature) instead - the commander stays epsilon-greedy."""
         q_mode = epsilon is not None
         E, N = obs["alive"].shape

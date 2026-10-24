@@ -42,10 +42,10 @@ class Monitor:
     the game's own scores and kills, and term_<name>: what each reward term paid per ship.
 
     Two Monitors can share one NavalEnv - one Unity player per battle for both methods - each with its
-    own log and its own curriculum stage (MAPPO and Double DQN climb the stages separately):
+    own log and its own curriculum stage (MAPPO and PQN climb the stages separately):
 
         battles = NavalEnv(stages="default", n_envs=8)
-        env, env_dqn = Monitor(battles, "runs_simple/fleet/logs"), Monitor(battles, "runs_simple/fleet_ddqn/logs")
+        env, env_pqn = Monitor(battles, "runs_simple/fleet/logs"), Monitor(battles, "runs_simple/fleet_pqn/logs")
     """
 
     def __init__(self, env, log_dir: str):
@@ -270,7 +270,7 @@ def plot_reward_terms(log_folder: str, window: int = 50, stage: int | None = Non
 
 def plot_progress(log_folder: str):
     """The training diagnostics from progress.csv, one row per update: PPO's for a MAPPO run, the
-    Q-learning ones (TD loss, Q-values, epsilon, replay size) for a Double DQN run."""
+    Q-learning ones (TD loss, Q-values, epsilon, rollout size) for a PQN run."""
     import matplotlib.pyplot as plt
     import pandas as pd
     path = os.path.join(log_folder, "progress.csv")
@@ -279,7 +279,7 @@ def plot_progress(log_folder: str):
         return
     df = pd.read_csv(path)
     if "q_loss" in df:
-        cols, title = ["q_loss", "q_value", "target_value", "epsilon", "commander_loss", "replay_decisions"], "Double DQN"
+        cols, title = ["q_loss", "q_value", "target_value", "epsilon", "commander_loss", "rollout_decisions"], "PQN"
     else:
         cols, title = ["policy_loss", "value_loss", "entropy", "approx_kl", "clip_fraction", "explained_variance"], "MAPPO (PPO)"
     fig, axes = plt.subplots(2, 3, figsize=(14, 6))
@@ -306,7 +306,7 @@ def _stage_battles(log_dir: str, stage: int):
 
 
 def plot_comparison(runs: dict, stage: int, window: int = 50):
-    """Two methods (or more) on one stage: {"MAPPO": its log_dir, "Double DQN": its log_dir}.
+    """Two methods (or more) on one stage: {"MAPPO": its log_dir, "PQN": its log_dir}.
     Left: the pass rate against the stage's own opponent (what promotion counts); right: the reward
     per battle. x: timesteps each run spent on this stage - a fair race from the same starting line."""
     import matplotlib.pyplot as plt
@@ -863,7 +863,7 @@ def show_videos(video_path: str | list | dict = "", prefix: str = "", contains: 
     (see _video_html), so it plays in JupyterLab, SageMaker Studio, VS Code and Cursor alike, and is
     still there when the notebook is reopened or downloaded.
 
-    video_path  a folder, a list of folders, or {"MAPPO": folder, "Double DQN": folder} to show each
+    video_path  a folder, a list of folders, or {"MAPPO": folder, "PQN": folder} to show each
                 run's replays under its name
     prefix / contains   only files whose name starts with / includes it
     stage       only the replays recorded on that curriculum stage

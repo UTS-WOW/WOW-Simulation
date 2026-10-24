@@ -7,6 +7,7 @@
 #
 #   Training/build_player.sh            # once, after any change to the game's C# code
 #   Training/package_sagemaker.sh       # writes wow_sagemaker.zip in the repository root
+#   YOUR_NAME=luki Training/package_sagemaker.sh   # the notebooks come with YOUR_NAME = "luki" filled in
 #   FLEET_MODEL=Training/runs_simple/fleet_sagemaker/models/model_latest.pt Training/package_sagemaker.sh
 #                                       # ... with that checkpoint as runs_simple/fleet/models/model_latest.pt
 #                                       # (default: runs_simple/fleet/models/model_latest.pt, if there is one)
@@ -37,6 +38,15 @@ if [ -f "$MODEL" ]; then
   echo "including $MODEL as Training/runs_simple/fleet/models/model_latest.pt"
 fi
 
+# your name in every notebook (YOUR_NAME = "your-name" otherwise): the packed copies replace the originals
+if [ -n "${YOUR_NAME:-}" ]; then
+  mkdir -p "$EXTRA_DIR/Training"
+  for nb in Training/WOW-MAPPO-Simple.ipynb Training/Stage*.ipynb; do
+    sed 's/YOUR_NAME = \\"your-name\\"/YOUR_NAME = \\"'"$YOUR_NAME"'\\"/' "$nb" > "$EXTRA_DIR/$nb"
+  done
+  echo "notebooks with YOUR_NAME = \"$YOUR_NAME\""
+fi
+
 EXTRA=()
 if [ -f Training/runs_simple/fleet/models/imitation.pt ]; then
   EXTRA+=(Training/runs_simple/fleet/models/imitation.pt)      # head start: the captain cloned from the Elite AI
@@ -45,7 +55,7 @@ fi
 rm -f "$OUT"
 zip -qr "$OUT" \
   Training/simple_mappo Training/naval_rl Training/scenarios \
-  Training/train_simple.py Training/watch_simple.py Training/export_simple.py Training/WOW-MAPPO-Simple.ipynb Training/Stage*.ipynb Training/Versus-MAPPO-vs-DDQN.ipynb \
+  Training/train_simple.py Training/watch_simple.py Training/export_simple.py Training/WOW-MAPPO-Simple.ipynb Training/Stage*.ipynb Training/Versus-MAPPO-vs-PQN.ipynb \
   Training/make_stage_notebooks.py Training/requirements.txt Training/BUNDLE_VERSION Training/tests \
   "${EXTRA[@]}" \
   Builds/NavalTrainer \

@@ -7,9 +7,8 @@
     mappo.py      MAPPO: the PPO update for captains, commander and critic
     pqn.py        FleetPQN: PQN, the Parallelised Q-Network (Gallici et al., ICLR 2025) - the
                   value-based method the notebooks compare MAPPO with: Q(lambda) on rollouts from
-                  parallel battles, no replay buffer, the ships' Q-values summed (VDN)
-    ddqn.py       FleetDDQN: Double DQN with the same captain and commander (QMIX mixer, sequence
-                  replay) - the earlier value-based method; FleetPQN builds on it
+                  parallel battles, no replay buffer, the ships' Q-values summed (VDN); the same
+                  captain and commander as MAPPO's
     league.py     past copies of the fleet to practise against (self-play) and Elo ratings
     imitation.py  record the Elite rule AI and clone it - the warm start before RL
     callbacks.py  BaseCallback, SaveOnIntervalCallback, BestModelCallback, as in Stable-Baselines3
@@ -25,7 +24,6 @@ to Unity.
 
 from .callbacks import BaseCallback, BestModelCallback, CallbackList, SaveOnIntervalCallback
 from .curriculum import DEFAULT_CURRICULUM, CurriculumCallback, balanced_fleet, fleet_text, load_curriculum, stage_fleets
-from .ddqn import FleetDDQN, QMixer, SequenceReplay
 from .pqn import FleetPQN
 from .env import NavalEnv, find_unity_binary
 from .imitation import (behaviour_cloning, collect_expert, load_dataset, merge_datasets, plot_imitation,
@@ -48,6 +46,6 @@ __all__ = ["BaseCallback", "BestModelCallback", "CallbackList", "SaveOnIntervalC
            "REWARD_WEIGHTS", "compute_rewards", "Monitor", "evaluate", "load_results", "plot_curriculum",
            "plot_progress", "plot_results", "plot_reward_terms", "record_battle", "record_unity_video",
            "VideoCallback", "show_videos", "find_videos", "ts2xy", "view", "TeamStorage", "TeamStorageBusy", "TeamSyncCallback",
-           "training_status", "continue_training", "open_run", "FleetPQN", "FleetDDQN", "QMixer", "SequenceReplay",
+           "training_status", "continue_training", "open_run", "FleetPQN",
            "plot_comparison", "compare_stages", "stage_fleets", "fleet_text", "balanced_fleet", "head_to_head",
            "both_sides", "versus_stages", "elo_gap"]

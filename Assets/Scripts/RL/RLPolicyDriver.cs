@@ -25,9 +25,8 @@ namespace Naval.RL
     {
         public static RLPolicyDriver I { get; private set; }
 
-        /// <summary>The policy files training exports (Training/export_simple.py): MAPPO's and PQN's (and an
-        /// earlier Double DQN fleet's).</summary>
-        public const string MappoFile = "naval_policy.bin", PqnFile = "naval_policy_pqn.bin", DdqnFile = "naval_policy_ddqn.bin";
+        /// <summary>The policy files training exports (Training/export_simple.py): MAPPO's and PQN's.</summary>
+        public const string MappoFile = "naval_policy.bin", PqnFile = "naval_policy_pqn.bin";
 
         /// <summary>Which of them flies the Learned ships (the TRAINING STAGES screen switches it).</summary>
         public static string PolicyFile { get; private set; } = MappoFile;
@@ -93,7 +92,7 @@ namespace Naval.RL
             return d;
         }
 
-        /// <summary>Switches the Learned ships to another exported policy file (MappoFile, PqnFile or DdqnFile) and loads it.</summary>
+        /// <summary>Switches the Learned ships to another exported policy file (MappoFile or PqnFile) and loads it.</summary>
         public bool UsePolicy(string file)
         {
             PolicyFile = file;
@@ -118,7 +117,7 @@ namespace Naval.RL
                 if (!SameLayout(Policy))
                     throw new FormatException("policy was trained on a different observation or action layout - retrain it");
                 string method = Policy.Method == "imitation" ? "imitation clone"
-                              : Policy.Algorithm == "pqn" ? "PQN" : Policy.Algorithm == "ddqn" ? "Double DQN" : "commander MAPPO";
+                              : Policy.Algorithm == "pqn" ? "PQN" : "commander MAPPO";
                 Status = "trained policy loaded (" + (Policy.Version >= 2 ? method + (Policy.HasCommander ? " with fleet commander" : "") + ", " : "")
                          + Policy.ActionMode + ", " + File.GetLastWriteTime(path).ToString("yyyy-MM-dd HH:mm") + ")";
                 return true;
@@ -370,7 +369,7 @@ namespace Naval.RL
             int best = 0;
             for (int j = 0; j < size; j++)
                 if (mask[maskOffset + j] > 0.5f && logits[offset + j] > max) { max = logits[offset + j]; best = j; }
-            if (float.IsNegativeInfinity(max) || !Sample || Policy.Greedy) return best;     // PQN / Double DQN: the best Q
+            if (float.IsNegativeInfinity(max) || !Sample || Policy.Greedy) return best;     // PQN: the best Q
 
             double total = 0;
             for (int j = 0; j < size; j++)

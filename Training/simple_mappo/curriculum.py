@@ -21,9 +21,9 @@ asks for a 70 % win rate before moving on.
   self-play (league.py): "mirror" - the current fleet flies BOTH sides and both sides' experience
   trains it; "champion" - the strongest version so far, replaced only when the fleet beats it in 55 %
   of 40 battles (so it always has its best self to beat); "past" - older copies, the ones it loses to
-  most often first; "rival" - the OTHER method's fleet (MAPPO <-> Double DQN, cross-play: different
+  most often first; "rival" - the OTHER method's fleet (MAPPO <-> PQN, cross-play: different
   training, different habits). Promotion only ever counts the battles against the rule AI.
-                                                                   stop: 70 % of 200 evaluation battles vs Elite
+                                                                   stop: 70 % of 120 evaluation battles vs Elite
 
   The ships of each stage (classes: DD destroyer, CA cruiser, BB battleship, SS submarine):
     0  1 BB vs a passive CA      1  1 CA (+ a passive DD far away)   2  1 CA vs 1 CA     3  1 BB vs 1 BB
@@ -61,7 +61,7 @@ A stage is a dict:
                                                prioritised fictitious self-play (the ones we lose to most)
                                       champion the strongest version so far (replaced when beaten in
                                                55 % of 40 battles - AlphaGo Zero's gating)
-                                      rival    the other method's fleet: MAPPO's for the Double DQN run
+                                      rival    the other method's fleet: MAPPO's for the PQN run
                                                and the other way round (cross-play, model.set_rival)
                                     a champion / rival that does not exist yet plays a mirror battle
     opponents          for "league": shares, e.g. {"rule": 0.4, "mirror": 0.25, "champion": 0.1, ...}
@@ -78,9 +78,9 @@ A stage is a dict:
     max_timesteps      move on anyway after this many timesteps on the stage, NOT passed, so a method that
                        cannot reach the bar does not train on it for ever (compare_stages shows the stage
                        as not passed); on the final stage, training ends there. Every default stage has
-                       one: twice a notebook session's budget on stages 0-3 (cheap single-ship battles),
-                       one session's on stages 4-8 (measured with 4 battles at once, Double DQN trains
-                       a 9v9 at ~31 timesteps/s, MAPPO at ~56: a stage 8 session is 25-45 hours)
+                       one, rising stage by stage and adding up to 3,000,000 timesteps for the whole
+                       curriculum (80k / 100k / 150k / 250k / 300k / 350k / 500k / 570k / 700k) - one
+                       notebook session each
     stop_win_rate      final stage only: stop training once the win rate over the last
     stop_window          `stop_window` evaluation battles reaches this. On a generated (procedural)
                          stage they are held-out battles, on maps whose seeds training never uses.
@@ -124,16 +124,16 @@ DEFAULT_CURRICULUM = [
     {"name": "0 Gunnery", "battle": "1 battleship vs a passive cruiser, 7 km, open sea",
      "description": "Destroy a ship: pick the target, keep the guns firing, close in, use torpedoes.",
      "scenario": "scenarios/stage0_gunnery.json", "opponent": "passive",
-     "pass_if": "sunk", "within": 150, "promote_win_rate": 0.70, "window": 50, "max_timesteps": 400_000,
+     "pass_if": "sunk", "within": 150, "promote_win_rate": 0.70, "window": 50, "max_timesteps": 80_000,
      "reward_weights": NO_CIRCLE},
     {"name": "1 Capture", "battle": "1 cruiser, one neutral circle, the enemy far away",
      "description": "Sail into the capture circle and stay inside until it is captured.",
      "scenario": "scenarios/stage1_capture.json", "opponent": "passive",
-     "pass_if": "captured", "promote_win_rate": 0.70, "window": 50, "max_timesteps": 500_000},
+     "pass_if": "captured", "promote_win_rate": 0.70, "window": 50, "max_timesteps": 100_000},
     {"name": "2 Defend", "battle": "1 cruiser vs 1 cruiser over a neutral circle",
      "description": "Take the circle and hold it while staying afloat: angle, dodge, smoke, repair, fight back.",
      "scenario": "scenarios/stage2_defend.json", "opponent": "rule", "difficulty": 0,
-     "pass_if": "won", "promote_win_rate": 0.70, "window": 100, "max_timesteps": 600_000,
+     "pass_if": "won", "promote_win_rate": 0.70, "window": 100, "max_timesteps": 150_000,
      "reward_weights": {"survive": 0.02}},
     # The duel is about gunnery and angling. Its circle lies between the two battleships, so the circle
     # reward pulls the ship bow-on into the enemy's guns: measured, sailing to the circle wins 33% of
@@ -141,19 +141,19 @@ DEFAULT_CURRICULUM = [
     {"name": "3 Duel", "battle": "1v1 battleships, 13 km, open sea",
      "description": "Win a battleship duel: choose and time fire, angle the hull, do not throw the ship away.",
      "scenario": "scenarios/stage0_bb_duel.json", "opponent": "league", "opponents": SELF_PLAY, "difficulty": 0,
-     "promote_win_rate": 0.70, "window": 100, "max_timesteps": 800_000, "rehearsal": 0.1,
+     "promote_win_rate": 0.70, "window": 100, "max_timesteps": 250_000, "rehearsal": 0.1,
      "reward_weights": NO_CIRCLE},
     # ---- fleets: the commander joins in, and the ships learn to share the reward
     {"name": "4 King of the Hill", "battle": "3v3 mixed fleets, one circle, open sea",
      "description": "The first fleet battle: the commander orders ships to hold the circle or engage.",
      "scenario": "scenarios/stage1_koth_3v3.json", "opponent": "league", "opponents": SELF_PLAY, "difficulty": 1,
      "commander": True, "team_spirit": 0.3, "rehearsal": 0.15, "promote_win_rate": 0.70, "window": 100,
-     "max_timesteps": 500_000},
+     "max_timesteps": 300_000},
     {"name": "5 Archipelago", "battle": "3v3 mixed fleets, three circles among islands",
      "description": "Which ship holds which circle, and who hunts - with islands, spotting and smoke.",
      "scenario": "scenarios/stage2_archipelago_3v3.json", "opponent": "league", "opponents": SELF_PLAY, "difficulty": 1,
      "commander": True, "team_spirit": 0.5, "rehearsal": 0.15, "promote_win_rate": 0.70, "window": 150,
-     "max_timesteps": 750_000},
+     "max_timesteps": 350_000},
     # ---- the full game against the Elite AI and a league of our own past selves
     {"name": "6 Domination", "battle": "6v6 on a new random map and weather",
      "description": "The full Domination game against the Elite AI and a league of the fleet's own past selves.",
@@ -161,21 +161,21 @@ DEFAULT_CURRICULUM = [
                                             "weather": "random", "ships": [6, 6], "time_limit": 900,
                                             "world_reuse": 8},
      "opponent": "league", "opponents": LEAGUE, "difficulty": 2, "commander": True, "team_spirit": 0.8,
-     "rehearsal": 0.1, "promote_win_rate": 0.70, "window": 200, "max_timesteps": 1_000_000},
+     "rehearsal": 0.1, "promote_win_rate": 0.70, "window": 100, "max_timesteps": 500_000},
     {"name": "7 Open", "battle": "4-8 ships a side, random mode, map, weather and circle size",
      "description": "Anything the game can produce: modes, maps, weather and fleet sizes it has not seen.",
      "procedural": {"mode": "random", "preset": "random", "density": "random",
                                       "weather": "random", "ships": [4, 8], "time_limit": 1200,
                                       "capture_radius": [130, 200], "world_reuse": 4},
      "opponent": "league", "opponents": LEAGUE, "difficulty": 2, "commander": True, "team_spirit": 1.0,
-     "rehearsal": 0.1, "promote_win_rate": 0.70, "window": 200, "max_timesteps": 2_000_000},
+     "rehearsal": 0.1, "promote_win_rate": 0.70, "window": 100, "max_timesteps": 570_000},
     # ---- the biggest battle: every class, five circles - the fleet has to split up
     {"name": "8 Archipelago 9v9", "battle": "9v9, every ship class, five circles among islands",
      "description": "Hold more circles than the enemy: three across the middle, one near each fleet. "
                     "Split the fleet - do not crowd the centre.",
      "scenario": "scenarios/stage8_archipelago_9v9.json", "opponent": "league", "opponents": LEAGUE, "difficulty": 2,
      "commander": True, "team_spirit": 1.0, "rehearsal": 0.15,
-     "stop_win_rate": 0.70, "stop_window": 200, "eval_battles": 40, "eval_every": 100_000, "max_timesteps": 5_000_000},
+     "stop_win_rate": 0.70, "stop_window": 120, "eval_battles": 40, "eval_every": 50_000, "max_timesteps": 700_000},
 ]
 
 RANDOM_CHOICES = {"mode": [0, 1, 2, 3], "preset": [0, 1, 2], "density": [0, 1, 2], "weather": [0, 1, 2, 3]}

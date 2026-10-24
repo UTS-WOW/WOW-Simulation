@@ -1,5 +1,6 @@
 """Replays: written as .mp4 + .gif (or .gif only), found once each, and embedded so that every notebook
-front end shows them - as an animated image, since VS Code blocks embedded video."""
+front end shows them - as an animated image, since VS Code blocks embedded video. And the team folder's
+run lock, which a finished session on the same machine must not keep."""
 
 from __future__ import annotations
 
@@ -71,10 +72,10 @@ def test_every_replay_is_found_once_and_shown(tmp_path, capsys, monkeypatch):
                                                       "battle_000003000_stage1.mp4", "battle_000004000_stage10.mp4"]
     assert [f.name for f in find_videos(tmp_path, stage=1)] == ["battle_000002000_stage1.gif",
                                                                 "battle_000003000_stage1.mp4"]
-    shown = show_videos({"MAPPO": tmp_path, "Double DQN": tmp_path / "missing"}, stage=1)
+    shown = show_videos({"MAPPO": tmp_path, "PQN": tmp_path / "missing"}, stage=1)
     out = capsys.readouterr().out
     assert len(shown) == 2 and "MAPPO: 2 replays of stage 1" in out and "2 from other stages" in out
-    assert "Double DQN: no replays of stage 1" in out
+    assert "PQN: no replays of stage 1" in out
 
 
 def test_pull_videos_fetches_only_the_missing_replays(tmp_path):
@@ -94,6 +95,43 @@ def test_pull_videos_fetches_only_the_missing_replays(tmp_path):
 
 def test_an_empty_stage_says_which_stages_have_replays(tmp_path, capsys):
     (tmp_path / "battle_000560384_stage0.mp4").write_bytes(b"x")
-    assert show_videos({"Double DQN": tmp_path}, stage=2) == []
+    assert show_videos({"PQN": tmp_path}, stage=2) == []
     out = capsys.readouterr().out
     assert "no replays of stage 2" in out and "1 from other stages (0; newest battle_000560384_stage0.mp4)" in out
+
+
+# ---------------------------------------------------------------------------------------------- the run lock
+
+def _write_lock(storage, **lock):
+    import json
+    from simple_mappo.team import _now
+    storage.backend.write("LOCK.json", json.dumps({"user": "someone", "session": "someone@elsewhere#abc123",
+                                                   "heartbeat": _now().isoformat(), "released": False,
+                                                   **lock}).encode())
+
+
+def test_a_finished_session_on_this_machine_does_not_block_the_run(tmp_path):
+    import socket
+    import subprocess
+    import sys
+    from simple_mappo.team import TeamStorageBusy
+    first = TeamStorage(str(tmp_path), "fleet_pqn", user="luki")
+    first.lock()
+    TeamStorage(str(tmp_path), "fleet_pqn", user="luki").lock()       # the notebook's cells run again
+    host = socket.gethostname()
+    done = subprocess.run([sys.executable, "-c", "import os; print(os.getpid())"], capture_output=True, text=True)
+    _write_lock(first, host=host, pid=int(done.stdout))                 # a restarted kernel's lock
+    TeamStorage(str(tmp_path), "fleet_pqn", user="luki").lock()
+    _write_lock(first, session=f"your-name@{host}#abc123")              # a lock from before locks had a pid
+    TeamStorage(str(tmp_path), "fleet_pqn", user="luki").lock()
+    running = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        _write_lock(first, host=host, pid=running.pid)                  # another kernel here, training now
+        with pytest.raises(TeamStorageBusy):
+            TeamStorage(str(tmp_path), "fleet_pqn", user="luki").lock()
+    finally:
+        running.kill()
+    _write_lock(first, host="elsewhere", pid=1)                          # a teammate's machine
+    with pytest.raises(TeamStorageBusy):
+        TeamStorage(str(tmp_path), "fleet_pqn", user="luki").lock()
+    TeamStorage(str(tmp_path), "fleet_pqn", user="luki").lock(force=True)

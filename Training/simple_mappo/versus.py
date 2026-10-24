@@ -1,19 +1,19 @@
-"""MAPPO against Double DQN: the two fleets fight each other, and (optionally) train against each other.
+"""MAPPO against PQN: the two fleets fight each other, and (optionally) train against each other.
 
 The stage notebooks compare the methods side by side - each against the rule AI. This is the other
-test: put one method's fleet on each side of the same battle. Used by Versus-MAPPO-vs-DDQN.ipynb:
+test: put one method's fleet on each side of the same battle. Used by Versus-MAPPO-vs-PQN.ipynb:
 
     stages  = versus_stages(4)                          # King of the Hill: [head to head, training]
     battles = NavalEnv(stages=stages, n_envs=8)
-    env_m, env_d = Monitor(battles, ".../mappo"), Monitor(battles, ".../ddqn")
-    mappo, dqn = MAPPO.load(..., env=env_m), FleetDDQN.load(..., env=env_d)
+    env_m, env_p = Monitor(battles, ".../mappo"), Monitor(battles, ".../pqn")
+    mappo, pqn = MAPPO.load(..., env=env_m), FleetPQN.load(..., env=env_p)
 
-    head_to_head(mappo, dqn, env_m, n_battles=40)      # MAPPO's fleet (blue) vs Double DQN's (red)
-    head_to_head(dqn, mappo, env_d, n_battles=40)      # the other way round: the same map from the other side
+    head_to_head(mappo, pqn, env_m, n_battles=40)      # MAPPO's fleet (blue) vs PQN's (red)
+    head_to_head(pqn, mappo, env_p, n_battles=40)      # the other way round: the same map from the other side
 
 The enemy seat is the "rival" of league.py: blue.set_rival(red) puts red's fleet into blue's league,
 and the stage's opponent mix sends every battle's enemy to it. Each fleet
-plays the way it plays in the game: MAPPO samples its options, Double DQN takes its best one.
+plays the way it plays in the game: MAPPO samples its options, PQN chooses by its Q-values.
 """
 
 from __future__ import annotations
@@ -83,13 +83,13 @@ def head_to_head(blue, red, env, n_battles: int = 40, deterministic: bool = Fals
             "mean_battle_time": float(np.mean([r["battle_time"] for r in results]))}
 
 
-def both_sides(mappo, dqn, env_mappo, env_dqn, n_battles: int = 40, deterministic: bool = False) -> dict:
+def both_sides(mappo, pqn, env_mappo, env_pqn, n_battles: int = 40, deterministic: bool = False) -> dict:
     """The head-to-head from both seats (each fleet once as blue), and MAPPO's overall win rate."""
-    a = head_to_head(mappo, dqn, env_mappo, n_battles, deterministic)
-    b = head_to_head(dqn, mappo, env_dqn, n_battles, deterministic)
+    a = head_to_head(mappo, pqn, env_mappo, n_battles, deterministic)
+    b = head_to_head(pqn, mappo, env_pqn, n_battles, deterministic)
     n = a["battles"] + b["battles"]
     mappo_wins = a["win_rate"] * a["battles"] + (1.0 - b["win_rate"]) * b["battles"]
-    return {"MAPPO as blue": a, "Double DQN as blue": b,
+    return {"MAPPO as blue": a, "PQN as blue": b,
             "mappo_win_rate": mappo_wins / max(1, n), "battles": n}
 
 

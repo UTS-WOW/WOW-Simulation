@@ -6,8 +6,8 @@ A recurrent MAPPO trainer for the fleets in this Unity project. The Unity side l
 This page covers **how to run it**. For **how it works** — observations, actions, rewards, networks,
 the algorithm, curriculum and export, with diagrams — see [../RL_README.md](../RL_README.md).
 
-> **The method the team trains now is [`simple_mappo/`](simple_mappo/README.md)** — MAPPO and Double
-> DQN with a fleet commander, built from the same captain network, compared stage by stage through a
+> **The method the team trains now is [`simple_mappo/`](simple_mappo/README.md)** — MAPPO and PQN
+> (the Parallelised Q-Network) with a fleet commander, built from the same captain network, compared stage by stage through a
 > nine-stage curriculum (one notebook per stage: `StageP-Imitation.ipynb`, `Stage0-Gunnery.ipynb` …
 > `Stage8-Archipelago-9v9.ipynb`), with shared S3 team checkpoints and SageMaker support. Its README
 > explains in detail how both methods work. It uses the same Unity environment; everything below is

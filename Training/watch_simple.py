@@ -1,4 +1,4 @@
-"""See a trained simple-MAPPO fleet in the real Unity game - on a computer with a screen.
+"""See a trained fleet (MAPPO or PQN) in the real Unity game - on a computer with a screen.
 
 Training runs the game headless (no graphics), so the replays it records are a 2D map drawn from
 the game's data. This shows the actual game instead:
@@ -22,7 +22,7 @@ import os
 
 import torch
 
-from simple_mappo import MAPPO, FleetDDQN, NavalEnv, record_unity_video
+from simple_mappo import MAPPO, FleetPQN, NavalEnv, record_unity_video
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -43,8 +43,8 @@ def main():
     else:
         env = NavalEnv(stages="default", n_envs=1, graphics=True, base_port=5900,
                        unity_log_dir=os.path.join(HERE, "runs_simple", "watch", "unity_logs"))
-    ddqn = torch.load(a.model, map_location="cpu", weights_only=False).get("method") == "fleet-ddqn"
-    model = (FleetDDQN if ddqn else MAPPO).load(a.model, env=env)      # a MAPPO or a Double DQN checkpoint
+    pqn = torch.load(a.model, map_location="cpu", weights_only=False).get("method") == "fleet-pqn"
+    model = (FleetPQN if pqn else MAPPO).load(a.model, env=env)        # a MAPPO or a PQN checkpoint
     if a.stage is not None:
         env.set_stage(a.stage)
     print(f"{os.path.basename(a.model)} ({model.num_timesteps:,} timesteps) on stage '{env.stages[env.stage]['name']}'")

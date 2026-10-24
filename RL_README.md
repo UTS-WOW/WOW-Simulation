@@ -9,7 +9,7 @@ back.
   [Training/README.md](Training/README.md).
 
 > **This page describes the original research pipeline (`Training/naval_rl/`).** The method the team
-> trains now — MAPPO and Double DQN with a fleet commander, a nine-stage curriculum, self-play with a
+> trains now — MAPPO and PQN with a fleet commander, a nine-stage curriculum, self-play with a
 > champion and cross-play — is explained in
 > [Training/simple_mappo/README.md](Training/simple_mappo/README.md). The Unity side described here
 > (the TCP protocol, observations, actions and masks, the C# policy) is shared by both.

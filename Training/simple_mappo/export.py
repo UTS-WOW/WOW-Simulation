@@ -4,8 +4,7 @@
         -> Assets/StreamingAssets/RL/naval_policy.bin (the previous file is kept as naval_policy.bin.bak)
     python export_simple.py --run-name fleet_pqn
         -> Assets/StreamingAssets/RL/naval_policy_pqn.bin (a PQN fleet - TRAINED FLEET: PQN in the game;
-           a Q-learner, so the game takes its best action instead of sampling - "greedy" in the header;
-           an earlier Double DQN fleet goes to naval_policy_ddqn.bin)
+           a Q-learner, so the game takes its best action instead of sampling - "greedy" in the header)
 
 Then in Unity: Play, and on the setup screen set "Enemy AI: Learned" (or "Your fleet: Learned"); the
 game's RLPolicyDriver flies those ships with the exported captains and, in fleets of two or more,
@@ -35,14 +34,13 @@ from .networks import Captain, Commander
 VERSION = 2
 TRAINING_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GAME_POLICY = os.path.join(TRAINING_DIR, "..", "Assets", "StreamingAssets", "RL", "naval_policy.bin")
-GAME_POLICY_DDQN = os.path.join(TRAINING_DIR, "..", "Assets", "StreamingAssets", "RL", "naval_policy_ddqn.bin")
 GAME_POLICY_PQN = os.path.join(TRAINING_DIR, "..", "Assets", "StreamingAssets", "RL", "naval_policy_pqn.bin")
 
 
 def game_file_for(algorithm: str) -> str:
     """Where the game looks for a method's fleet: TRAINED FLEET: MAPPO (naval_policy.bin) or PQN
-    (naval_policy_pqn.bin); an earlier Double DQN fleet goes to naval_policy_ddqn.bin."""
-    return {"pqn": GAME_POLICY_PQN, "ddqn": GAME_POLICY_DDQN}.get(algorithm, GAME_POLICY)
+    (naval_policy_pqn.bin)."""
+    return GAME_POLICY_PQN if algorithm == "pqn" else GAME_POLICY
 GAME_STAGES = os.path.join(TRAINING_DIR, "..", "Assets", "StreamingAssets", "RL", "stages.json")
 
 # What the commander may not see (simple_mappo/env.py zeroes the same): the true-state columns of
@@ -116,22 +114,23 @@ def commander_tensors(commander: Commander):
 
 
 def _load(source):
-    """A MAPPO / Double DQN model, or the path of a MAPPO / Double DQN / imitation checkpoint -> what the
-    export needs. A Double DQN captain's head scores are its advantages, so its best action is the
-    highest score: the game plays it greedily."""
+    """A MAPPO / PQN model, or the path of a MAPPO / PQN / imitation checkpoint -> what the export
+    needs. A PQN captain's head scores are its advantages, so its best action is the highest score:
+    the game plays it greedily."""
     if not isinstance(source, str):                          # a model in memory
         env = source.env
-        greedy = hasattr(source, "value_head")               # FleetDDQN / FleetPQN
-        return {"algorithm": getattr(source, "ALGORITHM", "mappo"), "captain": source.policy.captain, "commander": source.policy.commander, "dims": source.dims,
+        greedy = hasattr(source, "value_head")               # FleetPQN
+        return {"algorithm": "pqn" if greedy else "mappo", "captain": source.policy.captain,
+                "commander": source.policy.commander, "dims": source.dims,
                 "heads": source.heads, "arch": source.arch, "commander_period": source.hp["commander_period"],
                 "decision_period": getattr(env, "decision_period", 1.0),
                 "enemy_privileged": tuple(getattr(getattr(env, "spec", None), "enemy_privileged", DEFAULT_ENEMY_PRIVILEGED)),
-                "match_hidden": _match_hidden(env), "method": "fleet-ddqn" if greedy else "commander-mappo",
+                "match_hidden": _match_hidden(env), "method": "fleet-pqn" if greedy else "commander-mappo",
                 "greedy": greedy, "about": {"timesteps": source.num_timesteps, "stage": getattr(env, "stage", 0)}}
     ck = torch.load(source, map_location="cpu", weights_only=False)
     dims, heads = ck["dims"], ck["heads"]
     method = ck.get("method", "commander-mappo")
-    algorithm = ck.get("algorithm", "ddqn" if method == "fleet-ddqn" else "mappo")
+    algorithm = "pqn" if method == "fleet-pqn" else "mappo"
     if "captain" in ck:                                      # an imitation checkpoint: the clone, no commander
         arch = ck["arch"]
         captain = Captain(dims, heads, arch["d"], arch["attn_heads"], arch["layers"], arch["hidden"], arch["recurrent"])
@@ -153,7 +152,7 @@ def _load(source):
     return {"algorithm": algorithm, "captain": captain, "commander": commander, "dims": dims, "heads": heads,
             "arch": arch, "commander_period": period, "decision_period": ck.get("decision_period", 1.0),
             "enemy_privileged": tuple(ck.get("enemy_privileged", DEFAULT_ENEMY_PRIVILEGED)),
-            "match_hidden": match_hidden, "method": method, "greedy": method == "fleet-ddqn", "about": about}
+            "match_hidden": match_hidden, "method": method, "greedy": method == "fleet-pqn", "about": about}
 
 
 def _match_hidden(env) -> list[float]:
@@ -186,7 +185,7 @@ def pick_checkpoint(models_dir: str, verbose: bool = True) -> str | None:
 
 def export_policy(source, path: str = GAME_POLICY, commander: bool = True, backup: bool = True,
                   max_obstacles: int = 4) -> str:
-    """Writes the fleet (captain + commander) as the game's policy file. source: a MAPPO or Double DQN
+    """Writes the fleet (captain + commander) as the game's policy file. source: a MAPPO or PQN
     model, or a checkpoint path (model_*.pt from training, or imitation.pt for the clone alone).
     Returns the path."""
     m = _load(source)

@@ -56,11 +56,11 @@ namespace Naval.RL
         /// <summary>The file holds the fleet commander (v2): call Command every CommanderPeriod decisions.</summary>
         public bool HasCommander { get; private set; }
         public int CommanderPeriod { get; private set; } = 10;
-        /// <summary>The method that trained it: "commander-mappo", "fleet-ddqn" (a Q-learner: PQN or Double DQN) or "imitation".</summary>
+        /// <summary>The method that trained it: "commander-mappo", "fleet-pqn" (PQN, a Q-learner) or "imitation".</summary>
         public string Method { get; private set; } = "commander-mappo";
-        /// <summary>Which algorithm, for display: "mappo", "pqn" or "ddqn" (older files: from Method).</summary>
+        /// <summary>Which algorithm, for display: "mappo" or "pqn" (older files: from Method).</summary>
         public string Algorithm { get; private set; } = "mappo";
-        /// <summary>Its scores are Q-values (PQN, Double DQN): take the best option instead of sampling.</summary>
+        /// <summary>Its scores are Q-values (PQN): take the best option instead of sampling.</summary>
         public bool Greedy { get; private set; }
         public const int OrderFree = 0, OrderEngage = 1, OrderCircle = 2;     // order 2 + k = hold circle k
         int _enemyHiddenStart, _enemyHiddenEnd;     // critic_enemy columns the commander may not see (true state)
@@ -100,8 +100,8 @@ namespace Naval.RL
             if (header.TryGetValue("commander_period", out var cp)) p.CommanderPeriod = Math.Max(1, MiniJson.Int(cp));
             if (header.TryGetValue("method", out var me) && me is string method) p.Method = method;
             p.Algorithm = header.TryGetValue("algorithm", out var al) && al is string algorithm ? algorithm
-                        : p.Method == "fleet-ddqn" ? "ddqn" : "mappo";
-            if (header.TryGetValue("greedy", out var gr)) p.Greedy = (bool)gr;
+                        : p.Method == "fleet-pqn" ? "pqn" : "mappo";
+            p.Greedy = header.TryGetValue("greedy", out var gr) ? (bool)gr : p.Method == "fleet-pqn";
             if (header.TryGetValue("enemy_privileged", out var ep))
             {
                 var l = (List<object>)ep;

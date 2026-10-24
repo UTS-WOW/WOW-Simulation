@@ -567,8 +567,9 @@ they can be compared stage by stage:
 - **MAPPO** (Multi-Agent PPO, policy gradient) — every ship runs one shared *captain* network
   (a transformer over ships, circles and islands, a GRU memory, pointer heads for targets and circles)
   on what its team can see; a centralised critic that sees the true battle trains it;
-- **Double DQN** (value-based) — the same captain's outputs as dueling Q-values per action head,
-  Double Q-learning with n-step returns from a replay buffer of whole sequences (R2D2).
+- **PQN** (value-based; Gallici et al., ICLR 2025) — the same captain's outputs as dueling Q-values
+  per action head, Q(λ) targets on rollouts from the parallel battles, no replay buffer or target
+  network, the ships' Q-values summed (VDN).
 
 In both, a **fleet commander** gives every ship an order every 10 seconds (free, engage, or hold
 circle k); both start by imitating the game's Elite AI, and climb a **nine-stage curriculum** — from
@@ -578,7 +579,7 @@ trained fleets are exported to `StreamingAssets/RL/` and flown in the game by `R
 **TRAINING STAGES** screen (on BATTLE SETUP) plays any stage with either fleet.
 
 - **[Training/simple_mappo/README.md](Training/simple_mappo/README.md)** — **how it works, in
-  detail**: the environment, the reward, the networks, MAPPO and Double DQN step by step, the
+  detail**: the environment, the reward, the networks, MAPPO and PQN step by step, the
   curriculum, the league, training it (notebooks, SageMaker, team checkpoints), playing it in Unity,
   results.
 - **[Training/README.md](Training/README.md)** and **[RL_README.md](RL_README.md)** — the original
@@ -607,6 +608,6 @@ and the package assemblies in `Library/ScriptAssemblies`.
 |---|---|
 | [SHIPS.md](SHIPS.md) | How each real ship's statistics were converted into game values |
 | [ENVIRONMENT.md](ENVIRONMENT.md) | Terrain, draft and grounding, deployment, weather, fog of war, objective rules |
-| [Training/simple_mappo/README.md](Training/simple_mappo/README.md) | **The learned fleets: MAPPO and Double DQN, how they work and how to train and play them** |
+| [Training/simple_mappo/README.md](Training/simple_mappo/README.md) | **The learned fleets: MAPPO and PQN, how they work and how to train and play them** |
 | [RL_README.md](RL_README.md) | The original reinforcement-learning pipeline in depth (and the Unity side both share) |
 | [Training/README.md](Training/README.md) | Running the original pipeline: training player, training, evaluation, team checkpoints, results |

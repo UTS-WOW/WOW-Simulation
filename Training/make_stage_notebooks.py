@@ -37,24 +37,24 @@ PQN_SETTINGS = """pqn_settings = dict(learning_rate=2.5e-4, num_steps=128, epoch
 STAGES = [
     dict(file="Stage0-Gunnery.ipynb", name="Gunnery", scenario="gunnery", fleet="1 battleship vs 1 cruiser",
          opponent="Passive target (stop, hold fire)", rule="target sunk within 150 s in ≥70% of the last 50 battles",
-         session=200_000, script="close",
+         session=80_000, script="close",
          learns="""The first lesson is the most basic one: **destroy a ship**. Our battleship starts 7 km from an enemy cruiser that neither moves nor shoots - Python flies it with "stop, hold fire". The circle reward is off; damage and the kill pay, and the **win pays only for a kill within 150 s** - at 150 s without one the battle ends as a loss (against a target that never scores, the game itself would call every battle won, however slow).
 
 A battle is *passed* when the target is sunk within 150 seconds - just sinking it eventually is too easy (random play does it), so the stage asks for doing it quickly: picking the target, keeping the guns firing, closing in and using torpedoes.""",
          measured="Measured (32 battles each): random play sinks the target within 150 s in 52% of battles, the script \"close in, fire at will, torpedoes\" 76%."),
     dict(file="Stage1-Capture.ipynb", name="Capture", scenario="capture", fleet="1 cruiser",
          opponent="Passive destroyer, far away", rule="circle captured in ≥70% of the last 50 battles",
-         session=250_000, script="circle",
+         session=100_000, script="circle",
          learns="""**Capture the circle.** One cruiser, one neutral capture circle 4.5 km ahead; the only enemy is a passive destroyer 16 km beyond it, out of sight. Points come only from holding the circle, so the cruiser has to sail into it and stay inside until it is captured. The win reward is paid only for a capture (the passive enemy never scores, so the game would call every battle won).""",
          measured="Measured: random play captures the circle in 0% of battles, the script \"sail to circle A\" in 100%."),
     dict(file="Stage2-Defend.ipynb", name="Defend", scenario="defend", fleet="1 cruiser vs 1 cruiser",
          opponent="Recruit rule-based AI", rule="won in ≥70% of the last 100 battles",
-         session=300_000, script="circle",
+         session=150_000, script="circle",
          learns="""**Defend yourself while holding the circle.** A neutral circle lies 3 km ahead of our cruiser; an enemy cruiser flown by the rule AI comes for it from 8 km beyond. Winning means taking the circle and holding it *while staying afloat* - angling, dodging torpedoes, smoke, repair and fighting back. A per-second "survive" reward is switched on for this stage.""",
          measured="Measured: random play wins 12% of battles, sailing straight to the circle 0% - the cruiser has to fight smart."),
     dict(file="Stage3-Duel.ipynb", name="Duel", scenario="bb_duel", fleet="1v1 battleships",
          opponent="Recruit rule AI 60% · self-play 40%: itself 15%, its champion 10%, past selves 5%, the other method 10%", rule="won in ≥70% of the last 100 battles against the rule AI",
-         session=400_000, script="broadside",
+         session=250_000, script="broadside",
          learns="""**1v1.** Two battleships 13 km apart on open sea, both spotted and inside gun range from the first second. The duel is about **choosing and timing fire, angling the hull, and not throwing the ship away**. The circle reward is off here: the circle lies between the two battleships, so racing to it means sailing bow-on into the enemy's guns.
 
 **Self-play starts here** (`league.py`) - 40% of battles are against the fleet itself, in four ways:
@@ -67,33 +67,33 @@ A battle is *passed* when the target is sunk within 150 seconds - just sinking i
 Only the battles against the rule AI count for promotion.""",
          measured="Measured earlier with this battle: random play wins 16-28%, the broadside script 70%, flat MAPPO from scratch 59% after 300,000 timesteps."),
     dict(file="Stage4-King-of-the-Hill.ipynb", name="King of the Hill", scenario="koth_3v3", fleet="3v3 mixed fleet",
-         opponent="Veteran rule AI 60% · self-play 40% (itself, champion, past selves, the other method)", rule="won in ≥70% of the last 100 battles against the rule AI", session=500_000, script="circle",
+         opponent="Veteran rule AI 60% · self-play 40% (itself, champion, past selves, the other method)", rule="won in ≥70% of the last 100 battles against the rule AI", session=300_000, script="circle",
          learns="""**The first fleet battle - and the commander joins in.** A battleship, a cruiser and a destroyer a side, one capture circle in the middle of the open sea, 6 minutes. Every 10 seconds the **fleet commander** gives each ship an order - *free*, *engage* or *hold the circle* - and the captains carry it out (the circle reward follows the order). Team spirit 0.3: each ship's own reward is now partly shared with the fleet. 15% of battles replay earlier stages so the single-ship skills stay.""",
          measured="Measured earlier with this battle: random play wins about 18% against Veteran, flat MAPPO from scratch 25-33%, the circle script 67-88% (against Recruit), imitation alone (naval_rl) 58%."),
     dict(file="Stage5-Archipelago.ipynb", name="Archipelago", scenario="archipelago_3v3", fleet="3v3 mixed fleet",
-         opponent="Veteran rule AI 60% · self-play 40% (itself, champion, past selves, the other method)", rule="won in ≥70% of the last 150 battles against the rule AI", session=750_000, script="circle",
+         opponent="Veteran rule AI 60% · self-play 40% (itself, champion, past selves, the other method)", rule="won in ≥70% of the last 150 battles against the rule AI", session=350_000, script="circle",
          learns="""The same three ships a side, now among islands with **three capture circles** (A, B, C) and 8 minutes. This is where the commander earns its place: **which ship holds which circle, and who hunts**. Islands break line of sight, so spotting, smoke, radar and cover matter. Team spirit 0.5.""",
          measured="Measured earlier: imitation alone (naval_rl) won 45%, flat MAPPO 27%."),
     dict(file="Stage6-Domination.ipynb", name="Domination", scenario="domination_6v6", fleet="6v6 fleet",
          opponent="League: Elite rule AI 40% · itself 25% · its champion 10% · past selves 15% · the other method 10%",
-         rule="won in ≥70% of the last 200 battles against the Elite AI", session=1_000_000, script="circle",
+         rule="won in ≥70% of the last 100 battles against the Elite AI", session=500_000, script="circle",
          learns="""The full Domination game at 6v6, 15 minutes, on a **newly generated battlefield** every 8 battles (random preset, island density and weather). The enemy is drawn from a **league** (OpenAI Five / AlphaGo Zero / AlphaStar): the Elite rule AI 40%, the fleet **itself** 25% (a mirror battle - both sides learn), **its champion** 10% (the strongest version so far, replaced only when beaten in 55% of 40 battles), **past selves** 15% (the ones we lose to come up most) and **the other method's fleet** 10% (cross-play). Everyone gets an **Elo rating**. Only battles against the Elite AI count for promotion. Team spirit 0.8.""",
          measured=""),
     dict(file="Stage7-Open.ipynb", name="Open", scenario="open", fleet="Random 4–8 ships per side",
          opponent="League: Elite rule AI 40% · itself 25% · its champion 10% · past selves 15% · the other method 10%",
-         rule="won in ≥70% of the last 200 battles against the Elite AI", session=2_000_000,
+         rule="won in ≥70% of the last 100 battles against the Elite AI", session=570_000,
          script="circle",
          learns="""Anything the game can produce: 4 to 8 ships a side, a random game mode (Domination, Skirmish, Fleet Battle, Capture and Control), map preset, density, weather and circle size, 20 minutes - against the league. Team spirit 1.0: every ship cares about the fleet as much as about itself. Passing it moves the fleet on to the biggest battle, stage 8.""",
          measured="Measured: the SageMaker MAPPO run (2.2 M timesteps) won 83% of 24 held-out battles against the Elite AI here."),
     dict(file="Stage8-Archipelago-9v9.ipynb", name="Archipelago 9v9", scenario="archipelago_9v9",
          fleet="9v9, every class", opponent="League: Elite rule AI 40% · itself 25% · its champion 10% · past selves 15% · the other method 10%",
-         rule="Final stage: won in ≥70% of the last 200 evaluation battles against the Elite AI", session=5_000_000,
+         rule="Final stage: won in ≥70% of the last 120 evaluation battles against the Elite AI", session=700_000,
          script="circle",
          learns="""**The biggest battle: nine ships a side, every class that fights, five capture circles.** Three circles lie across the middle (A, B, C), D up-left near the enemy, E down-right near us - the layout of the game's own *Capture and Control* mode - among hand-placed islands that are the same for both sides (turned 180°). 12 minutes; the fleet that holds more circles scores faster.
 
 This stage is about **holding several circles, not crowding the centre one**. Two things push the fleet to spread out (`rewards.py`): a ship without an order is paid for the nearest circle that still *needs* a ship - one we do not own yet, shared out so 9 ships and 5 neutral circles become 2-2-2-2-1 - and the new `circles_held` term pays the whole fleet every second for holding more circles than the enemy. The commander can still order any ship to hold any circle.
 
-There is **no further promotion**. Every 100,000 timesteps the fleet plays 40 evaluation battles against the Elite AI; training stops once the last 200 reach 70%.""",
+There is **no further promotion**. Every 50,000 timesteps the fleet plays 40 evaluation battles against the Elite AI; training stops once the last 120 reach 70% - or at the stage's cap, the end of the 3,000,000-timestep curriculum.""",
          measured="Measured before any training on it (8 battles): the SageMaker MAPPO model, trained up to stage 7, won 3 of 8 against the Elite AI here. It out-fought the enemy - 6.0 enemy ships sunk per battle, 3.5 of its own lost - but lost on points (408 to 436): the enemy held more circles. That is what this stage teaches."),
 ]
 
@@ -212,7 +212,7 @@ Every stage notebook trains **two** runs on the same battles - one per method - 
 | Many ships | shared weights, centralised critic | shared weights; **PQN-VDN**: the fleet's Q is the sum of its ships' Q-values, trained on the fleet's reward |
 | Shared | the captain network (transformer + GRU + pointer heads), the commander, the rewards, the curriculum, self-play, the imitation start | ← same |
 
-Each run climbs the curriculum on its own (`runs_simple/fleet` and `runs_simple/fleet_pqn`), so a stage notebook only trains a run that is on its stage; the other one is still evaluated here, for the comparison. (An earlier Double DQN run, `fleet_ddqn`, is kept for the record: `simple_mappo/ddqn.py`.)
+Each run climbs the curriculum on its own (`runs_simple/fleet` and `runs_simple/fleet_pqn`), so a stage notebook only trains a run that is on its stage; the other one is still evaluated here, for the comparison.
 
 ### MAPPO in one picture
 
@@ -367,7 +367,7 @@ print("battles in parallel:", battles.n_envs, "| token sizes", battles.dims)
     md(f"""
 ## The two models
 
-`open_run` loads each run's latest checkpoint with all its training memory{' - or, with no checkpoint yet, starts a new model from the imitation checkpoint (`models/imitation.pt`; the PQN one takes it as its Q-network, so its greedy play starts as the Elite AI)' if k == 0 else ''}. It says when a run is on another stage: that run is then only evaluated here.
+`open_run` loads each run's latest checkpoint with all its training memory{' - or, with no checkpoint yet, starts a new model from the imitation checkpoint (`models/imitation.pt`; the PQN one takes it as its Q-network, so with Boltzmann exploration it starts by playing like the Elite AI)' if k == 0 else ''}. It says when a run is on another stage: that run is then only evaluated here.
 """)
     code(r"""
 imitation = os.path.join(models_dir, "imitation.pt")
@@ -436,11 +436,11 @@ if TRAIN_MAPPO:
     md(f"""
 ## Train PQN
 
-The same battles, the same rewards, the same stopping rule - learned with PQN: every battle plays `num_steps` (128) decisions, then the Q-network learns from that rollout - Q(λ) targets, `epochs` (4) passes in `minibatches` (4) minibatches - and the rollout is thrown away. No replay buffer to fill and no target network to copy: it trains from the first rollout, and needs about a fifth of the Double DQN's network work per timestep.
+The same battles, the same rewards, the same stopping rule - learned with PQN: every battle plays `num_steps` (128) decisions, then the Q-network learns from that rollout - Q(λ) targets, `epochs` (4) passes in `minibatches` (4) minibatches - and the rollout is thrown away. No replay buffer to fill and no target network to copy: it trains from the first rollout, with far less network work per timestep than a DQN sampling a replay buffer.
 
 Cross-play: before each method trains, the other one's fleet - its champion, if it has one - joins its league as the **rival** (`set_rival`), so each learns to beat a differently trained fleet too. A *new champion* message means the fleet just beat its best self.
 
-In the table: `q_loss` the squared TD error against the Q(λ) targets, `q_value` / `target_value` the Q-values and their targets (both should rise as the fleet starts winning), `epsilon` the commander's exploration rate, `replay_decisions` the size of the last rollout.
+In the table: `q_loss` the squared TD error against the Q(λ) targets, `q_value` / `target_value` the Q-values and their targets (both should rise as the fleet starts winning), `epsilon` the commander's exploration rate, `rollout_decisions` the size of the last rollout.
 """)
     code(r"""
 if TRAIN_PQN:
@@ -557,9 +557,9 @@ compare_stages({"MAPPO": log_dir, "PQN": pqn_log_dir}, env.stages)
     md("""
 ## Put the fleets into your Unity game
 
-Exports each run's best checkpoint (or its latest, if that has reached a later stage) as a policy file the game runs in plain C# (`Assets/Scripts/RL/RLPolicy.cs`): MAPPO's as `naval_policy.bin`, PQN's as `naval_policy_ddqn.bin`. From the repository they go straight into `Assets/StreamingAssets/RL/`; elsewhere (SageMaker) into the run folders - download them (right-click > Download) and copy them there.
+Exports each run's best checkpoint (or its latest, if that has reached a later stage) as a policy file the game runs in plain C# (`Assets/Scripts/RL/RLPolicy.cs`): MAPPO's as `naval_policy.bin`, PQN's as `naval_policy_pqn.bin`. From the repository they go straight into `Assets/StreamingAssets/RL/`; elsewhere (SageMaker) into the run folders - download them (right-click > Download) and copy them there.
 
-Then in Unity: **Play** > **TRAINING STAGES**; at the bottom pick **TRAINED FLEET: MAPPO** or **PQN**, and **WATCH AI** on any stage (or on the setup screen: **YOUR FLEET: LEARNED** / **ENEMY AI: LEARNED**). From a computer later: `python export_simple.py` and `python export_simple.py --run-name fleet_ddqn`.
+Then in Unity: **Play** > **TRAINING STAGES**; at the bottom pick **TRAINED FLEET: MAPPO** or **PQN**, and **WATCH AI** on any stage (or on the setup screen: **YOUR FLEET: LEARNED** / **ENEMY AI: LEARNED**). From a computer later: `python export_simple.py` and `python export_simple.py --run-name fleet_pqn`.
 """)
     code(r"""
 from simple_mappo.export import GAME_POLICY, GAME_POLICY_PQN, export_policy, pick_checkpoint
@@ -617,7 +617,7 @@ A random policy almost never wins a naval battle, so reinforcement learning from
 
 1. **Record** - the Elite AI flies both fleets; for every decision of every one of our ships the game reports the option it chose on each of the six action heads. That is a labelled dataset: *observation → action*.
 2. **Clone** - train the captain network to predict those labels. It is **Week 9 Part A** again: a classifier, a `DataLoader`, `CrossEntropyLoss` (one per action head), `Adam`, a loss curve and an accuracy curve.
-3. **Hand over** - the cloned captain is saved as `models/imitation.pt`. The Stage 0 notebook starts **both** RL models from it: MAPPO's captain (a KL penalty that fades out keeps it close to the clone at first - AlphaStar's KL to the supervised policy) and PQN's Q-network (the clone's head scores become its advantages, so its greedy play starts as the Elite AI's).
+3. **Hand over** - the cloned captain is saved as `models/imitation.pt`. The Stage 0 notebook starts **both** RL models from it: MAPPO's captain (a KL penalty that fades out keeps it close to the clone at first - AlphaStar's KL to the supervised policy) and PQN's Q-network (the clone's head scores become its advantages, so with Boltzmann exploration it starts by playing like the Elite AI).
 
 In this project's first pipeline, cloning alone won **58%** of King of the Hill battles where RL from scratch won 20%.
 
@@ -778,44 +778,41 @@ What differs is **what the captain's head outputs mean** and **how they are trai
    - **commander** — the same PPO on its orders (one joint decision for the fleet).
 4. Throw the data away and collect again (**on-policy**: every decision is used for one update only).
 
-### 1.3 PQN — value-based (Week 9's DQN, for a team)
+### 1.3 PQN — value-based (Week 9's DQN, as it is done in 2025)
 
-**Idea.** Learn **Q(s, a)** — the return to expect after choosing a in state s — and always take the option with the highest Q. Learning makes Q match what actually followed: the rewards plus the value of where the ship ended up.
+**Idea.** Learn **Q(s, a)** — the return to expect after choosing a in state s — and choose by it. Learning makes Q match what actually followed: the rewards plus the value of where the ship ended up. This is DQN's idea; **PQN** (the *Parallelised Q-Network*, Gallici et al., "Simplifying Deep Temporal Difference Learning", ICLR 2025) is how it is done now. DQN needed a big **replay buffer** and a **target network** to stay stable; PQN shows that **normalisation inside the Q-network (LayerNorm)** makes both unnecessary, and learns instead from many battles played in parallel — the way PPO does. On SMAX (StarCraft multi-agent battles) PQN with value decomposition beat both QMIX and MAPPO, and trained several times faster than DQN.
 
 **Six heads at once.** One Q per *complete* action would need 20 × 5 × 10 × 2 × 2 × 15 = 60,000 outputs. Instead every head has its own Q, sharing one state value (**dueling + branching** DQN):
 ```
 Q_d(s, a_d) = V(s) + A_d(s, a_d) − mean of A_d over the legal options
 ```
-The advantages A_d are the captain's head outputs; V is one extra layer. So **the Q-network is the captain** — which is why the game can fly it with the same C# code (it just takes the best option).
+The advantages A_d are the captain's head outputs; V is one extra layer. So **the Q-network is the captain** — the same network as MAPPO's, LayerNorm included (after the encoder and in every attention block), and the game can fly it with the same C# code (it takes the best option).
 
-**One round** (`ddqn.py`):
+**One update** (`pqn.py`):
 
-1. **Play** 32 decisions in every battle. With `exploration="softmax"` (the default in these notebooks) each option is chosen with probability ∝ exp(Q / 0.1) - **Boltzmann exploration**: from the clone, whose scores × 0.1 are the first advantages, that is exactly the clone's own choice, sampled; as the Q-values grow apart it becomes greedier. With `exploration="epsilon"`: the best option, or with probability ε a random legal one (ε 0.3 → 0.05 from the clone). Measured on Gunnery over 200,000 timesteps from the clone: ε-greedy passed 28-49 % of every 100 battles, softmax 50-71 % - greedy play of a cloned policy takes only its single likeliest option on every head (e.g. always "hold fire" when the clone is 55/45), and loses most of what the clone knew.
-2. **Store** one **chunk** per fleet in the **replay buffer**: 33 observations, the actions, orders, rewards, battle ends — and the GRU memory at the chunk's start, so training can replay the chunk through the memory (**R2D2**). The buffer holds 40,000 decisions; old ones drop out.
-3. Once the buffer holds 4,000 decisions: **4 gradient steps**, each on 32 chunks sampled from it (**off-policy**: a decision is reused many times). For every decision:
+1. **Play** 128 decisions in every battle. With `exploration="softmax"` (these notebooks' setting) each option is chosen with probability ∝ exp(Q / 0.1) — **Boltzmann exploration**: from the clone, whose scores × 0.1 are the first advantages, that is exactly the clone's own choice, sampled; as the Q-values grow apart it becomes greedier. With `exploration="epsilon"` (the paper's): the best option, or with probability ε a random legal one. Greedy play of a cloned policy keeps only its single likeliest option on every head (always "hold fire" when the clone is 55/45) — measured on Gunnery, the ε-greedy Q-learner passed 28-49 % of every 100 battles, the softmax one 50-71 %.
+2. **Targets**: **Q(λ) returns**, backwards along every ship's rollout, with the network as it was when the rollout ended (frozen for this update):
    ```
-   a*_d = argmax Q_online,d(s_t+5, ·)                       the ONLINE network picks the next option (per head)…
-   next = mean over heads of Q_target,d(s_t+5, a*_d)        …the TARGET network scores it  (PQN)
-   y    = r_t + γ r_t+1 + … + γ⁴ r_t+4 + γ⁵ · next          5-step return, γ = 0.99 (stops at the battle's end)
-   loss = mean over heads of Huber(Q_online,d(s_t, a_t,d) − y)   every head trained to the same y (BDQ)
+   R_t = r_t + γ [ λ R_t+1 + (1 − λ) max_a Q(s_t+1, a) ]        λ = 0.85, γ = 0.99, 0 after a battle's end
    ```
-   Plain DQN uses the target network for both picking and scoring and **over-estimates** (it takes the max of noisy numbers); PQN splits the two jobs.
-4. Every 250 gradient steps, copy the online network into the **target network** (Week 9 C/D).
+   A decision here is one second of a 6-15 minute battle: λ-returns carry the result back over many more decisions than DQN's 1- or 5-step targets. With several heads, max Q is the mean of the heads' best (BDQ).
+3. **Fleet value — PQN-VDN**: the fleet's Q is the **sum of its ships' Q-values**, trained on the fleet's reward (Value Decomposition Networks, the paper's multi-agent version).
+4. **Learn** — 4 epochs × 4 minibatches of chunks of 32 decisions (the GRU replays each from the ships' memory at its start), squared error to R, gradients clipped at 1. Then **throw the rollout away** and play the next one: no replay buffer, so a self-play opponent that changed is never learned from twice.
 5. **Commander**: its scores for (ship, order) are Q-values too; a set of orders is worth the sum. Between its decisions an order stays in force, so it learns at every step: the next value is Q(next state, *the same* orders), or the best orders at its next decision (h-DQN, intra-option Q-learning).
-6. **Starting from the clone** ("kickstarting"): the clone's scores × 0.1 become the first advantages (the same best options, at the size of Q-values), and a fading penalty KL(clone ‖ softmax(A / 0.1)) keeps it close while the Q-values are still meaningless — without it the first updates erased the clone.
+6. **Starting from the clone** ("kickstarting"): the clone's scores × 0.1 become the first advantages, and a fading penalty KL(clone ‖ softmax(A / 0.1)) keeps it close while the Q-values are still meaningless.
 
 ### 1.4 Side by side
 
 | | MAPPO | PQN |
 |---|---|---|
-| Family | policy gradient | value-based |
+| Family | policy gradient | value-based (Q-learning) |
 | Acts by | **sampling** its probabilities | **sampling** softmax(Q / 0.1) - Boltzmann (or the **best** Q, ε-greedy) |
-| Learns from | the battles it just played (on-policy) | a replay buffer of past chunks (off-policy) |
-| Learning signal | advantage from a centralised critic (GAE) | Double-Q target with 5-step returns |
+| Learns from | a rollout of the battles it just played, 5 epochs | a rollout of the battles it just played, 4 epochs |
+| Learning signal | advantage from a centralised critic (GAE, λ 0.95) | Q(λ) targets (λ 0.85), the ships' Q summed (VDN) |
 | Exploration | entropy bonus | Boltzmann (softmax over Q), or ε-greedy |
-| Stability tricks | clip, dual clip, value normalisation | target network, Huber loss, n-step returns |
+| Stability tricks | clip, dual clip, value normalisation | LayerNorm, gradient clipping - no target network, no replay buffer |
 | Commander | PPO at a 10 s clock | Q-learning on (ship, order) |
-| Strength (in theory) | copes well with an opponent that keeps changing; what OpenAI Five and Honor of Kings used | reuses its data many times; the StarCraft micro-management classic (QMIX) |
+| Strength (in theory) | copes well with an opponent that keeps changing; what OpenAI Five and Honor of Kings used | the best of Q-learning on SMAX (StarCraft): faster than QMIX and MAPPO there |
 """
 
 VERSUS_TEST_MD = r"""
@@ -827,7 +824,7 @@ The stage notebooks compare the methods **side by side** — each against the ru
 
 **Training each other** (`TRAIN_EACH_OTHER = True`). Rounds of *iterated best response*: MAPPO trains against PQN's current fleet, then PQN trains against MAPPO's improved one, and so on — after every round both are measured again: head to head, and each against the rule AI. Things to watch for:
 
-* **Who adapts faster.** Off-policy PQN reuses every battle many times; on-policy MAPPO needs fresh battles. The head-to-head win rate over the rounds shows which one learns to counter the other first.
+* **Who adapts faster.** Both learn from rollouts of fresh battles; PQN's targets come from its own Q-values (bootstrapping), MAPPO's from a separate critic. The head-to-head win rate over the rounds shows which one learns to counter the other first.
 * **Exploitation.** Two fleets that only meet each other can learn tricks that only work on each other. That is why `RIVAL_SHARE` keeps the stage's rule AI in the training mix (30 % by default) — and why the rule-AI win rates are measured every round: if a fleet beats its rival more but the rule AI less, it is exploiting, not improving.
 * **Cycles.** A beats B, B adapts and beats A, A adapts back... — rock-paper-scissors. The league's champion and past copies exist to break such cycles in the main training.
 

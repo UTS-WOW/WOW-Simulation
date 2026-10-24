@@ -296,7 +296,7 @@ def test_circles_held_pays_the_fleet():
     assert terms["circles_held"] == pytest.approx(np.full(N, REWARD_WEIGHTS["circles_held"] * 2.0 / 3))
 
 
-# ---------------------------------------------------------------------------------------------- Double DQN
+# ---------------------------------------------------------------------------------------------- PQN
 
 def test_checkpoints_from_fewer_ship_slots_still_fit():
     from simple_mappo.networks import same_heads
@@ -316,39 +316,30 @@ def test_epsilon_greedy_takes_the_best_legal_option_or_a_random_legal_one():
     assert set(explore[:, 0].tolist()) == {0, 1} and set(explore[:, 1].tolist()) == {1}
 
 
-def test_n_step_targets_stop_at_the_end_of_a_battle(env):
-    from simple_mappo.ddqn import FleetDDQN
-    model = FleetDDQN(env, d_model=32, attn_layers=1, hidden_size=32, gamma=0.5, n_step=2, verbose=0)
-    r = torch.tensor([[1.0], [1.0], [1.0], [1.0]])     # [T + 1, B]
-    done = torch.tensor([[0.0], [1.0], [0.0], [0.0]])  # the battle ends after step 1
-    q_next = torch.tensor([[10.0], [10.0], [10.0], [10.0]])
-    y = model._n_step_targets(r, done, q_next)[:, 0]
-    # t=0: 1 + 0.5 * 1, then the battle ended - no bootstrap; t=1: 1, ended; t=2: 1 + 0.5 * 10 (chunk end)
-    assert y.tolist() == pytest.approx([1.5, 1.0, 6.0])
-
-
-def test_replay_keeps_only_used_ship_slots_and_pads_batches():
-    from simple_mappo.ddqn import SequenceReplay
-    replay = SequenceReplay(capacity=64, chunk_len=4)
+def test_a_rollout_keeps_only_used_ship_slots_and_pads_minibatches():
+    from simple_mappo.pqn import RolloutChunks
+    rollout = RolloutChunks(chunk_len=4)
     for ships in (1, 3):
         exists = np.zeros((5, 9), np.float32)
         exists[:, :ships] = 1
-        replay.add({"exists": exists, "self": np.ones((5, 9, 7), np.float32), "critic_enemy_mask": exists.copy(),
-                    "critic_enemy": np.ones((5, 9, 2), np.float32), "rewards": np.ones((5, 9), np.float32),
-                    "dones": np.zeros(5, np.float32), "h0": np.ones((9, 4), np.float32)})
-    assert replay.chunks[0]["self"].shape == (5, 1, 7) and replay.chunks[0]["self"].dtype == np.float16
-    batch = replay.sample(8)
-    assert batch["self"].shape == (5, 8, 3, 7) and batch["h0"].shape == (8, 3, 4)
+        rollout.add({"exists": exists, "self": np.ones((5, 9, 7), np.float32), "critic_enemy_mask": exists.copy(),
+                     "critic_enemy": np.ones((5, 9, 2), np.float32), "rewards": np.ones((5, 9), np.float32),
+                     "dones": np.zeros(5, np.float32), "h0": np.ones((9, 4), np.float32)})
+    assert rollout.chunks[0]["self"].shape == (5, 1, 7) and rollout.chunks[0]["self"].dtype == np.float16
+    assert len(rollout) == 2 and rollout.decisions == 8
+    batch = rollout.stack([1, 0])
+    assert batch["self"].shape == (5, 2, 3, 7) and batch["h0"].shape == (2, 3, 4)
+    assert batch["exists"][:, 1, 1:].sum() == 0                  # the 1-ship chunk is padded with empty slots
 
 
-def test_ddqn_learn_save_load_and_predict(env, tmp_path):
-    from simple_mappo.ddqn import FleetDDQN
-    model = FleetDDQN(env, d_model=32, attn_layers=1, hidden_size=32, chunk_len=8, learning_starts=16, batch_size=4,
-                      gradient_steps=2, mixer="qmix", verbose=0, log_dir=str(tmp_path))
-    model.learn(total_timesteps=8 * env.n_envs * 3, log_interval=1)
+def test_pqn_learn_save_load_and_predict(env, tmp_path):
+    from simple_mappo.pqn import FleetPQN
+    model = FleetPQN(env, d_model=32, attn_layers=1, hidden_size=32, chunk_len=8, num_steps=16, mixer="none",
+                     verbose=0, log_dir=str(tmp_path))
+    model.learn(total_timesteps=16 * env.n_envs * 3, log_interval=1)
     assert model.n_updates == 3 and model.n_gradient_steps > 0 and (tmp_path / "progress.csv").exists()
     path = model.save(str(tmp_path / "q"))
-    again = FleetDDQN.load(path, env=env)
+    again = FleetPQN.load(path, env=env)
     obs = env.reset()
     a1, a2 = model.predict(obs, deterministic=True), again.predict(obs, deterministic=True)
     assert np.array_equal(a1, a2)
@@ -358,6 +349,8 @@ def test_ddqn_learn_save_load_and_predict(env, tmp_path):
         chosen = np.take_along_axis(mask[..., off:off + size], a1[..., h:h + 1], -1)
         assert (chosen[obs["exists"] > 0.5] > 0.5).all()
         off += size
+    with pytest.raises(ValueError):
+        FleetPQN(env, mixer="qmix")
 
 
 # ---------------------------------------------------------------------------------------------- the league
@@ -379,14 +372,14 @@ def test_champion_is_replaced_only_when_beaten():
 
 
 def test_cross_play_puts_the_other_methods_fleet_in_the_league(env):
-    from simple_mappo.ddqn import FleetDDQN
+    from simple_mappo.pqn import FleetPQN
     mappo = MAPPO(env, d_model=32, attn_layers=1, hidden_size=32, verbose=0)
-    dqn = FleetDDQN(env, d_model=32, attn_layers=1, hidden_size=32, verbose=0)
-    assert mappo.set_rival(dqn) and dqn.set_rival(mappo)
+    pqn = FleetPQN(env, d_model=32, attn_layers=1, hidden_size=32, verbose=0)
+    assert mappo.set_rival(pqn) and pqn.set_rival(mappo)
     rival = mappo.league.sample("rival")
-    assert mappo.league.greedy(rival)                # a Double DQN fleet takes its best action
-    assert not dqn.league.greedy(dqn.league.sample("rival"))
-    assert not mappo.set_rival(FleetDDQN(env, d_model=16, attn_layers=1, hidden_size=32, verbose=0))  # other network
+    assert mappo.league.greedy(rival)                # a PQN fleet chooses by its Q-values
+    assert not pqn.league.greedy(pqn.league.sample("rival"))
+    assert not mappo.set_rival(FleetPQN(env, d_model=16, attn_layers=1, hidden_size=32, verbose=0))  # other network
     obs = env.reset()
     enemy = {k: v[:1] for k, v in obs.items()}
     assert mappo._opponent_act(enemy, [0], [rival]).shape == (1, env.n_agents, len(env.head_sizes))
@@ -432,18 +425,18 @@ def test_a_log_with_an_older_layout_is_read_and_rewritten(tmp_path):
 
 
 def test_head_to_head_puts_the_other_fleet_in_the_enemy_seat(tmp_path):
-    from simple_mappo.ddqn import FleetDDQN
+    from simple_mappo.pqn import FleetPQN
     from simple_mappo.utils import Monitor, load_results
     from simple_mappo.versus import both_sides, versus_stages
     battles = NavalEnv(stages=versus_stages(4), n_envs=2, mock=True)
     try:
-        env_m, env_d = Monitor(battles, str(tmp_path / "m")), Monitor(battles, str(tmp_path / "d"))
+        env_m, env_p = Monitor(battles, str(tmp_path / "m")), Monitor(battles, str(tmp_path / "p"))
         mappo = MAPPO(env_m, d_model=32, attn_layers=1, hidden_size=32, verbose=0)
-        dqn = FleetDDQN(env_d, d_model=32, attn_layers=1, hidden_size=32, verbose=0)
-        r = both_sides(mappo, dqn, env_m, env_d, n_battles=2)
+        pqn = FleetPQN(env_p, d_model=32, attn_layers=1, hidden_size=32, verbose=0)
+        r = both_sides(mappo, pqn, env_m, env_p, n_battles=2)
         assert r["battles"] == 4 and 0.0 <= r["mappo_win_rate"] <= 1.0
         assert set(load_results(str(tmp_path / "m")).opponent) == {"rival"}
-        assert mappo.league.greedy(mappo.league.sample("rival"))           # Double DQN plays greedily
+        assert mappo.league.greedy(mappo.league.sample("rival"))           # PQN plays by its Q-values
     finally:
         battles.close()
 
@@ -482,21 +475,20 @@ def test_a_missed_deadline_ends_the_battle():
     assert info["reward_terms"]["loss"] < 0
 
 
-def test_ddqn_mirror_battles_train_both_fleets():
-    """Self-play for Double DQN too: in a mirror battle both fleets' chunks go into the replay buffer."""
-    from simple_mappo.ddqn import FleetDDQN
+def test_pqn_mirror_battles_train_both_fleets():
+    """Self-play for PQN too: in a mirror battle both fleets' chunks go into the rollout."""
+    from simple_mappo.pqn import FleetPQN
     stages = [{"name": "mirror", "scenario": "scenarios/stage1_koth_3v3.json", "opponent": "league",
                "opponents": {"mirror": 1.0}},
               {"name": "rule", "scenario": "scenarios/stage1_koth_3v3.json", "opponent": "rule"}]
     env = NavalEnv(stages=stages, n_envs=2, mock=True, seed=4)
     try:
-        dqn = FleetDDQN(env, chunk_len=8, learning_starts=10_000, d_model=32, attn_layers=1, hidden_size=32,
-                        verbose=0)
-        dqn.learn(total_timesteps=8 * 2)                         # one chunk of 8 decisions per battle
-        assert len(dqn.replay.chunks) == 4                       # 2 battles x both sides
+        pqn = FleetPQN(env, chunk_len=8, num_steps=8, d_model=32, attn_layers=1, hidden_size=32, verbose=0)
+        pqn.learn(total_timesteps=8 * 2)                         # one rollout: a chunk of 8 decisions per battle
+        assert len(pqn.rollout) == 4                             # 2 battles x both sides
         env.set_stage(1)                                         # against the rule AI: our side only
-        dqn.learn(total_timesteps=dqn.num_timesteps + 8 * 2)
-        assert len(dqn.replay.chunks) == 6
+        pqn.learn(total_timesteps=pqn.num_timesteps + 8 * 2)
+        assert len(pqn.rollout) == 2
     finally:
         env.close()
 
@@ -573,11 +565,11 @@ def test_running_aground_and_ramming_cost_points():
     assert not terms["aground"].any() and not terms["collision"].any()
 
 
-def test_ddqn_softmax_exploration_samples_and_trains(env, tmp_path):
-    from simple_mappo.ddqn import FleetDDQN
-    greedy = FleetDDQN(env, d_model=32, attn_layers=1, hidden_size=32, verbose=0)
-    soft = FleetDDQN(env, d_model=32, attn_layers=1, hidden_size=32, exploration="softmax", temperature=10.0,
-                     chunk_len=8, learning_starts=16, batch_size=4, verbose=0)
+def test_pqn_softmax_exploration_samples_and_trains(env, tmp_path):
+    from simple_mappo.pqn import FleetPQN
+    greedy = FleetPQN(env, d_model=32, attn_layers=1, hidden_size=32, exploration="epsilon", verbose=0)
+    soft = FleetPQN(env, d_model=32, attn_layers=1, hidden_size=32, exploration="softmax", temperature=10.0,
+                    chunk_len=8, num_steps=16, verbose=0)
     soft.policy.load_state_dict(greedy.policy.state_dict())
     assert greedy.act_temperature is None and soft.act_temperature == 10.0
     obs = env.reset()
@@ -587,6 +579,53 @@ def test_ddqn_softmax_exploration_samples_and_trains(env, tmp_path):
     assert {tuple(soft.predict(obs, deterministic=True)[0, 0]) for _ in range(5)} == picks_g   # deterministic = greedy
     soft.learn(total_timesteps=64)                              # plays (and trains) with it, saves and reloads it
     path = soft.save(str(tmp_path / "soft"))
-    assert FleetDDQN.load(path, env=env).hp["exploration"] == "softmax"
+    assert FleetPQN.load(path, env=env).hp["exploration"] == "softmax"
     with pytest.raises(ValueError):
-        FleetDDQN(env, exploration="boltzmann")
+        FleetPQN(env, exploration="boltzmann")
+
+
+def test_pqn_lambda_targets(env):
+    from simple_mappo.pqn import FleetPQN
+    m = FleetPQN(env, d_model=32, attn_layers=1, hidden_size=32, gamma=0.5, num_steps=32, verbose=0)
+    r = torch.tensor([[1.0], [2.0], [4.0], [0.0]])           # [T1 = 4, B = 1]: 3 decisions + the bootstrap state
+    q = torch.tensor([[10.0], [20.0], [30.0], [40.0]])       # max_a Q(s_t)
+    no_end = torch.zeros(4, 1)
+    m.hp["lam"] = 1.0                                        # the discounted return, bootstrapped at the end
+    assert m._lambda_targets(r, no_end, q)[:, 0].tolist() == pytest.approx([1 + 0.5 * 2 + 0.25 * 4 + 0.125 * 40,
+                                                                            2 + 0.5 * 4 + 0.25 * 40, 4 + 0.5 * 40])
+    m.hp["lam"] = 0.0                                        # one-step Q-learning targets
+    assert m._lambda_targets(r, no_end, q)[:, 0].tolist() == pytest.approx([1 + 0.5 * 20, 2 + 0.5 * 30, 4 + 0.5 * 40])
+    end = torch.tensor([[0.0], [1.0], [0.0], [0.0]])         # the battle ends after decision 1
+    m.hp["lam"] = 0.5
+    y = m._lambda_targets(r, end, q)[:, 0].tolist()
+    assert y[1] == pytest.approx(2.0)                        # nothing after the end
+    assert y[0] == pytest.approx(1 + 0.5 * (0.5 * 2.0 + 0.5 * 20))
+    assert y[2] == pytest.approx(4 + 0.5 * 40)               # a new battle: its own bootstrap
+
+
+def test_pqn_learns_saves_and_loads(env, tmp_path):
+    from simple_mappo.pqn import FleetPQN
+    m = FleetPQN(env, d_model=32, attn_layers=1, hidden_size=32, num_steps=64, verbose=0)
+    m.learn(total_timesteps=64 * env.n_envs * 2)
+    assert m.n_updates == 2 and m.n_gradient_steps == 2 * 4 * 4        # epochs x minibatches per update
+    path = m.save(str(tmp_path / "pqn"))
+    loaded = FleetPQN.load(path, env=env)
+    assert loaded.hp["lam"] == 0.85 and loaded.num_timesteps == m.num_timesteps
+    assert torch.load(path, weights_only=False)["method"] == "fleet-pqn"
+    mappo = MAPPO(env, d_model=32, attn_layers=1, hidden_size=32, verbose=0).save(str(tmp_path / "mappo"))
+    with pytest.raises(ValueError):
+        FleetPQN.load(mappo, env=env)                        # a MAPPO checkpoint is not a PQN one
+
+
+def test_a_kernel_whose_folder_was_renamed_says_restart(tmp_path, monkeypatch):
+    from simple_mappo import env as env_module
+    env_module.check_code_location()                              # the tests run from Training/: all is well
+    monkeypatch.setattr(env_module, "TRAINING_DIR", str(tmp_path / "A3_DDQN" / "Training"))
+    with pytest.raises(RuntimeError, match="no longer exists"):
+        env_module.find_unity_binary()                            # renamed after the kernel started
+    old, new = tmp_path / "A3_DDQN" / "Training", tmp_path / "A3_PQN" / "Training"
+    for folder in (old, new):
+        (folder / "simple_mappo").mkdir(parents=True)
+    monkeypatch.chdir(new)
+    with pytest.raises(RuntimeError, match="Restart the kernel"):
+        env_module.check_code_location()                          # the code still comes from the old copy
