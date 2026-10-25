@@ -245,6 +245,9 @@ namespace Naval
         /// <summary>The scenario currently being played, if the match came from the editor.</summary>
         public Scenario ActiveScenario { get; private set; }
 
+        /// <summary>Counts the battles begun since the game started: tells one battle from the next.</summary>
+        public int MatchNumber { get; private set; }
+
         /// <summary>
         /// Who flies each fleet in the next scenario (BeginScenario applies Setup's controllers). The
         /// training-stage screen uses it: a stage's scenario picks its own ships, the stage picks the pilots.
@@ -266,6 +269,7 @@ namespace Naval
         {
             if (sc == null) return;
             ActiveScenario = sc;
+            MatchNumber++;
 
             Mode = GameMode.Domination;
             _seed = sc.seed;
@@ -373,6 +377,7 @@ namespace Naval
             Mode = mode;
             _seed = seed;
             ActiveScenario = null;
+            MatchNumber++;
             if (WorldMap.I != null) WorldMap.I.ApplyScenario(null);
             Phase = GamePhase.Deployment;
             BattleTime = 0f;

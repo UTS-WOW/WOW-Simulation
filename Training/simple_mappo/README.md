@@ -846,12 +846,17 @@ and keeps the previous file as `.bak`. The stage notebooks export both as their 
 In Unity press **Play** → BATTLE SETUP → **TRAINING STAGES**:
 
 - the nine stages, each with its battle, **SHIPS** (by class), opponent and pass rule;
-- **WATCH AI** (the trained fleet vs the stage's opponent), **FIGHT AI** (you vs the trained fleet),
-  **PLAY IT** (you vs the stage's opponent);
-- **TRAINED FLEET: MAPPO / PQN** — which exported fleet WATCH AI and FIGHT AI use (greyed out
-  until that file exists). A PQN file is marked *greedy*: the game takes the best option.
+- **MAPPO v PQN** (MAPPO's fleet in blue against PQN's in red, as in `Versus-MAPPO-vs-PQN.ipynb`;
+  not on the passive-target stages 0 and 1), **WATCH MAPPO / PQN** (the trained fleet vs the stage's
+  opponent), **FIGHT MAPPO / PQN** (you vs the trained fleet), **PLAY IT** (you vs the stage's opponent);
+- **TRAINED FLEET: MAPPO / PQN** — which exported fleet WATCH and FIGHT use; the buttons are named
+  after it (greyed out until that file exists). A PQN file is marked *greedy*: the game takes the best option.
 
-Or in a normal battle: **YOUR FLEET: LEARNED** / **ENEMY AI: LEARNED**. What runs is exactly what
+Or in a normal battle: **YOUR FLEET: LEARNED** / **ENEMY AI: LEARNED**, with **LEARNED = MAPPO / PQN**
+next to them. In every battle with a trained fleet in it, the banner under the score says who flies
+each side — `WATCHING  BLUE MAPPO (stage 8 · 3.42M timesteps)  vs  RED RULE AI (ELITE)` — with the
+training stage on its second line; the roster title (`TASK FORCE · MAPPO`) and the result screen
+(`MAPPO WINS`) name it too. The stage and timesteps come from the exported file. What runs is exactly what
 trained: every learned ship runs the captain on its own view with its GRU memory, and in fleets of two
 or more the commander gives orders every 10 decisions. `tests/test_policy_parity.py` checks the C#
 forward pass against PyTorch (logits, GRU memory over two decisions, commander orders: errors of 1e-7 to 1e-6).
@@ -861,6 +866,7 @@ From the command line (also the built player in `Builds/NavalTrainer/`):
 ```bash
 NavalTrainer.x86_64 -rlStages                                  # open on the TRAINING STAGES screen
 NavalTrainer.x86_64 -rlDemo player -rlStage 8                  # straight into stage 8, the trained fleet playing
+NavalTrainer.x86_64 -rlDemo versus -rlStage 8 -rlDemoSpeed 4   # MAPPO (blue) vs PQN (red) on stage 8, at 4x
 NavalTrainer.x86_64 -rlStages -rlScreenshot stages.png         # a picture of the screen, then quit
 python watch_simple.py --model <checkpoint.pt>                 # a video rendered by Unity (MAPPO or PQN)
 ```
@@ -909,36 +915,37 @@ python watch_simple.py --model <checkpoint.pt>                 # a video rendere
 
 ## 14. Results so far
 
-Win / pass rates against the rule AI, sampled actions for MAPPO, measured with the real game. With
-24–40 battles a number is about ±8–10 percentage points.
+The final runs (SageMaker, 4 battles in parallel, seed 0): **MAPPO** (`fleet`) 3.43 M timesteps in 21
+sessions, **PQN** (`fleet_pqn`) 4.05 M timesteps in 15 sessions. The exported fleets — each run's best on
+stage 8, MAPPO at 3.42 M and PQN at 3.56 M timesteps — were evaluated again on every stage with the
+same headless build: 40 battles each (24 for the imitation clone), against the stage's own opponent,
+pass rate (± about 7 points). Timesteps: the first visit to the stage (✗ moved on at the limit).
 
-**The SageMaker MAPPO run** (2.2 million timesteps, reached stage 7; 24 battles per stage; stage 7 on
-generated maps training never used):
+| Stage | Random | Scripted | Clone | MAPPO | MAPPO timesteps | PQN | PQN timesteps |
+|---|---|---|---|---|---|---|---|
+| 0 Gunnery | 0.50 | 0.67 | 0.79 | 0.83 | 16.5k | 0.55 | 6.2k |
+| 1 Capture | 0.00 | 1.00 | 1.00 | 1.00 | 13.2k | 1.00 | 12.7k |
+| 2 Defend | 0.33 | 0.17 | 0.38 | 0.88 | 22.6k | 0.43 | 147k ✗ |
+| 3 Duel | 0.21 | 0.63 | 0.33 | 0.50 | 751k | 0.20 | 250k ✗ |
+| 4 King of the Hill | 0.04 | 0.75 | 0.50 | 0.80 | 47k | 0.08 | 264k ✗ |
+| 5 Archipelago | 0.42 | 0.71 | 0.63 | 0.75 | 89k | 0.70 | 117k |
+| 6 Domination | 0.08 | 0.21 | 0.38 | 0.68 | 433k | 0.33 | 475k ✗ |
+| 7 Open | 0.33 | 0.25 | 0.42 | 0.70 | 665k | 0.58 | 540k ✗ |
+| 8 Archipelago 9v9 | 0.13 | 1.00 | 0.46 | **1.00** | 533k | 0.73 | 736k ✗ |
 
-| Stage | Opponent | Passed | Enemy sunk / own lost |
-|---|---|---|---|
-| 0 Gunnery | passive | 71 % | 0.9 / 0.0 |
-| 1 Capture | passive | 100 % | 0.0 / 0.0 |
-| 2 Defend | Recruit | 4 % | 0.0 / 1.0 |
-| 3 Duel | Recruit | 33 % | 0.3 / 0.6 |
-| 4 King of the Hill | Veteran | 75 % | 2.2 / 1.3 |
-| 5 Archipelago | Veteran | 83 % | 2.8 / 0.8 |
-| 6 Domination | Elite | 75 % | 3.9 / 1.8 |
-| 7 Open | Elite | **83 %** | 4.5 / 2.1 |
-
-Every fleet stage passes; the single-ship stages were forgotten (now addressed by prioritised
-rehearsal). Elo at the end: 1193, against 893 for the Elite AI. **Stage 8** (new), before any
-training on it: 3 wins in 8 battles against the Elite AI — it out-fought the enemy (6.0 sunk, 3.5
-lost) but lost on points (408 to 436): the enemy held more circles, which is what stage 8 teaches.
-
-**Imitation alone** (72 Elite battles, 8 epochs), pass rate: gunnery 0.58, capture 1.00, defend 0.46,
-duel 0.25, King of the Hill 0.83, archipelago 0.58 (random: 0.42 / 0.00 / 0.33 / 0.17 / 0.04 / 0.33).
-**MAPPO from the clone** passed stages 0, 1, 2 at 11k, 27k and 58k timesteps.
-
-**PQN** (first checks, 4 battles in parallel): on Gunnery from the clone, 200,000 timesteps with
-softmax exploration passed 64–68 % of every 100 battles at first and settled at ~48–50 %; ε-greedy
-~31–43 % (section 7.6). The stage-by-stage comparison with MAPPO is what the notebooks produce as the
-two runs train.
+- **MAPPO passed all nine stages** (the Duel on its first visit; a later refresher only reached 62 %
+  in the 250k cap) and passed stage 8's stopping rule at 93 %. **PQN passed three** (0, 1, 5) and ended
+  at stage 8's 700k cap: its held-out evaluation never got above 67 % over 120 battles.
+- **Head to head** (`Versus-MAPPO-vs-PQN.ipynb`, King of the Hill, MAPPO at 3.37 M vs PQN at 1.76 M):
+  MAPPO won 45 of 48 battles (Elo gap +470) and still 92 % after three rounds of training each other;
+  its win rate against the rule AI dropped from 96 % to 67 % meanwhile (specialising on the rival).
+- **Elo**, each in its own league: MAPPO 1,337 vs the Elite AI's 821; PQN 854 vs 896 (its best
+  checkpoint 958 vs 781), with MAPPO's fleet the highest-rated player in PQN's league.
+- **The scripted rush to the first circle beats the Elite AI in 24 of 24 stage 8 battles**, and
+  broadside-and-fire wins 63 % of Duels: on those two stages the rule AI is a weak benchmark. Where
+  RL clearly adds something is Defend, Domination and Open (MAPPO 68–88 %, scripts 17–25 %).
+- **Imitation** (8 epochs): held-out accuracy move 72 %, speed 89 %, target 91 %, fire 95 %
+  (torpedo and ability are mostly "none").
 
 **Lessons from the earlier flat-MLP version** that the current method keeps: circle-focused reward
 weights (the fleet never found the circle with in_circle 0.02 / approach 0.2 / kills ±2); a fixed

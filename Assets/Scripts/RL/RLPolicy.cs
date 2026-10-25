@@ -62,7 +62,28 @@ namespace Naval.RL
         public string Algorithm { get; private set; } = "mappo";
         /// <summary>Its scores are Q-values (PQN): take the best option instead of sampling.</summary>
         public bool Greedy { get; private set; }
+        /// <summary>The training run it was exported from (the file's "trained"): timesteps and curriculum stage, -1 if unknown.</summary>
+        public long TrainedTimesteps { get; private set; } = -1;
+        public int TrainedStage { get; private set; } = -1;
         public const int OrderFree = 0, OrderEngage = 1, OrderCircle = 2;     // order 2 + k = hold circle k
+
+        /// <summary>The method, for the HUD: "MAPPO", "PQN" or "IMITATION CLONE".</summary>
+        public string DisplayName => Method == "imitation" ? "IMITATION CLONE" : Algorithm == "pqn" ? "PQN" : "MAPPO";
+
+        /// <summary>Where in training it was exported, e.g. "stage 8 · 3.42M timesteps" ("" if the file does not say).</summary>
+        public string TrainedText
+        {
+            get
+            {
+                var parts = new List<string>();
+                if (TrainedStage >= 0) parts.Add("stage " + TrainedStage);
+                if (TrainedTimesteps >= 0)
+                    parts.Add(TrainedTimesteps >= 1000000 ? (TrainedTimesteps / 1e6).ToString("0.00", CultureInfo.InvariantCulture) + "M timesteps"
+                            : TrainedTimesteps >= 1000 ? (TrainedTimesteps / 1e3).ToString("0", CultureInfo.InvariantCulture) + "k timesteps"
+                            : TrainedTimesteps + " timesteps");
+                return string.Join(" · ", parts);
+            }
+        }
         int _enemyHiddenStart, _enemyHiddenEnd;     // critic_enemy columns the commander may not see (true state)
         bool[] _matchHidden;                        // critic_match columns it may not see (true enemy strength)
 
@@ -102,6 +123,11 @@ namespace Naval.RL
             p.Algorithm = header.TryGetValue("algorithm", out var al) && al is string algorithm ? algorithm
                         : p.Method == "fleet-pqn" ? "pqn" : "mappo";
             p.Greedy = header.TryGetValue("greedy", out var gr) ? (bool)gr : p.Method == "fleet-pqn";
+            if (header.TryGetValue("trained", out var tr) && tr is Dictionary<string, object> about)
+            {
+                if (about.TryGetValue("timesteps", out var ts)) p.TrainedTimesteps = (long)Math.Round(MiniJson.Num(ts));
+                if (about.TryGetValue("stage", out var sg)) p.TrainedStage = MiniJson.Int(sg);
+            }
             if (header.TryGetValue("enemy_privileged", out var ep))
             {
                 var l = (List<object>)ep;

@@ -10,14 +10,17 @@ namespace Naval.RL
     ///   NavalTrainer.x86_64 -rlDemo enemy       you command, the policy is the enemy
     ///   NavalTrainer.x86_64 -rlDemo player      the policy flies your fleet against the rule AI
     ///   -rlDemoShips 6   fleet size       -rlDemoSeconds 60   quit after this long (for checks)
+    ///   -rlDemoSpeed 4   time compression once the battle starts (1, 2, 4 or 8)
     ///   -rlStage 4       a training stage instead (RLStages): "player" / "both" watch the trained fleet
-    ///                    against the stage's opponent, "enemy" fights the trained fleet
+    ///                    against the stage's opponent, "enemy" fights the trained fleet, "versus" puts
+    ///                    MAPPO's fleet (blue) against PQN's (red)
     /// </summary>
     public class RLDemo : MonoBehaviour
     {
         string _who = "both";
         int _ships = 6;
         float _quitAfter;
+        int _speed = 1;
         int _frames;
         bool _reported;
 
@@ -32,6 +35,7 @@ namespace Naval.RL
             d._who = RLCommandLine.Str("-rlDemo", "both").ToLowerInvariant();
             d._ships = Mathf.Clamp(RLCommandLine.Int("-rlDemoShips", 6), 1, FleetSetup.MaxShips);
             d._quitAfter = RLCommandLine.Int("-rlDemoSeconds", 0);
+            d._speed = Mathf.Clamp(RLCommandLine.Int("-rlDemoSpeed", 1), 1, 8);
             return d;
         }
 
@@ -46,7 +50,8 @@ namespace Naval.RL
             int stage = RLCommandLine.Int("-rlStage", -1);
             if (stage >= 0 && stage < RLStages.All.Count)
             {
-                RLStages.Launch(RLStages.All[stage], _who == "enemy" ? RLStages.Who.FightAI : RLStages.Who.WatchAI);
+                RLStages.Launch(RLStages.All[stage], _who == "enemy" ? RLStages.Who.FightAI
+                                                   : _who == "versus" ? RLStages.Who.Versus : RLStages.Who.WatchAI);
                 return;
             }
             var setup = FleetSetup.Default();
@@ -63,7 +68,11 @@ namespace Naval.RL
         {
             _frames++;
             var gm = GameManager.I;
-            if (_frames == 2 && gm.Phase == GamePhase.Deployment) gm.StartBattle();
+            if (_frames == 2 && gm.Phase == GamePhase.Deployment)
+            {
+                gm.StartBattle();
+                if (_speed > 1) gm.SetSpeed(_speed);
+            }
             if (gm.Phase == GamePhase.Victory || gm.Phase == GamePhase.Defeat)
             {
                 // the battle ended before the clock: report how, and stop (for checks)

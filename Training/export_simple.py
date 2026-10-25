@@ -13,11 +13,13 @@
 
 It writes Assets/StreamingAssets/RL/naval_policy.bin - or naval_policy_pqn.bin for a PQN checkpoint
 (the previous file is kept as .bak). Then open the project in Unity, press Play, and on the TRAINING
-STAGES screen pick TRAINED FLEET: MAPPO or PQN and WATCH AI on a stage - or on the setup screen set
+STAGES screen pick TRAINED FLEET: MAPPO or PQN and WATCH MAPPO / WATCH PQN on a stage (or MAPPO v PQN:
+the two fleets against each other) - or on the setup screen pick LEARNED = MAPPO or PQN and set
 ENEMY AI: LEARNED (fight against it) or YOUR FLEET: LEARNED (watch it fight). RLPolicyDriver flies those
 ships with the trained captains - and, in fleets of two or more, with the trained fleet commander. The file is read
 when the game starts: after exporting again, stop and press Play again. The line under those
-buttons says which policy is loaded ("commander MAPPO with fleet commander").
+buttons says which policy is loaded ("MAPPO loaded with fleet commander · stage 8 · 3.42M timesteps"),
+and in battle the banner under the score says who flies each fleet (BLUE MAPPO vs RED RULE AI (ELITE)).
 """
 
 from __future__ import annotations
@@ -73,7 +75,7 @@ def main():
         out = game_file_for("pqn" if ck.get("method") == "fleet-pqn" else "mappo")
     path = export_policy(model, os.path.abspath(out), commander=not a.no_commander)
     print(f"exported {model}\n      -> {path}")
-    print("In Unity: press Play (again), then TRAINING STAGES > TRAINED FLEET (MAPPO / PQN) > WATCH AI,\n"
+    print("In Unity: press Play (again), then TRAINING STAGES > TRAINED FLEET (MAPPO / PQN) > WATCH MAPPO / PQN,\n"
           "or on the setup screen set ENEMY AI: LEARNED or YOUR FLEET: LEARNED.")
 
 

@@ -18,8 +18,12 @@ namespace Naval.RL
         {
             WatchAI,      // the trained fleet against the stage's own opponent
             FightAI,      // you command your fleet against the trained fleet
-            PlayStage     // you command your fleet against the stage's own opponent
+            PlayStage,    // you command your fleet against the stage's own opponent
+            Versus        // MAPPO's fleet (blue) against PQN's (red), as in Versus-MAPPO-vs-PQN.ipynb
         }
+
+        /// <summary>A head-to-head needs an opponent that fights back: not on the passive-target stages.</summary>
+        public static bool CanVersus(Stage st) => st != null && st.opponent != "passive" && RLPolicyDriver.VersusAvailable;
 
         public sealed class Stage
         {
@@ -54,6 +58,14 @@ namespace Naval.RL
 
         /// <summary>The stage the current battle came from (null for a normal battle).</summary>
         public static Stage Active { get; private set; }
+
+        /// <summary>How the running stage was started (meaningful while Active is set).</summary>
+        public static Who ActiveWho { get; private set; }
+
+        static int _stageMatch = -1;     // GameManager.MatchNumber of the stage's battle (NEW BATTLE / NEXT MODE begin others)
+
+        /// <summary>The battle on screen is the one Launch started, not a later battle from the result screen.</summary>
+        public static bool InStageBattle => Active != null && GameManager.I != null && GameManager.I.MatchNumber == _stageMatch;
 
         /// <summary>The scenario of a running stage whose enemy is a passive target (stop, hold fire).</summary>
         public static Scenario PassiveScenario { get; private set; }
@@ -127,14 +139,25 @@ namespace Naval.RL
             if (gm == null || st == null) return;
             var level = (AIDifficulty)Mathf.Clamp(st.difficulty, 0, 2);
             bool passive = st.opponent == "passive";
+            if (who == Who.Versus && !CanVersus(st)) who = Who.WatchAI;
+
+            // which trained fleet flies which side: in a head-to-head MAPPO is blue and PQN red,
+            // otherwise both sides use the fleet picked on the TRAINING STAGES screen
+            var driver = RLPolicyDriver.I;
+            if (driver != null)
+            {
+                if (who == Who.Versus) driver.UseVersus(RLPolicyDriver.MappoFile, RLPolicyDriver.PqnFile);
+                else driver.ClearVersus();
+            }
 
             var setup = FleetSetup.Default();
-            setup.playerController = who == Who.WatchAI ? ShipController.Learned : ShipController.Human;
+            setup.playerController = who == Who.WatchAI || who == Who.Versus ? ShipController.Learned : ShipController.Human;
             // the stage's own opponent: the rule AI (league stages are judged against it too), or a
             // passive target - flown as "Learned" so the rule AI leaves it alone; RLPolicyDriver holds it still
-            setup.enemyController = who == Who.FightAI || passive ? ShipController.Learned : ShipController.RuleAI;
+            setup.enemyController = who == Who.FightAI || who == Who.Versus || passive ? ShipController.Learned : ShipController.RuleAI;
             gm.EnemyDifficulty = level;
             Active = st;
+            ActiveWho = who;
             PassiveScenario = null;
 
             if (!st.procedural)
@@ -160,18 +183,24 @@ namespace Naval.RL
                 gm.BeginTrainingMatch((GameMode)mode, setup, map, Random.Range(1, 999999), true);
                 if (st.timeLimit > 0f) gm.OverrideTimeLimit(st.timeLimit);
             }
+            _stageMatch = gm.MatchNumber;
 
-            string who_ = who == Who.WatchAI ? "the trained fleet vs " + st.opponentText
-                        : who == Who.FightAI ? "you vs the trained fleet" : "you vs " + st.opponentText;
+            string ours = driver?.PolicyFor(Team.Player)?.DisplayName ?? "trained";
+            string who_ = who == Who.WatchAI ? ours + " fleet vs " + st.opponentText
+                        : who == Who.FightAI ? "you vs the " + ours + " fleet"
+                        : who == Who.Versus ? "MAPPO fleet (blue) vs PQN fleet (red)"
+                        : "you vs " + st.opponentText;
             GameEvents.RaiseMessage("Training stage " + st.name + ": " + who_ + " - " + st.passText, Team.Neutral);
             Debug.Log("[RL] stage " + st.name + ": " + who_);
         }
 
-        /// <summary>A normal battle from the setup screen: no stage is running.</summary>
+        /// <summary>A normal battle from the setup screen: no stage is running, and one policy flies both sides.</summary>
         public static void Clear()
         {
             Active = null;
             PassiveScenario = null;
+            _stageMatch = -1;
+            RLPolicyDriver.I?.ClearVersus();
         }
     }
 }

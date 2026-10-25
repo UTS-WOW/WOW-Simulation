@@ -19,6 +19,9 @@ namespace Naval.RL
     /// fleet of two or more ships it gives every ship an order (free / engage / hold circle k) every
     /// CommanderPeriod decisions, and each ship's captain decides with its order - as in training.
     ///
+    /// Each side can fly its own file: normally both use PolicyFile, but UseVersus gives each side its
+    /// own (MAPPO's fleet against PQN's). FleetLabel says which policy flies a side, for the HUD.
+    ///
     /// Inactive while the training environment is running: there the trainer drives Learned ships.
     /// </summary>
     public class RLPolicyDriver : MonoBehaviour
@@ -28,16 +31,42 @@ namespace Naval.RL
         /// <summary>The policy files training exports (Training/export_simple.py): MAPPO's and PQN's.</summary>
         public const string MappoFile = "naval_policy.bin", PqnFile = "naval_policy_pqn.bin";
 
-        /// <summary>Which of them flies the Learned ships (the TRAINING STAGES screen switches it).</summary>
+        /// <summary>Which of them flies the Learned ships (the TRAINING STAGES and setup screens switch it).</summary>
         public static string PolicyFile { get; private set; } = MappoFile;
+
+        /// <summary>The files the two sides fly in a head-to-head (UseVersus); null: both fly PolicyFile.</summary>
+        public static string BluePolicyFile { get; private set; }
+        public static string EnemyPolicyFile { get; private set; }
 
         public static string PolicyPath => FilePath(PolicyFile);
 
         public static string FilePath(string file) => Path.Combine(Application.streamingAssetsPath, "RL", file);
 
+        /// <summary>The method a policy file holds, for buttons: "MAPPO" or "PQN".</summary>
+        public static string MethodOf(string file) => file == PqnFile ? "PQN" : "MAPPO";
+
         public RLPolicy Policy { get; private set; }
+        /// <summary>The two sides' policies in a head-to-head (BluePolicyFile, EnemyPolicyFile), else null.</summary>
+        public RLPolicy BluePolicy { get; private set; }
+        public RLPolicy EnemyPolicy { get; private set; }
         public string Status { get; private set; } = "no trained policy";
         public bool Available => Policy != null;
+
+        /// <summary>The policy that flies a side's Learned ships.</summary>
+        public RLPolicy PolicyFor(Team team) =>
+            team == Team.Enemy && EnemyPolicy != null ? EnemyPolicy : team == Team.Player && BluePolicy != null ? BluePolicy : Policy;
+
+        /// <summary>Both trained fleets are exported, so they can fight each other.</summary>
+        public static bool VersusAvailable => I != null && File.Exists(FilePath(MappoFile)) && File.Exists(FilePath(PqnFile));
+
+        /// <summary>Who flies a side's Learned ships, for the HUD: "MAPPO (stage 8 · 3.42M timesteps)".</summary>
+        public string FleetLabel(Team team)
+        {
+            var p = PolicyFor(team);
+            if (p == null) return "TRAINED FLEET (not loaded)";
+            string detail = p.TrainedText;
+            return p.DisplayName + (detail.Length > 0 ? " (" + detail + ")" : "");
+        }
 
         /// <summary>Forward passes run since the game started.</summary>
         public int DecisionsMade { get; private set; }
@@ -63,6 +92,7 @@ namespace Naval.RL
         sealed class Side
         {
             public Team team;
+            public RLPolicy policy;            // what flies this side's Learned ships this battle (PolicyFor)
             public readonly List<Ship> slots = new List<Ship>();
             public readonly List<Ship> enemies = new List<Ship>();
             public RLLayout layout;
@@ -99,35 +129,63 @@ namespace Naval.RL
             return TryLoad();
         }
 
+        /// <summary>A head-to-head: our Learned ships fly blueFile, the enemy's fly redFile (PolicyFile stays as picked).</summary>
+        public bool UseVersus(string blueFile, string redFile)
+        {
+            BluePolicyFile = blueFile;
+            BluePolicy = Load(blueFile, out string blueStatus);
+            if (BluePolicy == null) Debug.LogWarning("[RL] blue fleet: " + blueStatus);
+            EnemyPolicyFile = redFile;
+            EnemyPolicy = Load(redFile, out string redStatus);
+            if (EnemyPolicy == null) Debug.LogWarning("[RL] red fleet: " + redStatus);
+            return BluePolicy != null && EnemyPolicy != null;
+        }
+
+        /// <summary>Back to one policy for both sides (every battle that is not a head-to-head).</summary>
+        public void ClearVersus()
+        {
+            BluePolicyFile = EnemyPolicyFile = null;
+            BluePolicy = EnemyPolicy = null;
+        }
+
         /// <summary>(Re)loads the exported policy. Safe to call while playing, e.g. after a new export.</summary>
         public bool TryLoad()
         {
-            Policy = null;
-            string path = PolicyPath;
+            Policy = Load(PolicyFile, out string status);
+            Status = status;
+            return Policy != null;
+        }
+
+        /// <summary>Reads and checks one exported policy file; status says what was loaded, or why not.</summary>
+        static RLPolicy Load(string file, out string status)
+        {
+            string path = FilePath(file);
             if (!File.Exists(path))
             {
-                Status = "no trained policy (train one, it is exported to StreamingAssets/RL/" + PolicyFile + ")";
-                return false;
+                status = "no trained policy (train one, it is exported to StreamingAssets/RL/" + file + ")";
+                return null;
             }
             try
             {
-                Policy = RLPolicy.Load(File.ReadAllBytes(path));
-                if (Policy.ActionHeads.Count != RLLayout.HeadCount)
-                    throw new FormatException("policy has " + Policy.ActionHeads.Count + " action heads, the game has " + RLLayout.HeadCount);
-                if (!SameLayout(Policy))
+                var p = RLPolicy.Load(File.ReadAllBytes(path));
+                if (p.ActionHeads.Count != RLLayout.HeadCount)
+                    throw new FormatException("policy has " + p.ActionHeads.Count + " action heads, the game has " + RLLayout.HeadCount);
+                if (!SameLayout(p))
                     throw new FormatException("policy was trained on a different observation or action layout - retrain it");
-                string method = Policy.Method == "imitation" ? "imitation clone"
-                              : Policy.Algorithm == "pqn" ? "PQN" : "commander MAPPO";
-                Status = "trained policy loaded (" + (Policy.Version >= 2 ? method + (Policy.HasCommander ? " with fleet commander" : "") + ", " : "")
-                         + Policy.ActionMode + ", " + File.GetLastWriteTime(path).ToString("yyyy-MM-dd HH:mm") + ")";
-                return true;
+                // e.g. "MAPPO loaded with fleet commander · stage 8 · 3.42M timesteps · exported 2026-10-25 11:32"
+                string method = p.Version < 2 ? "trained policy" : p.Method == "imitation" ? "imitation clone" : p.DisplayName;
+                string trained = p.TrainedText;
+                status = method + " loaded" + (p.HasCommander ? " with fleet commander" : "")
+                         + (trained.Length > 0 ? " · " + trained : "")
+                         + (p.ActionMode != "intent" ? " · " + p.ActionMode + " actions" : "")
+                         + " · exported " + File.GetLastWriteTime(path).ToString("yyyy-MM-dd HH:mm");
+                return p;
             }
             catch (Exception e)
             {
-                Policy = null;
-                Status = "trained policy failed to load: " + e.Message;
-                Debug.LogWarning("[RL] " + Status);
-                return false;
+                status = "trained policy failed to load: " + e.Message;
+                Debug.LogWarning("[RL] " + status);
+                return null;
             }
         }
 
@@ -157,7 +215,7 @@ namespace Naval.RL
             if (gm == null || gm.Phase != GamePhase.Battle) return;
             // a training stage with a passive target (RLStages): the enemy only has to be held still
             bool passiveEnemy = RLStages.EnemyIsPassive(gm);
-            if (Policy == null && !passiveEnemy) return;
+            if (Policy == null && BluePolicy == null && EnemyPolicy == null && !passiveEnemy) return;
 
             // a new battle: the clock went backwards
             if (gm.BattleTime < _lastBattleTime) StartBattle();
@@ -166,7 +224,7 @@ namespace Naval.RL
             for (int i = 0; i < _sides.Length; i++)
             {
                 if (passiveEnemy && _sides[i].team == Team.Enemy) HoldStill(_sides[i]);
-                else if (Policy != null) Tick(_sides[i]);
+                else if (_sides[i].policy != null) Tick(_sides[i]);
             }
         }
 
@@ -196,10 +254,13 @@ namespace Naval.RL
                 if (passiveEnemy && s.team == Team.Enemy) passive++;
                 else learned++;
             }
-            if (learned > 0) Debug.Log("[RL] trained policy is flying " + learned + " ships (" + Status + ")");
+            if (learned > 0) Debug.Log("[RL] trained policy is flying " + learned + " ships: our side " + FleetLabel(Team.Player) +
+                                       (EnemyPolicy != null ? ", the enemy " + FleetLabel(Team.Enemy) : "") + " (" + Status + ")");
             if (passive > 0) Debug.Log("[RL] holding " + passive + " passive target ship(s) still, guns silent (training stage)");
             foreach (var side in _sides)
             {
+                side.policy = PolicyFor(side.team);
+                side.layout = null;            // the layout depends on the policy (obstacles, action mode)
                 side.slots.Clear();
                 side.enemies.Clear();
                 side.hidden.Clear();
@@ -229,12 +290,12 @@ namespace Naval.RL
 
             if (side.timer <= 0f && side.cursor >= side.slots.Count)
             {
-                side.timer = Mathf.Max(side.timer + Policy.DecisionPeriod, 0f);
+                side.timer = Mathf.Max(side.timer + side.policy.DecisionPeriod, 0f);
                 Observe(side);
                 side.cursor = 0;
             }
 
-            int perFrame = Mathf.CeilToInt(side.slots.Count * Time.deltaTime / Mathf.Max(0.05f, Policy.DecisionPeriod)) + 1;
+            int perFrame = Mathf.CeilToInt(side.slots.Count * Time.deltaTime / Mathf.Max(0.05f, side.policy.DecisionPeriod)) + 1;
             int budget = Mathf.Max(perFrame, Mathf.CeilToInt(side.slots.Count / 6f));
             while (budget > 0 && side.cursor < side.slots.Count)
             {
@@ -254,12 +315,12 @@ namespace Naval.RL
             var L = side.layout;
             int maxTeam = Mathf.Max(1, side.slots.Count);
             // the commander reads the enemy fleet from rows sized by maxTeam: make room for all of it
-            if (Policy.HasCommander) maxTeam = Mathf.Max(maxTeam, side.enemies.Count);
+            if (side.policy.HasCommander) maxTeam = Mathf.Max(maxTeam, side.enemies.Count);
             int maxAllies = Mathf.Max(0, side.slots.Count - 1);
             int maxContacts = Mathf.Max(1, side.enemies.Count);
             int maxZones = Mathf.Clamp(zones, 1, 8);
-            var mode = Policy.ActionMode == "lowlevel" ? ActionMode.LowLevel : ActionMode.Intent;
-            int maxObstacles = Mathf.Max(1, Policy.MaxObstacles);
+            var mode = side.policy.ActionMode == "lowlevel" ? ActionMode.LowLevel : ActionMode.Intent;
+            int maxObstacles = Mathf.Max(1, side.policy.MaxObstacles);
             if (L == null || L.maxTeam != maxTeam || L.maxAllies != maxAllies || L.maxContacts != maxContacts ||
                 L.maxZones != maxZones || L.maxObstacles != maxObstacles || L.actionMode != mode)
             {
@@ -274,7 +335,7 @@ namespace Naval.RL
 
             // the fleet commander: every CommanderPeriod rounds, in fleets of two or more (as in training)
             if (side.orders == null || side.orders.Length != side.slots.Count) side.orders = new int[side.slots.Count];
-            if (Policy.HasCommander && side.slots.Count > 1 && side.rounds % Policy.CommanderPeriod == 0) Command(side);
+            if (side.policy.HasCommander && side.slots.Count > 1 && side.rounds % side.policy.CommanderPeriod == 0) Command(side);
             side.rounds++;
         }
 
@@ -298,12 +359,12 @@ namespace Naval.RL
             Ensure(ref _cmdLogits, nOwn * width);
             Ensure(ref _cmdMask, width);
             for (int k = 0; k < width; k++) _cmdMask[k] = 1f;
-            Policy.Command(o.criticMatch, o.criticOwn, nOwn, _cmdEnemy, nEnemy, o.criticZones, nz, _cmdLogits);
+            side.policy.Command(o.criticMatch, o.criticOwn, nOwn, _cmdEnemy, nEnemy, o.criticZones, nz, _cmdLogits);
             for (int i = 0; i < nOwn; i++)
             {
                 var s = side.slots[i];
                 bool live = s != null && !s.IsDead && !s.IsSinking && o.alive[i] > 0.5f;
-                side.orders[i] = live ? Choose(_cmdLogits, i * width, width, _cmdMask, 0) : RLPolicy.OrderFree;
+                side.orders[i] = live ? Choose(_cmdLogits, i * width, width, _cmdMask, 0, side.policy.Greedy) : RLPolicy.OrderFree;
             }
         }
 
@@ -326,30 +387,30 @@ namespace Naval.RL
             Ensure(ref _contacts, Mathf.Max(1, nc) * RLLayout.ContactDim);
             Ensure(ref _zones, Mathf.Max(1, nz) * RLLayout.ZoneDim);
             Ensure(ref _obstacles, Mathf.Max(1, no) * RLLayout.ObstacleDim);
-            Ensure(ref _logits, Policy.LogitCount(nc, nz));
+            Ensure(ref _logits, side.policy.LogitCount(nc, nz));
             Array.Copy(o.self, i * RLLayout.SelfDim, _self, 0, RLLayout.SelfDim);
             Array.Copy(o.allies, i * L.maxAllies * RLLayout.AllyDim, _allies, 0, na * RLLayout.AllyDim);
             Array.Copy(o.contacts, i * L.maxContacts * RLLayout.ContactDim, _contacts, 0, nc * RLLayout.ContactDim);
             Array.Copy(o.zones, i * L.maxZones * RLLayout.ZoneDim, _zones, 0, nz * RLLayout.ZoneDim);
             Array.Copy(o.obstacles, i * L.maxObstacles * RLLayout.ObstacleDim, _obstacles, 0, no * RLLayout.ObstacleDim);
 
-            if (!side.hidden.TryGetValue(s, out var h)) { h = new float[Policy.Hidden]; side.hidden[s] = h; }
+            if (!side.hidden.TryGetValue(s, out var h)) { h = new float[side.policy.Hidden]; side.hidden[s] = h; }
             var attention = new float[1 + na + nc + nz + no];
             int order = side.orders != null && i < side.orders.Length ? side.orders[i] : RLPolicy.OrderFree;
             if (order >= RLPolicy.OrderCircle + nz) order = RLPolicy.OrderFree;      // that circle is not in this ship's view
-            Policy.Act(_self, _allies, na, _contacts, nc, _zones, nz, _obstacles, no, h, _logits, attention, order);
+            side.policy.Act(_self, _allies, na, _contacts, nc, _zones, nz, _obstacles, no, h, _logits, attention, order);
 
             // one choice per head; option j of a head means the same thing in the compact logits and in the mask
             int k = 0;
             int maskRow = i * L.TotalLogits;
             for (int head = 0; head < RLLayout.HeadCount; head++)
             {
-                var info = Policy.ActionHeads[head];
+                var info = side.policy.ActionHeads[head];
                 int size = info.fixedCount + (info.pointer == "zones" ? nz : info.pointer == "contacts" ? nc : 0);
-                _actions[head] = Choose(_logits, k, size, o.actionMask, maskRow + L.HeadOffset(head));
+                _actions[head] = Choose(_logits, k, size, o.actionMask, maskRow + L.HeadOffset(head), side.policy.Greedy);
                 k += size;
             }
-            RLActions.Apply(s, _actions, 0, o, i, L, Policy.DecisionPeriod * 1.25f);
+            RLActions.Apply(s, _actions, 0, o, i, L, side.policy.DecisionPeriod * 1.25f);
             DecisionsMade++;
 
             if (!LastDecision.TryGetValue(s, out var rec)) { rec = new ShipDecision(); LastDecision[s] = rec; }
@@ -363,13 +424,13 @@ namespace Naval.RL
             return true;
         }
 
-        int Choose(float[] logits, int offset, int size, float[] mask, int maskOffset)
+        int Choose(float[] logits, int offset, int size, float[] mask, int maskOffset, bool greedy)
         {
             float max = float.NegativeInfinity;
             int best = 0;
             for (int j = 0; j < size; j++)
                 if (mask[maskOffset + j] > 0.5f && logits[offset + j] > max) { max = logits[offset + j]; best = j; }
-            if (float.IsNegativeInfinity(max) || !Sample || Policy.Greedy) return best;     // PQN: the best Q
+            if (float.IsNegativeInfinity(max) || !Sample || greedy) return best;     // PQN: the best Q
 
             double total = 0;
             for (int j = 0; j < size; j++)

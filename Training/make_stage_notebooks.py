@@ -559,7 +559,7 @@ compare_stages({"MAPPO": log_dir, "PQN": pqn_log_dir}, env.stages)
 
 Exports each run's best checkpoint (or its latest, if that has reached a later stage) as a policy file the game runs in plain C# (`Assets/Scripts/RL/RLPolicy.cs`): MAPPO's as `naval_policy.bin`, PQN's as `naval_policy_pqn.bin`. From the repository they go straight into `Assets/StreamingAssets/RL/`; elsewhere (SageMaker) into the run folders - download them (right-click > Download) and copy them there.
 
-Then in Unity: **Play** > **TRAINING STAGES**; at the bottom pick **TRAINED FLEET: MAPPO** or **PQN**, and **WATCH AI** on any stage (or on the setup screen: **YOUR FLEET: LEARNED** / **ENEMY AI: LEARNED**). From a computer later: `python export_simple.py` and `python export_simple.py --run-name fleet_pqn`.
+Then in Unity: **Play** > **TRAINING STAGES**; at the bottom pick **TRAINED FLEET: MAPPO** or **PQN**, and **WATCH MAPPO** / **WATCH PQN** on any stage, or **MAPPO v PQN** to put the two fleets against each other (or on the setup screen: **LEARNED = MAPPO / PQN** with **YOUR FLEET: LEARNED** / **ENEMY AI: LEARNED**). In battle, the banner under the score names the policy flying each side. From a computer later: `python export_simple.py` and `python export_simple.py --run-name fleet_pqn`.
 """)
     code(r"""
 from simple_mappo.export import GAME_POLICY, GAME_POLICY_PQN, export_policy, pick_checkpoint
@@ -579,7 +579,7 @@ for mdir, rdir, game_file in ((models_dir, run_dir, GAME_POLICY), (pqn_models_di
 
 A run records replays only on the stage it **trains** on. A run that is on another stage (each method climbs the curriculum at its own pace) is only evaluated here - so for it, one battle on this stage is recorded now (`..._evaluated`, once per checkpoint), and both methods always have a replay of this stage to compare. Each is embedded in the notebook as an animated GIF - an image plays in every notebook app (JupyterLab, SageMaker Studio, VS Code, Cursor; VS Code blocks embedded videos) and stays in the notebook when it is reopened or downloaded. An older replay with only an MP4 gets its GIF made here. `ALL_STAGES = True` shows every replay of both runs, from every stage.
 
-They are a 2D map drawn from the game's data (the training player has no graphics); to see a fleet in the real game's graphics, export it (above) and use **WATCH AI** in Unity.
+They are a 2D map drawn from the game's data (the training player has no graphics); to see a fleet in the real game's graphics, export it (above) and use **WATCH MAPPO** / **WATCH PQN** in Unity.
 """)
     code(r"""
 ALL_STAGES = False                   # True: every replay of both runs, from every stage

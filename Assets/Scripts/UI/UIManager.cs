@@ -106,6 +106,8 @@ namespace Naval
         GameObject _stagesPanel;           // TRAINING STAGES: the curriculum, to watch and play
         bool _showStages;
         Text _stagesStatusText;
+        readonly List<UIButton> _stageWatchButtons = new List<UIButton>(), _stageFightButtons = new List<UIButton>();
+        Text _fleetTitle;
 
         public bool HelpVisible { get; private set; }
 
@@ -295,6 +297,7 @@ namespace Naval
                 new Vector2(-300f, -86f), new Vector2(300f, -58f), new Color(0.06f, 0.12f, 0.18f, 0.8f), false);
             _bannerText = Label("BannerText", _bannerPanel, "", 15, TextAnchor.MiddleCenter, Accent,
                 Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, FontStyle.Bold);
+            _bannerText.supportRichText = true;
         }
 
         void BuildMessageLog()
@@ -316,8 +319,9 @@ namespace Naval
 
         void BuildWarning()
         {
+            // below the banner, which is two lines high while it says who flies each fleet
             var p = Panel("Warning", _canvas.transform, new Vector2(0.5f, 1f), new Vector2(0.5f, 1f),
-                new Vector2(-260f, -128f), new Vector2(260f, -92f), new Color(0.5f, 0.08f, 0.06f, 0.85f), false);
+                new Vector2(-260f, -148f), new Vector2(260f, -112f), new Color(0.5f, 0.08f, 0.06f, 0.85f), false);
             _warningText = Label("WarnText", p, "", 20, TextAnchor.MiddleCenter, new Color(1f, 0.9f, 0.85f),
                 Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, FontStyle.Bold);
             p.gameObject.SetActive(false);
@@ -386,7 +390,7 @@ namespace Naval
         {
             _fleetPanel = Panel("FleetPanel", _canvas.transform, new Vector2(0f, 0f), new Vector2(0f, 0f),
                 new Vector2(12f, 262f), new Vector2(232f, 800f));
-            Label("FleetTitle", _fleetPanel, "TASK FORCE", 14, TextAnchor.UpperLeft, Accent,
+            _fleetTitle = Label("FleetTitle", _fleetPanel, "TASK FORCE", 14, TextAnchor.UpperLeft, Accent,
                 new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(10f, -24f), new Vector2(-10f, -4f), FontStyle.Bold);
         }
 
@@ -774,7 +778,12 @@ namespace Naval
                 () => { _menuSetup.playerController = ShipController.Learned; }, PolicyAvailable,
                 () => _menuSetup.playerController == ShipController.Learned);
             _policyStatusText = Label("PolicyStatus", p, "", 11, TextAnchor.MiddleLeft, TextDim,
-                new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(30f, -628f), new Vector2(-30f, -606f));
+                new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(30f, -628f), new Vector2(-300f, -606f));
+            // which trained fleet a LEARNED side is: the MAPPO one or the PQN one (as on the TRAINING STAGES screen)
+            Label("LearnedIs", p, "LEARNED =", 11, TextAnchor.MiddleRight, TextDim,
+                new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(-296f, -630f), new Vector2(-214f, -604f));
+            PolicyButton(p, "MAPPO", RL.RLPolicyDriver.MappoFile, new Vector2(1f, 1f), new Vector2(-208f, -630f), new Vector2(-122f, -604f));
+            PolicyButton(p, "PQN", RL.RLPolicyDriver.PqnFile, new Vector2(1f, 1f), new Vector2(-116f, -630f), new Vector2(-30f, -604f));
 
             _menuTotalText = Label("Total", p, "", 16, TextAnchor.MiddleCenter, TextMain,
                 new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(0f, 96f), new Vector2(0f, 124f), FontStyle.Bold);
@@ -822,8 +831,8 @@ namespace Naval
 
             Label("StagesTitle", p, "TRAINING STAGES", 28, TextAnchor.UpperCenter, Accent,
                 new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(0f, -50f), new Vector2(0f, -12f), FontStyle.Bold);
-            Label("StagesHelp", p, "The curriculum the fleet trained on.   WATCH AI: the trained fleet vs the stage's opponent" +
-                  "   ·   FIGHT AI: you vs the trained fleet   ·   PLAY IT: you vs the stage's opponent",
+            Label("StagesHelp", p, "The curriculum the fleet trained on.   MAPPO v PQN: the two trained fleets against each other" +
+                  "   ·   WATCH: the trained fleet picked below vs the stage's opponent   ·   FIGHT: you vs it   ·   PLAY IT: you vs the stage's opponent",
                 12, TextAnchor.UpperCenter, TextDim, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(0f, -74f), new Vector2(0f, -54f));
 
             var stages = RL.RLStages.All;
@@ -839,20 +848,23 @@ namespace Naval
                 var row = Panel("Stage" + i, p, new Vector2(0f, 1f), new Vector2(1f, 1f),
                     new Vector2(20f, y - rowH + 6f), new Vector2(-20f, y), new Color(0.07f, 0.12f, 0.18f, 0.9f), false);
                 Label("Name", row, "<b>" + st.name.ToUpperInvariant() + "</b>    " + st.battle + (st.commander ? "    · fleet commander" : ""),
-                    15, TextAnchor.MiddleLeft, TextMain, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(12f, -24f), new Vector2(-340f, -4f));
+                    15, TextAnchor.MiddleLeft, TextMain, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(12f, -24f), new Vector2(-434f, -4f));
                 Label("Desc", row, st.description, 12, TextAnchor.MiddleLeft, TextDim,
-                    new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(12f, -44f), new Vector2(-340f, -26f));
+                    new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(12f, -44f), new Vector2(-434f, -26f));
+                // the league's self-play kinds are in the help of the notebooks; here they would run under the buttons
                 Label("Rule", row, (string.IsNullOrEmpty(st.fleetText) ? "" : "SHIPS  " + st.fleetText + "    ·    ") +
-                    "vs " + st.opponentText + "    ·    " + st.passText, 12, TextAnchor.MiddleLeft, Accent,
-                    new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(12f, -64f), new Vector2(-340f, -46f));
+                    "vs " + st.opponentText.Replace(" (mirror/champion/past/rival)", "") + "    ·    " + st.passText, 12, TextAnchor.MiddleLeft, Accent,
+                    new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(12f, -64f), new Vector2(-434f, -46f));
 
+                // the WATCH / FIGHT labels name the trained fleet they use (RefreshPhasePanels)
                 var stage = st;
-                Button("WATCH AI", row, new Vector2(1f, 0.5f), new Vector2(1f, 0.5f), new Vector2(-326f, -16f), new Vector2(-224f, 16f),
-                    () => LaunchStage(stage, RL.RLStages.Who.WatchAI), PolicyAvailable, null, new Color(0.15f, 0.42f, 0.3f, 0.95f));
-                Button("FIGHT AI", row, new Vector2(1f, 0.5f), new Vector2(1f, 0.5f), new Vector2(-218f, -16f), new Vector2(-116f, 16f),
-                    () => LaunchStage(stage, RL.RLStages.Who.FightAI), PolicyAvailable);
-                Button("PLAY IT", row, new Vector2(1f, 0.5f), new Vector2(1f, 0.5f), new Vector2(-110f, -16f), new Vector2(-8f, 16f),
-                    () => LaunchStage(stage, RL.RLStages.Who.PlayStage));
+                StageButton("MAPPO v PQN", row, -426f, () => LaunchStage(stage, RL.RLStages.Who.Versus),
+                    () => RL.RLStages.CanVersus(stage), new Color(0.32f, 0.22f, 0.42f, 0.95f));
+                _stageWatchButtons.Add(StageButton("WATCH AI", row, -320f, () => LaunchStage(stage, RL.RLStages.Who.WatchAI),
+                    PolicyAvailable, new Color(0.15f, 0.42f, 0.3f, 0.95f)));
+                _stageFightButtons.Add(StageButton("FIGHT AI", row, -214f, () => LaunchStage(stage, RL.RLStages.Who.FightAI),
+                    PolicyAvailable, null));
+                StageButton("PLAY IT", row, -108f, () => LaunchStage(stage, RL.RLStages.Who.PlayStage), null, null);
             }
 
             _stagesStatusText = Label("StagesStatus", p, "", 12, TextAnchor.MiddleCenter, TextDim,
@@ -860,14 +872,8 @@ namespace Naval
             // which trained fleet WATCH AI / FIGHT AI use: the MAPPO one or the PQN one
             Label("PolicyHdr", p, "TRAINED FLEET", 11, TextAnchor.MiddleRight, TextDim,
                 new Vector2(1f, 0f), new Vector2(1f, 0f), new Vector2(-380f, 18f), new Vector2(-292f, 52f));
-            Button("MAPPO", p, new Vector2(1f, 0f), new Vector2(1f, 0f), new Vector2(-284f, 18f), new Vector2(-172f, 52f),
-                () => RL.RLPolicyDriver.I?.UsePolicy(RL.RLPolicyDriver.MappoFile),
-                () => RL.RLPolicyDriver.I != null && System.IO.File.Exists(RL.RLPolicyDriver.FilePath(RL.RLPolicyDriver.MappoFile)),
-                () => RL.RLPolicyDriver.PolicyFile == RL.RLPolicyDriver.MappoFile);
-            Button("PQN", p, new Vector2(1f, 0f), new Vector2(1f, 0f), new Vector2(-164f, 18f), new Vector2(-30f, 52f),
-                () => RL.RLPolicyDriver.I?.UsePolicy(RL.RLPolicyDriver.PqnFile),
-                () => RL.RLPolicyDriver.I != null && System.IO.File.Exists(RL.RLPolicyDriver.FilePath(RL.RLPolicyDriver.PqnFile)),
-                () => RL.RLPolicyDriver.PolicyFile == RL.RLPolicyDriver.PqnFile);
+            PolicyButton(p, "MAPPO", RL.RLPolicyDriver.MappoFile, new Vector2(1f, 0f), new Vector2(-284f, 18f), new Vector2(-172f, 52f));
+            PolicyButton(p, "PQN", RL.RLPolicyDriver.PqnFile, new Vector2(1f, 0f), new Vector2(-164f, 18f), new Vector2(-30f, 52f));
             Button("BACK", p, new Vector2(0f, 0f), new Vector2(0f, 0f), new Vector2(30f, 18f), new Vector2(170f, 52f),
                 () => { _showStages = false; });
 
@@ -878,6 +884,24 @@ namespace Naval
         {
             _showStages = false;
             RL.RLStages.Launch(stage, who);
+        }
+
+        /// <summary>One of a stage row's four buttons, 100 wide, its left edge at x from the row's right.</summary>
+        UIButton StageButton(string text, Transform row, float x, System.Action onClick, System.Func<bool> enabled, Color? tint)
+        {
+            var b = Button(text, row, new Vector2(1f, 0.5f), new Vector2(1f, 0.5f), new Vector2(x, -16f), new Vector2(x + 100f, 16f),
+                onClick, enabled, null, tint);
+            b.label.fontSize = 12;
+            return b;
+        }
+
+        /// <summary>Picks which exported fleet (MappoFile or PqnFile) the Learned ships fly; lit while it is the one in use.</summary>
+        void PolicyButton(Transform p, string text, string file, Vector2 anchor, Vector2 offsetMin, Vector2 offsetMax)
+        {
+            Button(text, p, anchor, anchor, offsetMin, offsetMax,
+                () => RL.RLPolicyDriver.I?.UsePolicy(file),
+                () => RL.RLPolicyDriver.I != null && System.IO.File.Exists(RL.RLPolicyDriver.FilePath(file)),
+                () => RL.RLPolicyDriver.PolicyFile == file);
         }
 
         static bool PolicyAvailable() => RL.RLPolicyDriver.I != null && RL.RLPolicyDriver.I.Available;
@@ -1208,6 +1232,7 @@ namespace Naval
 
             if (InputHub.KeyDown(Key.F4)) ToggleHelp();
 
+            UpdateFleetLabels();
             RefreshTopBar();
             RefreshBanner();
             RefreshShipPanel();
@@ -1344,21 +1369,117 @@ namespace Naval
         {
             var cm = ControlModeManager.I;
             var gm = GameManager.I;
-            bool show = gm != null && gm.Phase == GamePhase.Battle;
+            // who flies each fleet, whenever a trained fleet is in the battle or a training stage is running
+            bool matchup = gm != null && ShowMatchup(out _);
+            bool show = gm != null && (gm.Phase == GamePhase.Battle || (gm.Phase == GamePhase.Deployment && matchup));
             if (_bannerPanel.gameObject.activeSelf != show) _bannerPanel.gameObject.SetActive(show);
             if (!show) return;
 
-            if (cm != null && cm.IsDirect)
+            bool direct = cm != null && cm.IsDirect && cm.Controlled != null;
+            string control = direct
+                ? "DIRECT CONTROL  -  " + cm.Controlled.shipName + " (" + cm.Controlled.ClassTag + ")   [Tab] fleet command"
+                : "FLEET COMMAND   [Tab] take the helm";
+            if (!matchup)
             {
-                var s = cm.Controlled;
-                _bannerText.text = "DIRECT CONTROL  -  " + s.shipName + " (" + s.ClassTag + ")   [Tab] fleet command";
-                _bannerText.color = new Color(0.55f, 1f, 0.75f);
+                SetBannerSize(300f, 28f);
+                _bannerText.text = control;
+                _bannerText.color = direct ? new Color(0.55f, 1f, 0.75f) : Accent;
+                return;
             }
-            else
+
+            ShowMatchup(out bool watching);
+            SetBannerSize(480f, 46f);
+            _bannerText.color = TextMain;
+            string stage = RL.RLStages.InStageBattle ? "TRAINING STAGE " + RL.RLStages.Active.name.ToUpperInvariant() + "   ·   " : "";
+            _bannerText.text = (watching ? "WATCHING    " : "") + MatchupText(true) + "\n<size=12>" + stage +
+                               (watching && !direct ? (_fleetLearned[1] ? "AI against AI: no orders needed" : "the trained fleet flies blue: no orders needed")
+                                                    : control) + "</size>";
+        }
+
+        void SetBannerSize(float halfWidth, float height)
+        {
+            var target = new Vector2(halfWidth, -58f);
+            if (_bannerPanel.offsetMax == target) return;
+            _bannerPanel.offsetMin = new Vector2(-halfWidth, -58f - height);
+            _bannerPanel.offsetMax = target;
+        }
+
+        // ------------------------------------------------------------------ who flies each fleet
+
+        /// <summary>
+        /// Who flies a fleet: YOU, RULE AI (ELITE), PASSIVE TARGET, or the trained fleet's method - MAPPO,
+        /// PQN or CLONE - with (detail) the stage and timesteps it was exported at. "" while it has no ships.
+        /// </summary>
+        static string FleetController(Team team, bool detail)
+        {
+            var gm = GameManager.I;
+            int learned = 0, rule = 0, human = 0;
+            foreach (var s in ShipRegistry.OfTeam(team))
             {
-                _bannerText.text = "FLEET COMMAND   [Tab] take the helm";
-                _bannerText.color = Accent;
+                if (s == null) continue;
+                if (s.Controller == ShipController.Learned) learned++;
+                else if (s.Controller == ShipController.RuleAI) rule++;
+                else human++;
             }
+            if (learned + rule + human == 0) return "";
+            if (team == Team.Enemy && RL.RLStages.EnemyIsPassive(gm)) return "PASSIVE TARGET";
+            if (learned > 0)
+            {
+                var p = RL.RLPolicyDriver.I != null ? RL.RLPolicyDriver.I.PolicyFor(team) : null;
+                if (p == null) return "TRAINED FLEET (not loaded)";
+                string name = p.Method == "imitation" ? "CLONE" : p.DisplayName;
+                string more = p.TrainedText;
+                return detail && more.Length > 0 ? name + "  (" + more + ")" : name;
+            }
+            if (rule > 0)
+                return team == Team.Enemy && gm != null ? "RULE AI (" + gm.EnemyDifficulty.ToString().ToUpperInvariant() + ")" : "RULE AI";
+            return "YOU";
+        }
+
+        static bool AnyLearned(Team team)
+        {
+            foreach (var s in ShipRegistry.OfTeam(team))
+                if (s != null && s.Controller == ShipController.Learned) return true;
+            return false;
+        }
+
+        // who flies each fleet [player, enemy], kept for the whole battle: sunk ships leave the registry
+        int _labelMatch = -1;
+        readonly string[] _fleetName = { "", "" }, _fleetDetail = { "", "" };
+        readonly bool[] _fleetLearned = new bool[2];
+
+        void UpdateFleetLabels()
+        {
+            var gm = GameManager.I;
+            if (gm == null) return;
+            if (gm.MatchNumber != _labelMatch)
+            {
+                _labelMatch = gm.MatchNumber;
+                for (int t = 0; t < 2; t++) { _fleetName[t] = _fleetDetail[t] = ""; _fleetLearned[t] = false; }
+            }
+            for (int t = 0; t < 2; t++)
+            {
+                var team = t == 0 ? Team.Player : Team.Enemy;
+                string name = FleetController(team, false);
+                if (name.Length == 0) continue;          // that fleet is sunk: keep what flew it
+                _fleetName[t] = name;
+                _fleetDetail[t] = FleetController(team, true);
+                _fleetLearned[t] = AnyLearned(team);
+            }
+        }
+
+        /// <summary>A trained fleet is in this battle, or it is a training stage. watching: the trained fleet flies ours.</summary>
+        bool ShowMatchup(out bool watching)
+        {
+            watching = _fleetLearned[0];
+            return watching || _fleetLearned[1] || RL.RLStages.InStageBattle;
+        }
+
+        /// <summary>"BLUE  MAPPO (stage 8 · 3.42M timesteps)   vs   RED  RULE AI (ELITE)" in the fleets' colours.</summary>
+        string MatchupText(bool detail)
+        {
+            var names = detail ? _fleetDetail : _fleetName;
+            return "<color=#59c7ff>BLUE  " + names[0] + "</color>      vs      <color=#ff6b61>RED  " + names[1] + "</color>";
         }
 
         void RefreshShipPanel()
@@ -1437,6 +1558,10 @@ namespace Naval
 
         void RefreshFleetPanel()
         {
+            // the roster's title names the trained fleet when it flies ours
+            if (_fleetTitle != null)
+                _fleetTitle.text = _fleetLearned[0] ? "TASK FORCE  ·  " + _fleetName[0] : "TASK FORCE";
+
             _fleetRefreshTimer -= Time.unscaledDeltaTime;
             var ships = ShipRegistry.OfTeam(Team.Player);
             if (_fleet.Count != ships.Count || _fleetRefreshTimer <= 0f)
@@ -1638,6 +1763,13 @@ namespace Naval
             if (stages && _stagesStatusText != null)
                 _stagesStatusText.text = (RL.RLPolicyDriver.I != null ? RL.RLPolicyDriver.I.Status : "no trained policy") +
                                          "    ·    " + RL.RLStages.Status;
+            if (stages)
+            {
+                // the buttons say which trained fleet they start: WATCH MAPPO / FIGHT PQN
+                string method = RL.RLPolicyDriver.MethodOf(RL.RLPolicyDriver.PolicyFile);
+                foreach (var b in _stageWatchButtons) b.label.text = "WATCH " + method;
+                foreach (var b in _stageFightButtons) b.label.text = "FIGHT " + method;
+            }
 
             bool editing = gm.Phase == GamePhase.Editor;
             if (_editorPanel.activeSelf != editing) _editorPanel.SetActive(editing);
@@ -1651,9 +1783,23 @@ namespace Naval
             if (_endPanel.activeSelf != over) _endPanel.SetActive(over);
             if (over)
             {
-                _endTitle.text = gm.Phase == GamePhase.Victory ? "VICTORY" : "DEFEAT";
-                _endTitle.color = gm.Phase == GamePhase.Victory ? new Color(0.5f, 1f, 0.7f) : new Color(1f, 0.5f, 0.45f);
+                bool won = gm.Phase == GamePhase.Victory;
+                _endTitle.text = won ? "VICTORY" : "DEFEAT";
+                _endTitle.color = won ? new Color(0.5f, 1f, 0.7f) : new Color(1f, 0.5f, 0.45f);
                 _endBody.text = gm.ResultSummary;
+                if (ShowMatchup(out bool watching))
+                {
+                    if (watching)
+                    {
+                        // nobody of ours to congratulate: say which fleet won
+                        string blue = _fleetName[0], red = _fleetName[1];
+                        string winner = won ? blue : red;
+                        _endTitle.text = (blue == red ? (won ? "BLUE" : "RED") : winner) + " WINS";
+                        _endTitle.color = won ? AlliedCol : EnemyCol;
+                    }
+                    _endBody.supportRichText = true;
+                    _endBody.text += "\n\n<size=13>" + MatchupText(true) + "</size>";
+                }
             }
 
             // world HUD is meaningless on the menu screen and in the editor
